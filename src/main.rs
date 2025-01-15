@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 use clap::Parser;
 use tracing_subscriber::fmt::format::FmtSpan;
 use crate::args::Cmd;
-use crate::client::connect;
+use crate::client::{send_file, send_text};
 use crate::server::listen;
 use crate::util::{handle, join_with_signal};
 
@@ -26,7 +26,8 @@ async fn run(args: args::Args) {
             }
             Cmd::Client { file, target} => {
                 tokio::spawn(async move {
-                    handle(connect(file, target).await);
+                    handle(send_text(target).await);
+                    //handle(send_file(file, target).await);
                 })
             }
         }
