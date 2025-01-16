@@ -1,16 +1,41 @@
-use std::net::SocketAddr;
-use std::str::from_utf8;
-use anyhow::{anyhow, Error};
+use crate::args::HostPort;
+use crate::serde::{Codec, Params, Request};
+use crate::util::handle;
 use anyhow::Result;
-use log::{error, trace, warn};
+use rdkafka::producer::BaseRecord;
+use std::net::SocketAddr;
+use std::os::raw::c_void;
+use rdkafka::IntoOpaque;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_stream::StreamExt;
-use tokio_util::bytes::{BufMut, BytesMut};
-use tokio_util::codec::{Decoder, Encoder, Framed};
+use tokio_util::codec::Framed;
 use tracing::info;
-use crate::args::HostPort;
-use crate::jsonrpc::Codec;
-use crate::util::handle;
+use crate::kafka::{send};
+
+struct OpaqueId(usize);
+
+impl IntoOpaque for OpaqueId {
+    fn into_ptr(self) -> *mut c_void {
+        self.0 as *mut c_void
+    }
+    unsafe fn from_ptr(p: *mut c_void) -> Self {
+        OpaqueId(p as usize)
+    }
+}
+
+pub type RequestRecord<'a> = BaseRecord<'a, String, String, usize>;
+
+fn record<'a>(id: usize, topic: &'a String, key: Option<&'a String>, partition: Option<i32>, payload: &'a String) -> RequestRecord<'a> {
+    RequestRecord {
+        topic,
+        partition,
+        payload: Some(payload),
+        key,
+        timestamp: None,
+        headers: None,
+        delivery_opaque: id,
+    }
+}
 
 pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> Result<()> {
     info!("server, bind: {:?}, brokers: {:?}", bind, brokers);
@@ -24,11 +49,22 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> Result<()> {
     }
 }
 
-pub async fn process(stream: TcpStream) -> Result<()> {
+async fn process(stream: TcpStream) -> Result<()> {
     let mut framed: Framed<TcpStream, Codec> = Framed::with_capacity(stream, Codec::new(), 8192);
     while let Some(item) = framed.next().await {
-        let json = item?;
-        info!("json: {:?}", json);
+        let request = item?;
+        info!("request: {:?}", request);
+        match request.params {
+            Params::Send { topic, key, partition, payload } => {
+                let text = payload.to_string();
+                let record = record(request.id, &topic, key.as_ref(), partition, &text);
+                send(&record).expect("TODO: panic message");
+            }
+            Params::Poll { .. } => {
+
+            }
+        }
+
     }
     Ok(())
 }

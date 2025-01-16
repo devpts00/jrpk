@@ -12,14 +12,6 @@ pub struct HostPort {
     pub port: u16,
 }
 
-impl Display for HostPort {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.host.fmt(f)?;
-        ':'.fmt(f)?;
-        self.port.fmt(f)
-    }
-}
-
 impl FromStr for HostPort {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -29,6 +21,12 @@ impl FromStr for HostPort {
             host: String::from(host),
             port: u16::from_str_radix(port, 10)?
         })
+    }
+}
+
+impl Display for HostPort {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.host, self.port)
     }
 }
 
@@ -49,6 +47,21 @@ impl<T: FromStr> FromStr for Ctr<Vec<T>> {
             .map(T::from_str)
             .collect();
         Ok(Ctr(vec?))
+    }
+}
+
+impl<T: Display> Display for Ctr<Vec<T>> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for x in self.0.iter() {
+            write!(f, "{}", x)?
+        }
+        Ok(())
+    }
+}
+
+impl<C> From<C> for Ctr<C> {
+    fn from(value: C) -> Self {
+        Ctr(value)
     }
 }
 

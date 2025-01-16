@@ -2,7 +2,8 @@ mod args;
 mod server;
 mod client;
 mod util;
-mod jsonrpc;
+mod serde;
+mod kafka;
 
 use std::time::Duration;
 use tokio;

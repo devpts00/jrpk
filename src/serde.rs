@@ -1,15 +1,8 @@
 use anyhow::anyhow;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use tokio_util::bytes::{BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-
-#[derive(Debug, Deserialize)]
-pub enum Partition {
-    #[serde(rename = "num")]
-    Num(u16),
-    #[serde(rename = "key")]
-    Key(String),
-}
+use tracing::debug;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -17,13 +10,14 @@ pub enum Params {
     #[serde(rename = "send")]
     Send {
         topic: String,
-        partition: Option<Partition>,
-        body: serde_json::Value
+        key: Option<String>,
+        partition: Option<i32>,
+        payload: serde_json::Value,
     },
     #[serde(rename = "poll")]
     Poll {
         topic: String,
-        partition: Option<Partition>,
+        partition: Option<i32>,
         count: u16,
     }
 }
@@ -31,7 +25,7 @@ pub enum Params {
 #[derive(Debug, Deserialize)]
 pub struct Request {
     pub jsonrpc: String,
-    pub id: u64,
+    pub id: usize,
     #[serde(flatten)]
     pub params: Params,
 }
@@ -60,10 +54,9 @@ impl Decoder for Codec {
     type Error = anyhow::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<Self::Item>> {
-
         while self.position < src.len() {
             match src[self.position] {
-                b'{'=> {
+                b'{' => {
                     if self.level == 0 {
                         self.start = self.position;
                     }
@@ -89,9 +82,10 @@ impl Decoder for Codec {
                 }
             }
         }
-
-        //info!("level: {}, count: {}, range: {} - {}", self.level, self.count, self.start, self.position);
-
+        if self.level == 0 && src.len() > 0 {
+            debug!("discard: {}", src.len());
+            let _ = src.split_to(src.len());
+        }
         Ok(None)
     }
 }
@@ -105,12 +99,12 @@ impl Encoder<serde_json::Value> for Codec {
 
 #[cfg(test)]
 mod tests {
-    use crate::jsonrpc::Request;
+    use crate::serde::Request;
     #[test]
     fn test_deserialize() {
-        let send: Request = serde_json::from_str(r#"{ "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "partition": { "key": "john" }, "body": { "first": "john", "last": "doe", "age": 35 } } }"#).unwrap();
+        let send: Request = serde_json::from_str(r#"{ "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "key": "john", "payload": { "first": "john", "last": "doe", "age": 35 } } }"#).unwrap();
         println!("send: {:?}", send);
-        let poll: Request = serde_json::from_str(r#"{ "jsonrpc": "2.0", "id": 1, "method": "poll", "params": { "topic": "posts", "partition": { "num": 7 }, "count": 1024 } }"#).unwrap();
+        let poll: Request = serde_json::from_str(r#"{ "jsonrpc": "2.0", "id": 1, "method": "poll", "params": { "topic": "posts", "partition": 7, "count": 1024 } }"#).unwrap();
         println!("poll: {:?}", poll);
     }
 }
