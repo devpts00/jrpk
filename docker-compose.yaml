@@ -9,7 +9,7 @@ services:
     build: .
     environment:
       - TOKIO_CONSOLE_BIND=0.0.0.0:6669
-      - RUST_LOG=debug,tokio::task=info
+      - RUST_LOG=trace,tokio::task=info
     volumes:
       - .:/jrpk
       - cargo:/usr/local/cargo

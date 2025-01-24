@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use serde::Deserialize;
 use tokio_util::bytes::{BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::debug;
+use tracing::{debug, info, trace};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -32,7 +32,6 @@ pub struct Request {
 
 pub struct Codec {
     level: u8,
-    start: usize,
     position: usize,
     count: usize,
 }
@@ -41,7 +40,6 @@ impl Codec {
     pub fn new() -> Self {
         Codec {
             level: 0,
-            start: 0,
             position: 0,
             count: 0
         }
@@ -54,36 +52,48 @@ impl Decoder for Codec {
     type Error = anyhow::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<Self::Item>> {
+        let mut escape = false;
+        trace!("buf, length: {}", src.len());
         while self.position < src.len() {
-            match src[self.position] {
-                b'{' => {
-                    if self.level == 0 {
-                        self.start = self.position;
+            if escape {
+                escape = false;
+                self.position += 1;
+            } else {
+                match src[self.position] {
+                    b'\\' => {
+                        escape = true;
+                        self.position += 1;
                     }
-                    self.level += 1;
-                    self.position += 1;
-                }
-                b'}' => {
-                    self.level -= 1;
-                    self.position += 1;
-                    if self.level == 0 {
-                        let ready = src.split_to(self.position);
-                        let buf = ready.get(self.start..self.position)
-                            .ok_or(anyhow!("bad slice indices"))?;
-                        let json = serde_json::from_slice(buf)?;
-                        self.position = 0;
-                        self.start = 0;
-                        self.count += 1;
-                        return Ok(Some(json))
+                    b'{' => {
+                        if self.level == 0 && self.position > 0 {
+                            trace!("buf, skip: {}", self.position);
+                            let _ = src.split_to(self.position);
+                        }
+                        self.level += 1;
+                        self.position += 1;
                     }
-                }
-                _ => {
-                    self.position += 1;
+                    b'}' => {
+                        self.level -= 1;
+                        self.position += 1;
+                        if self.level == 0 {
+                            trace!("buf, frame: {}", self.position);
+                            let frame = src.split_to(self.position);
+                            let buf = frame.get(0..self.position)
+                                .ok_or(anyhow!("bad slice indices"))?;
+                            let json = serde_json::from_slice(buf)?;
+                            self.position = 0;
+                            self.count += 1;
+                            return Ok(Some(json))
+                        }
+                    }
+                    _ => {
+                        self.position += 1;
+                    }
                 }
             }
         }
         if self.level == 0 && src.len() > 0 {
-            debug!("discard: {}", src.len());
+            trace!("discard: {}", src.len());
             let _ = src.split_to(src.len());
         }
         Ok(None)

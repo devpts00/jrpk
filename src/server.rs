@@ -50,10 +50,12 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> Result<()> {
 }
 
 async fn process(stream: TcpStream) -> Result<()> {
+    info!("process");
     let mut framed: Framed<TcpStream, Codec> = Framed::with_capacity(stream, Codec::new(), 8192);
     while let Some(item) = framed.next().await {
         let request = item?;
         info!("request: {:?}", request);
+        /*
         match request.params {
             Params::Send { topic, key, partition, payload } => {
                 let text = payload.to_string();
@@ -64,6 +66,7 @@ async fn process(stream: TcpStream) -> Result<()> {
 
             }
         }
+         */
 
     }
     Ok(())
