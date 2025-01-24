@@ -30,10 +30,12 @@ pub struct Request {
     pub params: Params,
 }
 
+#[derive(Debug)]
 pub struct Codec {
     level: u8,
     position: usize,
-    count: usize,
+    quotes: bool,
+    escape: bool,
 }
 
 impl Codec {
@@ -41,8 +43,16 @@ impl Codec {
         Codec {
             level: 0,
             position: 0,
-            count: 0
+            quotes: false,
+            escape: false,
         }
+    }
+}
+
+impl Codec {
+    #[inline(always)]
+    fn dump(&self, b: u8) {
+        trace!("char: '{}', state: {:?}", b as char, self);
     }
 }
 
@@ -52,43 +62,47 @@ impl Decoder for Codec {
     type Error = anyhow::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<Self::Item>> {
-        let mut escape = false;
-        trace!("buf, length: {}", src.len());
         while self.position < src.len() {
-            if escape {
-                escape = false;
-                self.position += 1;
-            } else {
-                match src[self.position] {
-                    b'\\' => {
-                        escape = true;
+            let b = src[self.position];
+            self.dump(b);
+            match b {
+                _ if self.escape => {
+                    self.escape = false;
+                    self.position += 1;
+                }
+                b'\\' if self.quotes => {
+                    self.escape = true;
+                    self.position += 1;
+                }
+                b'"' => {
+                    self.quotes = !self.quotes;
+                    self.position += 1;
+                }
+                b'{' if !self.quotes => {
+                    if self.level == 0 && self.position > 0 {
+                        trace!("buf, skip: {}", self.position);
+                        let _ = src.split_to(self.position);
+                        self.position = 1;
+                    } else {
                         self.position += 1;
                     }
-                    b'{' => {
-                        if self.level == 0 && self.position > 0 {
-                            trace!("buf, skip: {}", self.position);
-                            let _ = src.split_to(self.position);
-                        }
-                        self.level += 1;
-                        self.position += 1;
+                    self.level += 1;
+                }
+                b'}' if !self.quotes => {
+                    self.level -= 1;
+                    self.position += 1;
+                    if self.level == 0 {
+                        trace!("buf, frame: {}", self.position);
+                        let frame = src.split_to(self.position);
+                        let buf = frame.get(0..self.position)
+                            .ok_or(anyhow!("bad slice indices"))?;
+                        let json = serde_json::from_slice(buf)?;
+                        self.position = 0;
+                        return Ok(Some(json))
                     }
-                    b'}' => {
-                        self.level -= 1;
-                        self.position += 1;
-                        if self.level == 0 {
-                            trace!("buf, frame: {}", self.position);
-                            let frame = src.split_to(self.position);
-                            let buf = frame.get(0..self.position)
-                                .ok_or(anyhow!("bad slice indices"))?;
-                            let json = serde_json::from_slice(buf)?;
-                            self.position = 0;
-                            self.count += 1;
-                            return Ok(Some(json))
-                        }
-                    }
-                    _ => {
-                        self.position += 1;
-                    }
+                }
+                _ => {
+                    self.position += 1;
                 }
             }
         }
