@@ -23,11 +23,11 @@ pub async fn send_file(file: PathBuf, target: HostPort) -> io::Result<()> {
 pub async fn send_text(target: HostPort) -> io::Result<()> {
     info!("client, target: {:?}", target);
     let text = r#"
-        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "key": "john", "payload": { "first": "john", "last": "doe", "age": 35 } } }
-        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "key": "john", "payload": { "first": "john", "last": "doe", "age": 35 } } }
-        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "partition": 1, "payload": { "first": "john", "last": "doe", "age": 35 } } }
-        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "partition": 2, "payload": { "first": "john", "last": "doe", "age": 35 } } }
-        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "partition": 3, "payload": { "first": "{john}", "last": "\"doe 15\u00f8C", "age": 35 } } }
+        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "key": "john", "data": { "first": "john", "last": "doe", "age": 35 } } }
+        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "key": "john", "data": { "first": "john", "last": "doe", "age": 35 } } }
+        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "partition": 1, "data": { "first": "john", "last": "doe", "age": 35 } } }
+        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "partition": 2, "data": { "first": "john", "last": "doe", "age": 35 } } }
+        { "jsonrpc": "2.0", "id": 1, "method": "send", "params": { "topic": "posts", "partition": 3, "data": { "first": "{john}", "last": "\"doe 15\u00f8C", "age": 35 } } }
     "#;
     let stream = TcpStream::connect(target.to_string()).await?;
     let mut writer = BufWriter::new(stream);

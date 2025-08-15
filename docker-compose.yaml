@@ -3,13 +3,25 @@ volumes:
 
 services:
 
+  kfk:
+    image: apache/kafka
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kfk:9092
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+
   rst:
     profiles:
       - jrpk
     build: .
     environment:
+      - RUST_BACKTRACE=full
       - TOKIO_CONSOLE_BIND=0.0.0.0:6669
-      - RUST_LOG=trace,tokio::task=info
+      - RUST_LOG=debug,tokio::task=info
     volumes:
       - .:/jrpk
       - cargo:/usr/local/cargo

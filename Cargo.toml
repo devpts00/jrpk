@@ -7,11 +7,18 @@ edition = "2021"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 console-subscriber = "0.4.1"
-anyhow = "1.0.95"
+anyhow = "1.0.98"
 clap = { version = "4.5.26", features = ["derive"] }
-tokio = { version = "1.43.0", features = ["full", "tracing"] }
-tokio-util = "0.7.13"
+futures = "0.3.31"
+tokio = { version = "1.47.1", features = ["full", "tracing"] }
+tokio-util = { version = "0.7.15", features = ["full", "codec"] }
 tokio-stream = "0.1.17"
-serde_json = "1.0.135"
-serde = { version = "1.0.217", features = ["derive"] }
-rdkafka = "0.37.0"
+serde_json = { version = "1.0.142", features = ["raw_value"] }
+serde = { version = "1.0.219", features = ["derive"] }
+dashmap = "6.1.0"
+rskafka = "0.6.0"
+moka = { version = "0.12.10", features = ["future"] }
+actson = { version = "2.1.0", features = ["tokio", "serde_json"] }
+bytes = "1.10.1"
+btoi = "0.5.0"
+log = "0.4.27"
