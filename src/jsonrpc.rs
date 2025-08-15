@@ -20,36 +20,42 @@ pub enum JrpCodec {
 #[derive(Debug, Deserialize)]
 pub struct JrpRecord {
     key: Option<String>,
-    value: Box<Value>,
+    value: Box<RawValue>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "method", content = "params")]
-pub enum JrpParams {
-    #[serde(rename = "send")]
+pub struct JrpSend {
+    pub topic: String,
+    pub partition: i32,
+    pub records: Vec<JrpRecord>,
+    pub codec: Option<JrpCodec>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JrpFetch {
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub bytes: Range<i32>,
+    pub max_wait_ms: Option<i32>,
+    pub codec: Option<JrpCodec>,
+}
+
+#[derive(Debug, Deserialize)]
+//#[serde(tag = "method")]
+pub enum JrpRequest {
+    //#[serde(rename = "send")]
     Send {
-        topic: String,
-        partition: i32,
-        codec: Option<JrpCodec>,
-        records: Vec<JrpRecord>,
+        jsonrpc: String,
+        id: usize,
+        params: JrpSend,
     },
-    #[serde(rename = "fetch")]
+    //#[serde(rename = "fetch")]
     Fetch {
-        topic: String,
-        partition: i32,
-        offset: i64,
-        bytes: Range<i32>,
-        max_wait_ms: Option<i32>,
-        codec: Option<JrpCodec>,
+        jsonrpc: String,
+        id: usize,
+        params: JrpFetch,
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct JrpRequest {
-    //pub jsonrpc: String,
-    pub id: usize,
-    #[serde(flatten)]
-    pub params: JrpParams,
 }
 
 #[derive(Debug, Serialize)]

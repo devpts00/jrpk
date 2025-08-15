@@ -1,14 +1,13 @@
-use std::future::Future;
+use crate::jsonrpc::JrpRequest;
+use crate::util::{handle_future, unwrap_err, Request, Response};
+use moka::future::Cache;
+use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
+use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
-use moka::future::Cache;
-use rskafka::client::Client;
-use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, trace};
-use crate::jsonrpc::{JrpParams, JrpRequest};
-use crate::util::{handle_future, unwrap_err, Request, Response};
 
 pub enum KfkRequest {
     Send {

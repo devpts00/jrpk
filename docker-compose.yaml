@@ -19,7 +19,7 @@ services:
       - jrpk
     build: .
     environment:
-      - RUST_BACKTRACE=full
+      #- RUST_BACKTRACE=full
       - TOKIO_CONSOLE_BIND=0.0.0.0:6669
       - RUST_LOG=debug,tokio::task=info
     volumes:

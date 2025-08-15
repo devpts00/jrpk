@@ -1,26 +1,26 @@
-use std::alloc::{Layout, System};
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 use crate::args::HostPort;
-use crate::jsonrpc::{JrpError, JrpFramer, JrpParams, JrpRequest, JrpResponse};
+use crate::jsonrpc::{JrpError, JrpFramer, JrpRequest, JrpResponse};
 use crate::kafka::{KfkClientCache, KfkError, KfkRequest, KfkResponse};
 use crate::util::{handle_future, Response};
+use actson::options::JsonParserOptionsBuilder;
+use actson::tokio::AsyncBufReaderJsonFeeder;
+use actson::{JsonEvent, JsonParser};
 use anyhow::{anyhow, Result};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
+use rskafka::chrono::{DateTime, NaiveDateTime, Utc};
 use rskafka::client::ClientBuilder;
+use rskafka::record::Record;
+use serde_json::Number;
+use std::alloc::{Layout, System};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use actson::{JsonEvent, JsonParser};
-use actson::options::JsonParserOptionsBuilder;
-use actson::tokio::AsyncBufReaderJsonFeeder;
-use rskafka::chrono::{DateTime, NaiveDateTime, Utc};
-use rskafka::record::Record;
-use serde_json::Number;
 use tokio::io::BufReader;
-use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::OwnedReadHalf;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::Framed;
@@ -28,12 +28,16 @@ use tracing::{info, trace, warn};
 
 impl From<JrpRequest> for (String, i32, usize, KfkRequest) {
     fn from(req: JrpRequest) -> Self {
-        match req.params {
-            JrpParams::Send { topic, partition, codec, records } => {
-                ( topic, partition, req.id, KfkRequest::Send { records: vec!() } )
-            },
-            JrpParams::Fetch { topic, partition, offset, bytes, max_wait_ms, codec } => {
-                ( topic, partition, req.id, KfkRequest::Fetch { offset, bytes, max_wait_ms: max_wait_ms.unwrap_or(0) })
+        match req {
+            JrpRequest::Send { jsonrpc, id, params } => {
+                (params.topic, params.partition, id, KfkRequest::Send { records: vec!() } )
+            }
+            JrpRequest::Fetch { jsonrpc, id, params } => {
+                (params.topic, params.partition, id, KfkRequest::Fetch {
+                    offset: params.offset,
+                    bytes: params.bytes,
+                    max_wait_ms: params.max_wait_ms.unwrap_or(0)
+                })
             },
         }
     }
