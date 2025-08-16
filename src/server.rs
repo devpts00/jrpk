@@ -1,213 +1,53 @@
 use crate::args::HostPort;
-use crate::jsonrpc::{JrpError, JrpFramer, JrpRequest, JrpResponse};
-use crate::kafka::{KfkClientCache, KfkError, KfkRequest, KfkResponse};
-use crate::util::{handle_future, Response};
-use actson::options::JsonParserOptionsBuilder;
-use actson::tokio::AsyncBufReaderJsonFeeder;
-use actson::{JsonEvent, JsonParser};
-use anyhow::{anyhow, Result};
+use crate::jsonrpc::{JrpReq, JrpRsp};
+use crate::kafka::{KfkClientCache, KfkReq, KfkResIdSnd, KfkRsp, KfkResId};
+use crate::util::{handle_future, ReqId};
+use anyhow::{Result};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use rskafka::chrono::{DateTime, NaiveDateTime, Utc};
 use rskafka::client::ClientBuilder;
-use rskafka::record::Record;
-use serde_json::Number;
-use std::alloc::{Layout, System};
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::ptr::NonNull;
 use std::sync::Arc;
-use tokio::io::BufReader;
-use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::Framed;
-use tracing::{info, trace, warn};
+use tracing::{error, info, warn};
+use crate::codec::JsonCodec;
 
-impl From<JrpRequest> for (String, i32, usize, KfkRequest) {
-    fn from(req: JrpRequest) -> Self {
-        match req {
-            JrpRequest::Send { jsonrpc, id, params } => {
-                (params.topic, params.partition, id, KfkRequest::Send { records: vec!() } )
-            }
-            JrpRequest::Fetch { jsonrpc, id, params } => {
-                (params.topic, params.partition, id, KfkRequest::Fetch {
-                    offset: params.offset,
-                    bytes: params.bytes,
-                    max_wait_ms: params.max_wait_ms.unwrap_or(0)
-                })
-            },
-        }
-    }
-}
-
-impl From<KfkError> for JrpError {
-    fn from(err: KfkError) -> Self {
-        JrpError::new(err.to_string())
-    }
-}
-
-impl From<Response<KfkResponse, KfkError>> for JrpResponse {
-    fn from(value: Response<KfkResponse, KfkError>) -> Self {
-        let (id, result) = value;
-        match result {
-            Ok(KfkResponse::Send { offsets } ) => {
-                let json: serde_json::Value = offsets.into();
-                JrpResponse::new(id, Ok(json))
-            }
-            Ok(KfkResponse::Fetch { records_and_offsets, high_watermark}) => {
-                let x = serde_json::Value::Null;
-                JrpResponse::new(id, Ok(x))
-            }
-            Err(error) => {
-                JrpResponse::error(id, error.into())
-            }
-        }
-    }
-}
-
-async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JrpFramer>>, ctx: Arc<KfkClientCache>, snd: Sender<JrpResponse>) -> Result<()> {
+async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JsonCodec>>, ctx: Arc<KfkClientCache>, snd_res: KfkResIdSnd) -> Result<()> {
     info!("input, addr: {} - START", addr);
     while let Some(result) = stream.next().await {
-        let jrp_req = result?;
-        let (topic, partition, id, kfk_req) = jrp_req.into();
-        let snd = ctx.lookup_kafka_sender(topic, partition, 64).await?;
-        //snd.send().unwrap()
-        //snd.send(Msg::new(123, rsp.clone())).await?;
+        // if we cannot even decode frame - we disconnect
+        let bytes = result?;
+        let slice: &[u8] = bytes.as_ref();
+        match serde_json::from_slice::<JrpReq>(slice) {
+            Ok(jrp_req) => {
+                let id = jrp_req.id;
+                let topic = jrp_req.params.topic.to_owned();
+                let partition = jrp_req.params.partition;
+                let kfk_req: KfkReq = jrp_req.try_into()?;
+                let snd_req = ctx.lookup_kafka_sender(topic, partition, 64).await?;
+                snd_req.send(ReqId::new(id, kfk_req, snd_res.clone())).await?;
+            }
+            Err(err) => {
+                error!("error: {}", err);
+            }
+        }
     }
     info!("input, addr: {} - END", addr);
     Ok(())
 }
 
-async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream, JrpFramer>, JrpResponse>, mut rcv: Receiver<JrpResponse>) -> Result<()> {
+async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>, mut res_id_rcv: Receiver<KfkResId>) -> Result<()> {
     info!("output, addr: {} - START", addr);
-    while let Some(rsp) = rcv.recv().await {
-        sink.send(rsp).await?;
+    while let Some(res_id) = res_id_rcv.recv().await {
+        let rsp_jrp: JrpRsp = res_id.into();
+        sink.send(rsp_jrp).await?;
     }
     info!("output, addr: {} - END", addr);
     Ok(())
 }
-
-#[derive(Copy, Clone)]
-enum Context {
-    None,
-    Jsonrpc,
-    Id,
-    Method,
-    Params,
-    Topic,
-    Partition,
-    Key,
-    Data,
-}
-
-type JP = JsonParser<AsyncBufReaderJsonFeeder<OwnedReadHalf>>;
-
-async fn test_1(jp: &mut JP, mut rcv: Receiver<JsonEvent>) -> Result<()> {
-    let s: String = "test".into();
-    let v: Vec<u8> = Vec::from(s);
-
-    while let Some(event) = rcv.recv().await {
-        let x = jp.current_str();
-    }
-    Ok(())
-}
-
-/*
-async fn run_input_loop2(addr: SocketAddr, rh: OwnedReadHalf, ctx: Arc<KfkClientCache>, snd: Sender<JrpResponse>) -> Result<()> {
-    let br = BufReader::new(rh);
-    let abr = actson::tokio::AsyncBufReaderJsonFeeder::new(br);
-    let opts = JsonParserOptionsBuilder::default().with_streaming(true).build();
-
-    let jp = JsonParser::new_with_options(abr, opts);
-    let rjp = RefCell::new(jp);
-
-    let mut field = Context::None;
-    let mut object = Context::None;
-
-
-
-    let (sender, receiver) = mpsc::channel::<JsonEvent>(64);
-
-
-
-    while let Some(event) = rjp.borrow_mut().next_event()? {
-        match event {
-            JsonEvent::NeedMoreInput => {
-                trace!("need more input");
-                rjp.borrow_mut().feeder.fill_buf().await?;
-            }
-            _ => {
-                sender.send(event).await?;
-            }
-            JsonEvent::StartObject => {
-                trace!("start object");
-                object = field;
-            }
-            JsonEvent::EndObject => {
-                trace!("end object");
-                object = Context::None;
-            }
-            JsonEvent::StartArray => {
-                trace!("start array");
-            }
-            JsonEvent::EndArray => {
-                trace!("end array");
-            }
-            JsonEvent::FieldName => {
-                let name = jp.current_str()?;
-                trace!("field name: {}", name);
-                match object {
-                    Context::Params => {
-                        if name == "topic" {
-                            field = Context::Topic;
-
-                        } else if name == "partition" {
-                            field = Context::Partition
-                        } else if name == "key" {
-                            field = Context::Key
-                        } else if name == "data" {
-                            field = Context::Data
-                        }
-                    }
-                    Context::Data => {
-                        // TODO
-                    }
-                    _ => {
-                        warn!("unexpected field {}", name);
-                    }
-                }
-            }
-            JsonEvent::ValueString => {
-                let text = jp.current_str()?;
-                trace!("value string: {}", text);
-            }
-            JsonEvent::ValueInt => {
-                let n: i64 = jp.current_int()?;
-                trace!("value int: {}", n);
-            }
-            JsonEvent::ValueFloat => {
-                let f: f64 = jp.current_float()?;
-                trace!("value float: {}", f);
-            }
-            JsonEvent::ValueTrue => {
-                let b: bool = true;
-                trace!("value bool: {}", b);
-            }
-            JsonEvent::ValueFalse => {
-                let b = false;
-                trace!("value bool: {}", b);
-            }
-            JsonEvent::ValueNull => {
-                trace!("value null");
-            }
-        }
-    }
-    Ok(())
-}
- */
 
 pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> Result<()> {
 
@@ -222,18 +62,20 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> Result<()> {
     loop {
         let (stream, addr) = listener.accept().await?;
         info!("accepted: {:?}", addr);
-        let (rh, wh) = stream.into_split();
-        let (snd, rcv) = mpsc::channel::<JrpResponse>(1024);
-        // tokio::spawn(
-        //     handle_future(
-        //         run_input_loop2(addr, rh, ctx.clone(), snd)
-        //     )
-        // );
-        //
-        // tokio::spawn(
-        //     handle_future(
-        //         run_output_loop(addr, sink, rcv)
-        //     )
-        // );
+
+        let codec = JsonCodec::new();
+        let framed = Framed::new(stream, codec);
+        let (sink, stream) = framed.split();
+        let (snd_kfk, rcv_kfk) = mpsc::channel::<KfkResId>(1024);
+        tokio::spawn(
+            handle_future(
+                run_input_loop(addr, stream, ctx.clone(), snd_kfk),
+            )
+        );
+        tokio::spawn(
+            handle_future(
+                run_output_loop(addr, sink, rcv_kfk)
+            )
+        );
     }
 }

@@ -1,15 +1,17 @@
-use crate::jsonrpc::JrpRequest;
-use crate::util::{handle_future, unwrap_err, Request, Response};
+use std::fmt::{Display, Formatter};
+use crate::util::{handle_future, unwrap_err, ReqId, ResId};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
+use anyhow::anyhow;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, trace};
+use crate::jsonrpc::{JrpMethod, JrpReq};
 
-pub enum KfkRequest {
+pub enum KfkReq {
     Send {
         records: Vec<Record>
     },
@@ -20,68 +22,147 @@ pub enum KfkRequest {
     }
 }
 
-pub enum KfkResponse {
+impl KfkReq {
+    pub fn send(records: Vec<Record>) -> Self {
+        KfkReq::Send { records }
+    }
+    pub fn fetch(offset: i64, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+        KfkReq::Fetch { offset, bytes, max_wait_ms }
+    }
+}
+
+impl Display for KfkReq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KfkReq::Send { records } => {
+                write!(f, "request: send, records: {}", records.len())
+            }
+            KfkReq::Fetch { offset, bytes, max_wait_ms } => {
+                write!(f, "request: fetch, offset: {}, bytes: [{}..{}), max_wait_ms: {}", offset, bytes.start, bytes.end, max_wait_ms)
+            }
+        }
+    }
+}
+
+impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
+    type Error = anyhow::Error;
+    fn try_from(req: JrpReq<'a>) -> Result<Self, Self::Error> {
+        match req.method {
+            JrpMethod::Send => {
+                let jrp_records = req.params.records
+                    .ok_or(anyhow!("records is missing"))?;
+                let records: Vec<Record> = jrp_records.into_iter()
+                    .map(|x| x.into())
+                    .collect();
+                Ok(KfkReq::send(records))
+            }
+            JrpMethod::Fetch => {
+                let offset = req.params.offset.ok_or(anyhow!("offset is missing"))?;
+                let bytes = req.params.bytes.ok_or(anyhow!("bytes is missing"))?;
+                let max_wait_ms = req.params.max_wait_ms.ok_or(anyhow!("max_wait_ms is missing"))?;
+                Ok(KfkReq::fetch(offset, bytes, max_wait_ms))
+            }
+        }
+    }
+}
+
+pub enum KfkRsp {
     Send {
         offsets: Vec<i64>,
     },
     Fetch {
-        records_and_offsets: Vec<RecordAndOffset>,
+        recs_and_offsets: Vec<RecordAndOffset>,
         high_watermark: i64,
     }
 }
 
-pub type KfkError = rskafka::client::error::Error;
+impl KfkRsp {
+    fn send(offsets: Vec<i64>) -> Self {
+        KfkRsp::Send { offsets }
+    }
+    fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64) -> Self {
+        KfkRsp::Fetch { recs_and_offsets, high_watermark }
+    }
+}
 
-pub type KfkResponseSender = Sender<Response<KfkResponse, KfkError>>;
-pub type KfkResponseReceiver = Receiver<Response<KfkResponse, KfkError>>;
-pub type KfkRequestSender = Sender<Request<KfkRequest, KfkResponse, KfkError>>;
-pub type KfkRequestReceiver = Receiver<Request<KfkRequest, KfkResponse, KfkError>>;
-
-async fn run_kafka_loop(pc: PartitionClient, mut rcv: KfkRequestReceiver) -> anyhow::Result<()> {
-    info!("loop, topic: {}, partition: {} - START", pc.topic(), pc.partition());
-    while let Some((id, req, snd)) = rcv.recv().await {
-        match req {
-            KfkRequest::Send { records } => {
-                match pc.produce(records, Compression::Gzip).await {
-                    Ok(offsets) => {
-                        let rsp = KfkResponse::Send { offsets };
-                        snd.send((id, Ok(rsp))).await?;
-                    }
-                    Err(error) => {
-                        snd.send((id, Err(error))).await?;
-                    }
-                }
-            },
-            KfkRequest::Fetch { offset, bytes, max_wait_ms } => {
-                match pc.fetch_records(offset, bytes, max_wait_ms).await {
-                    Ok((records_and_offsets, high_watermark)) => {
-                        let rps = KfkResponse::Fetch { records_and_offsets, high_watermark };
-                        snd.send((id, Ok(rps))).await?;
-                    }
-                    Err(error) => {
-                        snd.send((id, Err(error))).await?;
-                    }
-                }
+impl Display for KfkRsp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KfkRsp::Send { offsets } => {
+                write!(f, "response: send, offsets: {}", offsets.len())
+            }
+            KfkRsp::Fetch { recs_and_offsets, high_watermark } => {
+                write!(f, "response: fetch, records: {}, high_watermark: {}", recs_and_offsets.len(), high_watermark)
             }
         }
     }
-    info!("loop, topic: {}, partition: {} - END", pc.topic(), pc.partition());
+}
+
+pub type KfkError = rskafka::client::error::Error;
+pub type KfkReqId = ReqId<KfkReq, KfkRsp, KfkError>;
+pub type KfkResId = ResId<KfkRsp, KfkError>;
+pub type KfkResIdSnd = Sender<KfkResId>;
+pub type KfkResIdRcv = Receiver<KfkResId>;
+pub type KfkReqIdSnd = Sender<KfkReqId>;
+pub type KfkReqIdRcv = Receiver<KfkReqId>;
+
+async fn run_kafka_loop(partition_client: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> anyhow::Result<()> {
+    info!("loop, topic: {}, partition: {} - START", partition_client.topic(), partition_client.partition());
+    while let Some(req_id) = req_id_rcv.recv().await {
+        trace!("loop, topic: {}, partition: {}, request: {}", partition_client.topic(), partition_client.partition(), req_id);
+        let id = req_id.id;
+        let req = req_id.req;
+        let res_id_snd = req_id.res_id_snd;
+        let res_rsp = match req {
+            KfkReq::Send { records } => {
+                partition_client.produce(records, Compression::Gzip).await
+                    .map(|offsets| KfkRsp::send(offsets))
+            }
+            KfkReq::Fetch { offset, bytes, max_wait_ms } => {
+                partition_client.fetch_records(offset, bytes, max_wait_ms).await
+                    .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark))
+            }
+        };
+        let res_id = KfkResId::new(id, res_rsp);
+        trace!("loop, topic: {}, partition: {}, request: {}", partition_client.topic(), partition_client.partition(), res_id);
+        res_id_snd.send(res_id).await?;
+    }
+    info!("loop, topic: {}, partition: {} - END", partition_client.topic(), partition_client.partition());
     Ok(())
+}
+
+#[derive(Eq, Hash, PartialEq)]
+struct KfkClientKey {
+    pub topic: String,
+    pub partition: i32,
+}
+
+impl KfkClientKey {
+    fn new(topic: String, partition: i32) -> Self {
+        KfkClientKey { topic, partition }
+    }
+}
+
+impl Clone for KfkClientKey {
+    fn clone(&self) -> Self {
+        KfkClientKey::new(self.topic.clone(), self.partition)
+    }
 }
 
 pub struct KfkClientCache {
     client: Client,
-    cache: Cache<(String, i32), Sender<Request<KfkRequest, KfkResponse, KfkError>>>,
+    cache: Cache<KfkClientKey, KfkReqIdSnd>,
 }
 
 impl KfkClientCache {
+
     pub fn new(client: Client, capacity: u64) -> Self {
         Self { client, cache: Cache::new(capacity) }
     }
 
-    async fn init_kafka_loop(&self, topic: String, partition: i32, capacity: usize) -> anyhow::Result<KfkRequestSender> {
-        info!("init, topic: {}, partition: {}, capacity: {}", topic, partition, capacity);
-        let pc = self.client.partition_client(topic, partition, UnknownTopicHandling::Retry).await?;
+    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> anyhow::Result<KfkReqIdSnd> {
+        info!("init, topic: {}, partition: {}, capacity: {}", key.topic, key.partition, capacity);
+        let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Retry).await?;
         let (snd, rcv) = mpsc::channel(capacity);
         tokio::spawn(
             handle_future(
@@ -91,10 +172,11 @@ impl KfkClientCache {
         Ok(snd)
     }
 
-    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> anyhow::Result<Sender<Request<KfkRequest, KfkResponse, KfkError>>> {
+    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> anyhow::Result<KfkReqIdSnd> {
         trace!("lookup, topic: {}, partition: {}", topic, partition);
-        let init = self.init_kafka_loop(topic.clone(), partition, capacity);
-        self.cache.try_get_with((topic, partition), init).await
+        let key = KfkClientKey::new(topic, partition);
+        let init = self.init_kafka_loop(&key, capacity);
+        self.cache.try_get_with_by_ref(&key, init).await
             .map_err(unwrap_err)
     }
 }

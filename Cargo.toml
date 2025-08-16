@@ -17,8 +17,6 @@ serde_json = { version = "1.0.142", features = ["raw_value"] }
 serde = { version = "1.0.219", features = ["derive"] }
 dashmap = "6.1.0"
 rskafka = "0.6.0"
-moka = { version = "0.12.10", features = ["future"] }
-actson = { version = "2.1.0", features = ["tokio", "serde_json"] }
+moka = { version = "0.12.10", features = ["future", "async-lock", "sync"] }
 bytes = "1.10.1"
-btoi = "0.5.0"
 log = "0.4.27"

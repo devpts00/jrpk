@@ -4,6 +4,7 @@ mod client;
 mod util;
 mod jsonrpc;
 mod kafka;
+mod codec;
 
 use std::sync::Once;
 use std::time::Duration;
