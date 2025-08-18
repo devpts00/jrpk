@@ -1,15 +1,13 @@
-use std::collections::BTreeMap;
-use std::error::Error;
+use std::borrow::Borrow;
 use crate::kafka::{KfkError, KfkResId, KfkRsp};
+use rskafka::chrono::DateTime;
+use rskafka::record::{Record, RecordAndOffset};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
+use std::collections::BTreeMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
-use rskafka::chrono::{DateTime, Utc};
-use rskafka::record::{Record, RecordAndOffset};
-use tokio_util::bytes::{Buf, BufMut};
-use tokio_util::codec::{Decoder, Encoder};
 
 fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
     match value {
@@ -37,6 +35,14 @@ pub enum JrpCodec {
     Base64
 }
 
+impl Display for JrpCodec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JrpCodec::Base64 => f.write_str("Base64"),
+        }
+    }
+}
+
 /// JSONRPC send record captures payload as references to raw JSON,
 /// because there is no way to turn RawValue into Vec<u8>.
 #[derive(Debug, Deserialize)]
@@ -45,6 +51,24 @@ pub struct JrpRecSend<'a> {
     key: Option<&'a RawValue>,
     #[serde(borrow)]
     value: Option<&'a RawValue>,
+}
+
+impl Display for JrpRecSend<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{ ")?;
+        let mut comma = false;
+        if let Some(key) = self.key {
+            write!(f, "key: [{}]", key.get().len())?;
+            comma = true;
+        }
+        if let Some(value) = self.value {
+            if comma {
+                write!(f, ", ")?;
+            }
+            write!(f, "value: [{}]", value.get().len())?;
+        }
+        write!(f, " }}")
+    }
 }
 
 /// JSONRPC input record can always be created consuming Kafka record.
@@ -67,6 +91,20 @@ pub struct JrpRecFetch {
     value: Option<Box<RawValue>>,
 }
 
+impl Display for JrpRecFetch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{ ")?;
+        write!(f, "offset: {}", self.offset)?;
+        if let Some(key) = self.key.as_ref() {
+            write!(f, ", key: [{}]", key.get().len())?;
+        }
+        if let Some(value) = self.value.as_ref() {
+            write!(f, ", value: [{}]", value.get().len())?;
+        }
+        write!(f, " }}")
+    }
+}
+
 /// JSONRPC output record can fail to be created from Kafka record.
 /// Kafka bytes might not be UTF-8 or JSON.
 impl TryFrom<RecordAndOffset> for JrpRecFetch {
@@ -86,6 +124,15 @@ pub enum JrpMethod {
     Send, Fetch
 }
 
+impl Display for JrpMethod {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JrpMethod::Send => f.write_str("send"),
+            JrpMethod::Fetch => f.write_str("fetch"),
+        }
+    }
+}
+
 /// JSONRPC params is a superset of arguments for all methods.
 /// That is a consequence of RawValue usage, that requires same structure of Rust and JSON.
 #[derive(Debug, Deserialize)]
@@ -99,6 +146,26 @@ pub struct JrpParams<'a> {
     pub max_wait_ms: Option<i32>,
 }
 
+impl Display for JrpParams<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{ ")?;
+        write!(f, "topic: {}, partition: {}", self.topic, self.partition)?;
+        if let Some(records) = self.records.as_ref() {
+            write!(f, ", records: [{}]", records.len())?;
+        }
+        if let Some(offset) = self.offset {
+            write!(f, ", offset: {}", offset)?;
+        }
+        if let Some(bytes) = self.bytes.as_ref() {
+            write!(f, ", bytes: [{}..{})", bytes.start, bytes.end)?;
+        }
+        if let Some(max_wait_ms) = self.max_wait_ms {
+            write!(f, ", max_wait_ms: {}", max_wait_ms)?;
+        }
+        write!(f, " }}")
+    }
+}
+
 /// JSONRPC request.
 #[derive(Debug, Deserialize)]
 pub struct JrpReq<'a> {
@@ -106,6 +173,12 @@ pub struct JrpReq<'a> {
     pub id: usize,
     pub method: JrpMethod,
     pub params: JrpParams<'a>,
+}
+
+impl Display for JrpReq<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{ jsonrpc: {}, id: {}, method: {}, params: {} }}", self.jsonrpc, self.id, self.method, self.params)
+    }
 }
 
 /// JSONRPC error.
@@ -122,7 +195,7 @@ impl JrpError {
 
 impl Display for JrpError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "error: {}", self.message)
+        Display::fmt(&self.message, f)
     }
 }
 
@@ -169,6 +242,31 @@ impl TryFrom<KfkRsp> for JrpRspData {
                 let res_records: Result<Vec<JrpRecFetch>, anyhow::Error> = recs_and_offsets.into_iter()
                     .map(|ro| { ro.try_into() }).collect();
                 res_records.map(|records| JrpRspData::Fetch { records, high_watermark })
+            }
+        }
+    }
+}
+
+impl Display for JrpRspData {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JrpRspData::Send { offsets } => {
+                write!(f, "{{ offsets: {:?} }}", offsets)
+            }
+            JrpRspData::Fetch { records, high_watermark } => {
+                write!(f, "{{ ")?;
+                write!(f, "offsets: [")?;
+                let mut comma = false;
+                for r in records {
+                    if comma {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", r)?;
+                    comma = true;
+                }
+                write!(f, "]")?;
+                write!(f, ", high_watermark: {}", high_watermark)?;
+                write!(f, " }}")
             }
         }
     }
@@ -223,15 +321,18 @@ impl Serialize for JrpRsp {
     }
 }
 
+impl Display for JrpRsp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self.result {
+            Ok(data) => write!(f, "{{ id: {}, result: {} }}", self.id, data),
+            Err(error) => write!(f, "{{ id: {}, error: {} }}", self.id, error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::init_tracing;
-    use crate::jsonrpc::{JrpReq};
     use std::io::Read;
-    use tokio_util::bytes::BytesMut;
-    use tokio_util::codec::Decoder;
-    use tracing::{error, info};
-    use crate::codec::JsonCodec;
 
     fn read(name: &str) -> Vec<u8> {
         let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
