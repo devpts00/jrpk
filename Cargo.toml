@@ -20,3 +20,4 @@ rskafka = "0.6.0"
 moka = { version = "0.12.10", features = ["future", "async-lock", "sync"] }
 bytes = "1.10.1"
 log = "0.4.27"
+substring = "1.4.5"
