@@ -6,18 +6,18 @@ mod jsonrpc;
 mod kafka;
 mod codec;
 
+use crate::args::Cmd;
+use crate::client::send_file;
+use crate::server::listen;
+use crate::util::{handle_future, join_with_signal};
+use clap::Parser;
 use std::sync::Once;
 use std::time::Duration;
 use tokio;
 use tracing::level_filters::LevelFilter;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
-use clap::Parser;
-use tracing_subscriber::fmt::format::FmtSpan;
-use crate::args::Cmd;
-use crate::client::send_text;
-use crate::server::listen;
-use crate::util::{handle_future, join_with_signal};
 
 
 async fn run(args: args::Args) {
@@ -33,7 +33,7 @@ async fn run(args: args::Args) {
             Cmd::Client { file, target} => {
                 tokio::spawn(
                     handle_future(
-                        send_text(target)
+                        send_file(file, target)
                     )
                 )
             }

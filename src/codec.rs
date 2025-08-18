@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::trace;
+use tracing::{debug, trace};
 use crate::jsonrpc::JrpRsp;
 
 #[derive(Debug)]
@@ -35,6 +35,7 @@ impl Decoder for JsonCodec {
     type Error = anyhow::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<Self::Item>> {
+        trace!("decode, length: {}", src.len());
         while self.position < src.len() {
             let b = src[self.position];
             self.dump(b);
@@ -53,7 +54,7 @@ impl Decoder for JsonCodec {
                 }
                 b'{' if !self.quotes => {
                     if self.level == 0 && self.position > 0 {
-                        trace!("buf, skip: {}", self.position);
+                        trace!("decode, discard: {}", self.position);
                         src.advance(self.position);
                         self.position = 1;
                     } else {
@@ -65,9 +66,9 @@ impl Decoder for JsonCodec {
                     self.level -= 1;
                     self.position += 1;
                     if self.level == 0 {
-                        trace!("buf, frame: {}", self.position);
-                        self.position = 0;
                         let frame = src.split_to(self.position).freeze();
+                        trace!("decode, frame: {}", self.position);
+                        self.position = 0;
                         return Ok(Some(frame))
                     }
                 }
@@ -77,7 +78,7 @@ impl Decoder for JsonCodec {
             }
         }
         if self.level == 0 && src.len() > 0 {
-            trace!("discard: {}", src.len());
+            trace!("decode, discard: {}", src.len());
             src.advance(src.len());
         }
         Ok(None)

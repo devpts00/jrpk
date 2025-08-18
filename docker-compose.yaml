@@ -5,6 +5,8 @@ services:
 
   kfk:
     image: apache/kafka
+    profiles:
+      - kafka
     environment:
       - KAFKA_NODE_ID=1
       - KAFKA_PROCESS_ROLES=broker,controller
@@ -13,6 +15,31 @@ services:
       - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "9092" ]
+      interval: 10s
+
+  kfk-init:
+    image: apache/kafka
+    profiles:
+      - kafka
+    command: ["./kafka-topics.sh", "--bootstrap-server", "kfk:9092", "--create", "--topic", "posts"]
+    working_dir: "/opt/kafka/bin"
+    depends_on:
+      kfk:
+        condition: service_healthy
+
+  kwl:
+    image: rsmnarts/kowl
+    profiles:
+      - kafka
+    ports:
+      - "127.0.0.1:8181:8080"
+    environment:
+      - KAFKA_BROKERS=kfk:9092
+    depends_on:
+      kfk-init:
+        condition: service_completed_successfully
 
   rst:
     profiles:
@@ -28,9 +55,13 @@ services:
     working_dir: /jrpk
 
   trc:
+    profiles:
+      - jrpk
     build: .
     command: ['tokio-console', 'http://jrpk:6669']
 
   cli:
+    profiles:
+      - jrpk
     build: .
     command: ['curl', 'http://jrpk:1133', '<<<', '12345']

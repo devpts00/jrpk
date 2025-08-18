@@ -76,7 +76,7 @@ impl <'a> Into<Record> for JrpRecSend<'a> {
     fn into(self) -> Record {
         Record {
             key: bytes_from_raw_value_ref(self.key),
-            value: bytes_from_raw_value_ref(self.key),
+            value: bytes_from_raw_value_ref(self.value),
             headers: BTreeMap::new(),
             timestamp: DateTime::default(),
         }

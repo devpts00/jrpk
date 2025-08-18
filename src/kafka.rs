@@ -9,7 +9,7 @@ use std::str::{from_utf8, Utf8Error};
 use anyhow::anyhow;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{info, trace};
+use tracing::{debug, info, trace};
 use crate::jsonrpc::{JrpMethod, JrpReq};
 
 
@@ -122,9 +122,9 @@ pub type KfkReqIdSnd = Sender<KfkReqId>;
 pub type KfkReqIdRcv = Receiver<KfkReqId>;
 
 async fn run_kafka_loop(partition_client: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> anyhow::Result<()> {
-    info!("kafka, topic: {}, partition: {} - START", partition_client.topic(), partition_client.partition());
+    info!("kafka, start: {}:{}", partition_client.topic(), partition_client.partition());
     while let Some(req_id) = req_id_rcv.recv().await {
-        trace!("kafka, request: {}", req_id);
+        debug!("kafka, request: {}", req_id);
         let id = req_id.id;
         let req = req_id.req;
         let res_id_snd = req_id.res_id_snd;
@@ -139,10 +139,10 @@ async fn run_kafka_loop(partition_client: PartitionClient, mut req_id_rcv: KfkRe
             }
         };
         let res_id = KfkResId::new(id, res_rsp);
-        trace!("kafka, response: {}", res_id);
+        debug!("kafka, response: {}", res_id);
         res_id_snd.send(res_id).await?;
     }
-    info!("kafka, topic: {}, partition: {} - END", partition_client.topic(), partition_client.partition());
+    info!("kafka, end: {}:{}", partition_client.topic(), partition_client.partition());
     Ok(())
 }
 
@@ -176,8 +176,8 @@ impl KfkClientCache {
     }
 
     async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> anyhow::Result<KfkReqIdSnd> {
-        info!("kafka, topic: {}, partition: {}, capacity: {} - INIT", key.topic, key.partition, capacity);
-        let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Retry).await?;
+        info!("kafka, init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
+        let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (snd, rcv) = mpsc::channel(capacity);
         tokio::spawn(
             handle_future(
@@ -188,7 +188,7 @@ impl KfkClientCache {
     }
 
     pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> anyhow::Result<KfkReqIdSnd> {
-        trace!("kafka, topic: {}, partition: {} - LOOKUP", topic, partition);
+        debug!("kafka, lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(&key, capacity);
         self.cache.try_get_with_by_ref(&key, init).await

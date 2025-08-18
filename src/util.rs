@@ -12,7 +12,7 @@ use substring::Substring;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub struct ResId<RSP, E: Error> {
     pub id: usize,
@@ -58,7 +58,7 @@ impl <REQ, RES, E: Error> ReqId<REQ, RES, E> {
 }
 
 impl <REQ: Display, RSP, E: Error> Display for ReqId<REQ, RSP, E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "id: {}, {}", self.id, self.req)
     }
 }
@@ -72,7 +72,7 @@ pub fn unwrap_err(ae: Arc<anyhow::Error>) -> anyhow::Error {
 pub fn handle_result<T: Default + Debug, E: Display> (r: Result<T, E>) -> T {
     match r {
         Ok(value) => {
-            info!("done, success: {:?}", value);
+            debug!("done, success: {:?}", value);
             value
         }
         Err(error) => {
