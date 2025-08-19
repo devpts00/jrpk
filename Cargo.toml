@@ -5,20 +5,16 @@ edition = "2021"
 
 [dependencies]
 tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
-console-subscriber = "0.4.1"
-anyhow = "1.0.98"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 clap = { version = "4.5.26", features = ["derive"] }
 futures = "0.3.31"
 tokio = { version = "1.47.1", features = ["full", "tracing"] }
 tokio-util = { version = "0.7.15", features = ["full", "codec"] }
-tokio-stream = "0.1.17"
 serde_json = { version = "1.0.142", features = ["raw_value"] }
 serde = { version = "1.0.219", features = ["derive"] }
-dashmap = "6.1.0"
 rskafka = "0.6.0"
 moka = { version = "0.12.10", features = ["future", "async-lock", "sync"] }
 bytes = "1.10.1"
 log = "0.4.27"
-substring = "1.4.5"
 hex = "0.4.3"
+thiserror = "2.0.15"

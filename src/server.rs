@@ -2,22 +2,21 @@ use crate::args::HostPort;
 use crate::jsonrpc::{JrpReq, JrpRsp};
 use crate::kafka::{KfkClientCache, KfkReq, KfkResIdSnd, KfkRsp, KfkResId};
 use crate::util::{handle_future, ReqId};
-use anyhow::{Result};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
 use std::net::SocketAddr;
 use std::str::from_utf8_unchecked;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver};
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, trace};
 use crate::codec::JsonCodec;
+use crate::errors::JrpkResult;
 
-async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JsonCodec>>, ctx: Arc<KfkClientCache>, kfk_res_id_snd: KfkResIdSnd) -> Result<()> {
+async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JsonCodec>>, ctx: Arc<KfkClientCache>, kfk_res_id_snd: KfkResIdSnd) -> JrpkResult<()> {
     info!("input, start: {}", addr);
     while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect
@@ -44,7 +43,7 @@ async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStre
     Ok(())
 }
 
-async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>, mut kfk_res_id_rcv: Receiver<KfkResId>) -> Result<()> {
+async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>, mut kfk_res_id_rcv: Receiver<KfkResId>) -> JrpkResult<()> {
     info!("output, start: {}", addr);
     while let Some(kfk_res_id) = kfk_res_id_rcv.recv().await {
         let rsp_jrp: JrpRsp = kfk_res_id.into();
@@ -55,7 +54,7 @@ async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream,
     Ok(())
 }
 
-pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> Result<()> {
+pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> JrpkResult<()> {
 
     info!("server, kafka: {:?}", brokers);
     let bs: Vec<String> = brokers.iter().map(|hp| { hp.to_string() }).collect();

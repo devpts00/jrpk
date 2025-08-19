@@ -5,6 +5,7 @@ mod util;
 mod jsonrpc;
 mod kafka;
 mod codec;
+mod errors;
 
 use crate::args::Cmd;
 use crate::client::connect;
@@ -39,7 +40,6 @@ static TRACING: Once = Once::new();
 fn init_tracing() {
     TRACING.call_once(|| {
         tracing_subscriber::registry()
-            .with(console_subscriber::spawn())
             .with(tracing_subscriber::fmt::layer()
                 .pretty()
                 .with_file(false)

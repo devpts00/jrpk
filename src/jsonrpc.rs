@@ -7,6 +7,7 @@ use serde_json::value::RawValue;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::Range;
+use crate::errors::{JrpkError, JrpkResult};
 
 fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
     match value {
@@ -15,7 +16,7 @@ fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
     }
 }
 
-fn raw_value_from_bytes(bytes: Option<Vec<u8>>) -> Result<Option<Box<RawValue>>, anyhow::Error> {
+fn raw_value_from_bytes(bytes: Option<Vec<u8>>) -> Result<Option<Box<RawValue>>, JrpkError> {
     match bytes {
         Some(bytes) => {
             let string = String::from_utf8(bytes)?;
@@ -67,7 +68,7 @@ pub struct JrpRecFetch {
 /// JSONRPC output record can fail to be created from Kafka record.
 /// Kafka bytes might not be UTF-8 or JSON.
 impl TryFrom<RecordAndOffset> for JrpRecFetch {
-    type Error = anyhow::Error;
+    type Error = JrpkError;
     fn try_from(rec_and_offset: RecordAndOffset) -> Result<Self, Self::Error> {
         let offset = rec_and_offset.offset;
         let key = raw_value_from_bytes(rec_and_offset.record.key)?;
@@ -117,8 +118,8 @@ impl JrpError {
     }
 }
 
-impl From<anyhow::Error> for JrpError {
-    fn from(error: anyhow::Error) -> Self {
+impl From<JrpkError> for JrpError {
+    fn from(error: JrpkError) -> Self {
         JrpError::new(format!("{}", error))
     }
 }
@@ -150,14 +151,14 @@ impl JrpRspData {
 }
 
 impl TryFrom<KfkRsp> for JrpRspData {
-    type Error = anyhow::Error;
-    fn try_from(value: KfkRsp) -> Result<Self, Self::Error> {
+    type Error = JrpkError;
+    fn try_from(value: KfkRsp) -> JrpkResult<Self> {
         match value {
             KfkRsp::Send { offsets } => {
                 Ok(JrpRspData::send(offsets))
             }
             KfkRsp::Fetch { recs_and_offsets, high_watermark } => {
-                let res_records: Result<Vec<JrpRecFetch>, anyhow::Error> = recs_and_offsets.into_iter()
+                let res_records: JrpkResult<Vec<JrpRecFetch>> = recs_and_offsets.into_iter()
                     .map(|ro| { ro.try_into() }).collect();
                 res_records.map(|records| JrpRspData::Fetch { records, high_watermark })
             }
@@ -188,7 +189,7 @@ impl From<KfkResId> for JrpRsp {
         let id = value.id;
         match value.res {
             Ok(rsp) => {
-                let res_data: Result<JrpRspData, anyhow::Error> = rsp.try_into();
+                let res_data: JrpkResult<JrpRspData> = rsp.try_into();
                 match res_data {
                     Ok(data) => JrpRsp::ok(id, data),
                     Err(err) => JrpRsp::err(id, err.into())

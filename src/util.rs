@@ -1,10 +1,8 @@
-use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::{from_utf8};
 use std::sync::Arc;
-use anyhow::{anyhow};
 use rskafka::record::{Record, RecordAndOffset};
 use tokio::select;
 use tokio::sync::mpsc::Sender;
@@ -66,11 +64,11 @@ impl <REQ: Display, RSP, E: Error> Display for ReqId<REQ, RSP, E> {
     }
 }
 
-pub fn unwrap_err(ae: Arc<anyhow::Error>) -> anyhow::Error {
-    Arc::try_unwrap(ae).unwrap_or_else(|ae| {
-        anyhow!(ae.clone())
-    })
-}
+// pub fn unwrap_err(ae: Arc<anyhow::Error>) -> anyhow::Error {
+//     Arc::try_unwrap(ae).unwrap_or_else(|ae| {
+//         anyhow!(ae.clone())
+//     })
+// }
 
 pub fn handle_result<T: Default + Debug, E: Display> (ctx: &str, r: Result<T, E>) -> T {
     match r {

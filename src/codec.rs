@@ -4,6 +4,7 @@ use crate::jsonrpc::JrpRsp;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::trace;
+use crate::errors::{JrpkError, JrpkResult};
 
 #[derive(Debug)]
 pub struct JsonCodec {
@@ -40,9 +41,9 @@ impl JsonCodec {
 impl Decoder for JsonCodec {
 
     type Item = Bytes;
-    type Error = anyhow::Error;
+    type Error = JrpkError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<Self::Item>> {
+    fn decode(&mut self, src: &mut BytesMut) -> JrpkResult<Option<Self::Item>> {
         let text = from_utf8(src.as_ref()).unwrap();
         let length = min(20, text.len());
         trace!("decode, start, position: {}, length: {}, src: {}", self.position, src.len(), &text[..length]);
@@ -101,15 +102,15 @@ impl Decoder for JsonCodec {
 }
 
 impl Encoder<JrpRsp> for JsonCodec {
-    type Error = anyhow::Error;
-    fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    type Error = JrpkError;
+    fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> JrpkResult<()> {
         Ok(serde_json::to_writer(dst.writer(), &response)?)
     }
 }
 
 impl Encoder<&[u8]> for JsonCodec {
-    type Error = anyhow::Error;
-    fn encode(&mut self, response: &[u8], dst: &mut BytesMut) -> Result<(), Self::Error> {
+    type Error = JrpkError;
+    fn encode(&mut self, response: &[u8], dst: &mut BytesMut) -> JrpkResult<()> {
         dst.put_slice(response);
         Ok(())
     }

@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
+use crate::errors::JrpkError;
 
 #[derive(Debug, Clone)]
 pub struct HostPort {
@@ -19,10 +19,10 @@ impl Display for HostPort {
 }
 
 impl FromStr for HostPort {
-    type Err = anyhow::Error;
+    type Err = JrpkError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (host, port) = s.split_once(':')
-            .ok_or(anyhow!("Endpoint must be host:port"))?;
+            .ok_or(JrpkError::General("endpoint must be host:port"))?;
         Ok(HostPort {
             host: String::from(host),
             port: u16::from_str_radix(port, 10)?

@@ -1,14 +1,14 @@
 use std::fmt::{Debug, Formatter};
-use crate::util::{debug_vec_fn, handle_future, unwrap_err, ReqId, ResId, debug_record_and_offset};
+use crate::util::{debug_vec_fn, handle_future, ReqId, ResId, debug_record_and_offset};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
-use anyhow::anyhow;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info, warn};
+use crate::errors::{JrpkError, JrpkResult};
 use crate::jsonrpc::{JrpMethod, JrpReq};
 
 pub enum KfkReq {
@@ -51,21 +51,21 @@ impl KfkReq {
 }
 
 impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
-    type Error = anyhow::Error;
+    type Error = JrpkError;
     fn try_from(req: JrpReq<'a>) -> Result<Self, Self::Error> {
         match req.method {
             JrpMethod::Send => {
                 let jrp_records = req.params.records
-                    .ok_or(anyhow!("records is missing"))?;
+                    .ok_or(JrpkError::Syntax("records is missing"))?;
                 let records: Vec<Record> = jrp_records.into_iter()
                     .map(|x| x.into())
                     .collect();
                 Ok(KfkReq::send(records))
             }
             JrpMethod::Fetch => {
-                let offset = req.params.offset.ok_or(anyhow!("offset is missing"))?;
-                let bytes = req.params.bytes.ok_or(anyhow!("bytes is missing"))?;
-                let max_wait_ms = req.params.max_wait_ms.ok_or(anyhow!("max_wait_ms is missing"))?;
+                let offset = req.params.offset.ok_or(JrpkError::Syntax("offset is missing"))?;
+                let bytes = req.params.bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
+                let max_wait_ms = req.params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
                 Ok(KfkReq::fetch(offset, bytes, max_wait_ms))
             }
         }
@@ -116,7 +116,7 @@ pub type KfkResIdRcv = Receiver<KfkResId>;
 pub type KfkReqIdSnd = Sender<KfkReqId>;
 pub type KfkReqIdRcv = Receiver<KfkReqId>;
 
-async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> anyhow::Result<()> {
+async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> JrpkResult<()> {
     info!("kafka, client: {}/{}, start", cli.topic(), cli.partition());
     while let Some(req_id) = req_id_rcv.recv().await {
         debug!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_id);
@@ -170,19 +170,19 @@ impl KfkClientCache {
         Self { client, cache: Cache::new(capacity) }
     }
 
-    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> anyhow::Result<KfkReqIdSnd> {
+    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> JrpkResult<KfkReqIdSnd> {
         info!("kafka, init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
-        let (snd, rcv) = mpsc::channel(capacity);
-        tokio::spawn(handle_future("kafka", run_kafka_loop(pc, rcv)));
-        Ok(snd)
+        let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
+        tokio::spawn(handle_future("kafka", run_kafka_loop(pc, req_id_rcv)));
+        Ok(req_id_snd)
     }
 
-    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> anyhow::Result<KfkReqIdSnd> {
+    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> JrpkResult<KfkReqIdSnd> {
         debug!("kafka, lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(&key, capacity);
-        self.cache.try_get_with_by_ref(&key, init).await
-            .map_err(unwrap_err)
+        let req_id_snd = self.cache.try_get_with_by_ref(&key, init).await?;
+        Ok(req_id_snd)
     }
 }
