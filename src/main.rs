@@ -7,7 +7,7 @@ mod kafka;
 mod codec;
 
 use crate::args::Cmd;
-use crate::client::send_file;
+use crate::client::connect;
 use crate::server::listen;
 use crate::util::{handle_future, join_with_signal};
 use clap::Parser;
@@ -22,20 +22,13 @@ use tracing_subscriber::EnvFilter;
 
 async fn run(args: args::Args) {
     join_with_signal(
+        "main",
         match args.cmd {
             Cmd::Server { bind, brokers} => {
-                tokio::spawn(
-                    handle_future(
-                        listen(bind, brokers.0)
-                    )
-                )
+                tokio::spawn(handle_future("listen", listen(bind, brokers.0)))
             }
             Cmd::Client { file, target} => {
-                tokio::spawn(
-                    handle_future(
-                        send_file(file, target)
-                    )
-                )
+                tokio::spawn(handle_future("connect", connect(target, file)))
             }
         }
     ).await

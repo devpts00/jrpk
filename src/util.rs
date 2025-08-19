@@ -1,19 +1,17 @@
-use std::cmp::min;
+use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
-use std::io::Read;
-use std::ops::Index;
-use std::str::{from_utf8, Utf8Error};
+use std::str::{from_utf8};
 use std::sync::Arc;
 use anyhow::{anyhow};
 use rskafka::record::{Record, RecordAndOffset};
-use substring::Substring;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
+#[derive(Debug)]
 pub struct ResId<RSP, E: Error> {
     pub id: usize,
     pub res: Result<RSP, E>,
@@ -44,11 +42,16 @@ impl <RSP: Display, E: Error> Display for ResId<RSP, E> {
     }
 }
 
-
 pub struct ReqId<REQ, RSP, E: Error> {
     pub id: usize,
     pub req: REQ,
     pub res_id_snd: Sender<ResId<RSP, E>>,
+}
+
+impl <REQ: Debug, RSP, E: Error> Debug for ReqId<REQ, RSP, E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReqId {{ id: {:?}, req: {:?} }}>", self.id, self.req)
+    }
 }
 
 impl <REQ, RES, E: Error> ReqId<REQ, RES, E> {
@@ -69,47 +72,46 @@ pub fn unwrap_err(ae: Arc<anyhow::Error>) -> anyhow::Error {
     })
 }
 
-pub fn handle_result<T: Default + Debug, E: Display> (r: Result<T, E>) -> T {
+pub fn handle_result<T: Default + Debug, E: Display> (ctx: &str, r: Result<T, E>) -> T {
     match r {
         Ok(value) => {
-            debug!("done, success: {:?}", value);
+            debug!("{}, success: {:?}", &ctx, value);
             value
         }
         Err(error) => {
-            error!("done, error: {}", error);
+            error!("{}, error: {}", &ctx, error);
             T::default()
         }
     }
 }
 
-pub async fn handle_future<T: Debug + Default, E: Display, F: Future<Output = Result<T, E>>>(future: F) -> T {
-    handle_result(future.await)
+pub async fn handle_future<T: Debug + Default, E: Display, F: Future<Output = Result<T, E>>>(ctx: &str, future: F) -> T {
+    handle_result(ctx, future.await)
 }
 
-pub async fn join_with_signal<T: Default + Debug>(jh: JoinHandle<T>) -> () {
+pub async fn join_with_signal<T: Default + Debug>(ctx: &str, jh: JoinHandle<T>) -> () {
     select! {
         res = jh => {
-            handle_result(res);
+            handle_result(ctx, res);
         },
         _ = tokio::signal::ctrl_c() => {
-            info!("signal, exiting...");
+            info!("{} - signal, exiting...", &ctx);
         }
     }
 }
 
-pub fn display_slice_bytes(f: &mut Formatter<'_>, bs: &[u8]) -> std::fmt::Result {
-    match from_utf8(bs) {
+pub fn debug_slice_u8(f: &mut Formatter<'_>, slice: &[u8]) -> std::fmt::Result {
+    match from_utf8(slice) {
         Ok(s) => {
-            write!(f, "{}...", s.substring(0, 5))
+            f.write_str(s)
         }
         Err(_) => {
-            let limit = min(bs.len(), 5);
-            write!(f, "{:?}...", &bs[0..limit])
+            f.write_str(&hex::encode(slice))
         }
     }
 }
 
-pub fn display_vec_fn<T, F>(f: &mut Formatter<'_>, v: &Vec<T>, d: F) -> std::fmt::Result
+pub fn debug_vec_fn<T, F>(f: &mut Formatter<'_>, v: &Vec<T>, d: F) -> std::fmt::Result
     where F: Fn(&mut Formatter<'_>, &T) -> std::fmt::Result {
     write!(f, "[")?;
     if !v.is_empty() {
@@ -125,66 +127,52 @@ pub fn display_vec_fn<T, F>(f: &mut Formatter<'_>, v: &Vec<T>, d: F) -> std::fmt
     write!(f, "]")
 }
 
-pub fn display_vec<T: Display>(f: &mut Formatter<'_>, v: &Vec<T>) -> std::fmt::Result {
-    display_vec_fn(f, v, |f, x| x.fmt(f))
+pub fn debug_vec<T: Display>(f: &mut Formatter<'_>, v: &Vec<T>) -> std::fmt::Result {
+    debug_vec_fn(f, v, |f, x| x.fmt(f))
 }
 
-pub fn display_record(f: &mut Formatter<'_>, r: &Record, braces: bool) -> std::fmt::Result {
-    if braces {
-        write!(f, "{{ ")?;
-    }
+pub fn debug_record_and_offset(f: &mut Formatter<'_>, record: &Record, offset: Option<i64>) -> std::fmt::Result {
+    write!(f, "Record {{ ")?;
     let mut comma = false;
-    if let Some(key) = r.key.as_ref() {
-        display_slice_bytes(f, &key)?;
+    if let Some(o) = offset {
+        write!(f, "offset: {}", o)?;
         comma = true;
     }
-    if let Some(value) = r.value.as_ref() {
+    if let Some(key) = record.key.as_ref() {
         if comma {
             write!(f, ", ")?;
         }
-        display_slice_bytes(f, &value)?;
+        write!(f, "key: ")?;
+        debug_slice_u8(f, &key)?;
+        comma = true;
     }
-    if !r.headers.is_empty() {
+    if let Some(value) = record.value.as_ref() {
+        if comma {
+            write!(f, ", ")?;
+        }
+        write!(f, "value: ")?;
+        debug_slice_u8(f, &value)?;
+        comma = true;
+    }
+    if !record.headers.is_empty() {
         if comma {
             write!(f, ", ")?;
         }
         write!(f, "headers: {{ ")?;
-        let mut comma = false;
-        for (k, v) in r.headers.iter() {
-            if comma {
-                comma = true;
+        let mut comma2 = false;
+        for (k, v) in record.headers.iter() {
+            if comma2 {
+                write!(f, ", ")?;
             }
             write!(f, "{}: ", k)?;
-            display_slice_bytes(f, &v)?;
+            debug_slice_u8(f, &v)?;
+            comma2 = true;
         }
         write!(f, " }}")?;
+        comma = true;
     }
     if comma {
         write!(f, ", ")?;
     }
-    write!(f, "timestamp: {}", r.timestamp)?;
-    if braces {
-        write!(f, " }}")
-    } else {
-        Ok(())
-    }
-}
-
-pub fn display_rec_and_offset(f: &mut Formatter<'_>, ro: &RecordAndOffset) -> std::fmt::Result {
-    write!(f, "{{ ")?;
-    write!(f, "offset: {}, ", ro.offset)?;
-    display_record(f, &ro.record, false)?;
-    write!(f, " }}")
-}
-
-#[cfg(test)]
-mod tests {
-    use substring::Substring;
-
-    #[test]
-    fn test_display_bytes() {
-        let s = "123";
-        let ss = s.substring(0, 5);
-        println!("{:?}", ss);
-    }
+    write!(f, "timestamp: {} }}", record.timestamp)
 }

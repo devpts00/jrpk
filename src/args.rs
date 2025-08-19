@@ -12,6 +12,12 @@ pub struct HostPort {
     pub port: u16,
 }
 
+impl Display for HostPort {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.host, self.port)
+    }
+}
+
 impl FromStr for HostPort {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -21,12 +27,6 @@ impl FromStr for HostPort {
             host: String::from(host),
             port: u16::from_str_radix(port, 10)?
         })
-    }
-}
-
-impl Display for HostPort {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.host, self.port)
     }
 }
 

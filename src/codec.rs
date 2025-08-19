@@ -1,7 +1,9 @@
+use std::cmp::min;
+use std::str::from_utf8;
+use crate::jsonrpc::JrpRsp;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, trace};
-use crate::jsonrpc::JrpRsp;
+use tracing::trace;
 
 #[derive(Debug)]
 pub struct JsonCodec {
@@ -20,6 +22,12 @@ impl JsonCodec {
             escape: false,
         }
     }
+    pub fn reset(&mut self) {
+        self.level = 0;
+        self.position = 0;
+        self.quotes = false;
+        self.escape = false;
+    }
 }
 
 impl JsonCodec {
@@ -35,7 +43,9 @@ impl Decoder for JsonCodec {
     type Error = anyhow::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<Self::Item>> {
-        trace!("decode, length: {}", src.len());
+        let text = from_utf8(src.as_ref()).unwrap();
+        let length = min(20, text.len());
+        trace!("decode, start, position: {}, length: {}, src: {}", self.position, src.len(), &text[..length]);
         while self.position < src.len() {
             let b = src[self.position];
             self.dump(b);
@@ -54,7 +64,7 @@ impl Decoder for JsonCodec {
                 }
                 b'{' if !self.quotes => {
                     if self.level == 0 && self.position > 0 {
-                        trace!("decode, discard: {}", self.position);
+                        //trace!("decode, discard: {}", self.position);
                         src.advance(self.position);
                         self.position = 1;
                     } else {
@@ -67,7 +77,10 @@ impl Decoder for JsonCodec {
                     self.position += 1;
                     if self.level == 0 {
                         let frame = src.split_to(self.position).freeze();
-                        trace!("decode, frame: {}", self.position);
+                        let frame_str = from_utf8(&frame).unwrap();
+                        let src_str = from_utf8(src).unwrap();
+                        trace!("decode, frm : {}", frame_str);
+                        trace!("decode, src: {}", src_str);
                         self.position = 0;
                         return Ok(Some(frame))
                     }
@@ -81,6 +94,8 @@ impl Decoder for JsonCodec {
             trace!("decode, discard: {}", src.len());
             src.advance(src.len());
         }
+        self.reset();
+        trace!("decode, end, position: {}", self.position);
         Ok(None)
     }
 }
@@ -89,5 +104,13 @@ impl Encoder<JrpRsp> for JsonCodec {
     type Error = anyhow::Error;
     fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> Result<(), Self::Error> {
         Ok(serde_json::to_writer(dst.writer(), &response)?)
+    }
+}
+
+impl Encoder<&[u8]> for JsonCodec {
+    type Error = anyhow::Error;
+    fn encode(&mut self, response: &[u8], dst: &mut BytesMut) -> Result<(), Self::Error> {
+        dst.put_slice(response);
+        Ok(())
     }
 }

@@ -47,8 +47,8 @@ services:
     build: .
     environment:
       #- RUST_BACKTRACE=full
-      - TOKIO_CONSOLE_BIND=0.0.0.0:6669
-      - RUST_LOG=debug,tokio::task=info
+      #- TOKIO_CONSOLE_BIND=0.0.0.0:6669
+      - RUST_LOG=info,jrpk=info,tokio::task=info
     volumes:
       - .:/jrpk
       - cargo:/usr/local/cargo
@@ -59,9 +59,3 @@ services:
       - jrpk
     build: .
     command: ['tokio-console', 'http://jrpk:6669']
-
-  cli:
-    profiles:
-      - jrpk
-    build: .
-    command: ['curl', 'http://jrpk:1133', '<<<', '12345']
