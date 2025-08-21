@@ -34,6 +34,9 @@ test:
 produce:
 	docker compose run --rm rst cargo test test_produce -- --nocapture
 
+consume:
+	docker compose run --rm rst cargo test test_consume -- --nocapture
+
 version:
 	docker compose run --rm rst rustc --version
 

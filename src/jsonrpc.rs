@@ -1,13 +1,17 @@
 use crate::kafka::{KfkError, KfkResId, KfkRsp};
-use rskafka::chrono::DateTime;
+use rskafka::chrono::{DateTime, Utc};
 use rskafka::record::{Record, RecordAndOffset};
 use serde::ser::SerializeStruct;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::ops::Range;
+use std::str::FromStr;
+use rskafka::client::partition::OffsetAt;
+use serde::de::{Error, Visitor};
 use crate::errors::{JrpkError, JrpkResult};
+use crate::errors::JrpkError::ParseTimestamp;
 
 fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
     match value {
@@ -81,7 +85,71 @@ impl TryFrom<RecordAndOffset> for JrpRecFetch {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JrpMethod {
-    Send, Fetch
+    Send, Fetch, Offset
+}
+
+#[derive(Debug)]
+pub enum JrpOffsetAt {
+    Earliest, Latest, Timestamp(DateTime<Utc>)
+}
+
+impl Into<OffsetAt> for JrpOffsetAt {
+    fn into(self) -> OffsetAt {
+        match self {
+            JrpOffsetAt::Earliest => OffsetAt::Earliest,
+            JrpOffsetAt::Latest => OffsetAt::Latest,
+            JrpOffsetAt::Timestamp(t) => OffsetAt::Timestamp(t)
+        }
+    }
+}
+
+impl <'de> Deserialize<'de> for JrpOffsetAt {
+
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+
+        struct JrpOffsetVisitor;
+
+        impl <'de> Visitor<'de> for JrpOffsetVisitor {
+            type Value = JrpOffsetAt;
+            fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
+                write!(f, r#""earliest", "latest", 1755794154497 or "2024-12-31T21:00:00.000Z""#)
+            }
+
+            fn visit_i8<E: Error>(self, v: i8) -> Result<Self::Value, E> {
+                self.visit_i64(v as i64)
+            }
+
+            fn visit_i16<E: Error>(self, v: i16) -> Result<Self::Value, E> {
+                self.visit_i64(v as i64)
+            }
+
+            fn visit_i32<E: Error>(self, v: i32) -> Result<Self::Value, E> {
+                self.visit_i64(v as i64)
+            }
+
+            fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+                DateTime::<Utc>::from_timestamp_millis(v)
+                    .map(|ms| JrpOffsetAt::Timestamp(ms))
+                    .ok_or(E::custom(format!("invalid timestamp: {}", v)))
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v == "earliest" {
+                    Ok(JrpOffsetAt::Earliest)
+                } else if v == "latest" {
+                    Ok(JrpOffsetAt::Latest)
+                } else if let Ok(ts) = DateTime::<Utc>::from_str(v) {
+                    Ok(JrpOffsetAt::Timestamp(ts))
+                } else if let Ok(ms) = i64::from_str(v) {
+                    self.visit_i64(ms)
+                } else {
+                    Err(E::custom(format!("invalid timestamp: {}", v)))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(JrpOffsetVisitor)
+    }
 }
 
 /// JSONRPC params is a superset of arguments for all methods.
@@ -95,6 +163,7 @@ pub struct JrpParams<'a> {
     pub offset: Option<i64>,
     pub bytes: Option<Range<i32>>,
     pub max_wait_ms: Option<i32>,
+    pub at: Option<JrpOffsetAt>,
 }
 
 /// JSONRPC request.
@@ -139,7 +208,8 @@ pub enum JrpRspData {
     Fetch {
         records: Vec<JrpRecFetch>,
         high_watermark: i64,
-    }
+    },
+    Offset(i64)
 }
 
 impl JrpRspData {
@@ -162,6 +232,9 @@ impl TryFrom<KfkRsp> for JrpRspData {
                 let res_records: JrpkResult<Vec<JrpRecFetch>> = recs_and_offsets.into_iter()
                     .map(|ro| { ro.try_into() }).collect();
                 res_records.map(|records| JrpRspData::Fetch { records, high_watermark })
+            }
+            KfkRsp::Offset(offset) => {
+                Ok(JrpRspData::Offset(offset))
             }
         }
     }

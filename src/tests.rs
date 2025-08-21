@@ -8,19 +8,19 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::ops::Add;
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
+use serde_json::Value;
 use tracing::{debug, error, info};
 
 
 #[test]
 fn test_produce() -> () {
+    info!("produce, start");
     init_tracing();
 
-    info!("test, start");
-
     let addr = "jrpk:1133";
-
     let rs = TcpStream::connect(addr).unwrap();
     let ws = rs.try_clone().unwrap();
 
@@ -81,6 +81,82 @@ fn test_produce() -> () {
         Err(e) => error!("reader, error: {:?}", e),
     }
 
-    info!("test, end");
+    info!("produce, end");
 
+}
+
+fn get_offset(line: &str) -> Result<Option<i64>, serde_json::Error> {
+    serde_json::from_str(line).map(|json: Value| {
+        json.as_object()
+            .and_then(|obj| obj.get("result"))
+            .and_then(|res| res.as_object())
+            .and_then(|obj| obj.get("offset"))
+            .and_then(|offset| offset.as_i64())
+    })
+}
+
+#[test]
+fn test_consume() {
+    init_tracing();
+    info!("consume, start");
+
+    let addr = "jrpk:1133";
+    let rs = TcpStream::connect(addr).unwrap();
+    let ws = rs.try_clone().unwrap();
+
+    let (snd, rcv) = mpsc::sync_channel::<i64>(1);
+
+    let rh = thread::spawn(move || {
+        info!("reader, start");
+        rs.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut reader = BufReader::with_capacity(4 * 1024, rs);
+        let mut line = String::with_capacity(4 * 1024);
+        let mut offset_read = false;
+        while let Ok(n) = reader.read_line(&mut line) {
+            if n > 0 {
+                line.pop();
+                info!("reader, response: {}", line);
+                if !offset_read {
+                    if let Some(offset) = get_offset(&line).unwrap() {
+                        info!("reader, offset: {}", offset);
+                        snd.send(offset).unwrap();
+                        offset_read = true;
+                    }
+                }
+                line.clear()
+            } else {
+                break;
+            }
+        }
+        info!("reader, end");
+    });
+
+    let wh = thread::spawn(move || {
+        info!("writer, start");
+
+        // request offset
+        let mut writer = BufWriter::with_capacity(4 * 1024, ws);
+        write!(&mut writer, r#"{{ "jsonrpc": "2.0", "id": 0, "method": "offset", "params": {{ "topic": "posts", "partition": 0, "at": "earliest" }} }}"#).unwrap();
+        writer.flush().unwrap();
+
+        // receive offset
+        while let Ok(offset) = rcv.recv() {
+            info!("writer, offset: {}", offset);
+            // request messages
+        }
+
+        info!("writer, end");
+    });
+
+    match wh.join() {
+        Ok(_) => info!("writer, success"),
+        Err(e) => error!("writer, error: {:?}", e),
+    }
+
+    match rh.join() {
+        Ok(_) => info!("reader, success"),
+        Err(e) => error!("reader, error: {:?}", e),
+    }
+
+    info!("consume, end");
 }

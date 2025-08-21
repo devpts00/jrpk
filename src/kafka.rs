@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use crate::util::{debug_vec_fn, handle_future, ReqId, ResId, debug_record_and_offset};
 use moka::future::Cache;
-use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
+use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
@@ -19,6 +19,9 @@ pub enum KfkReq {
         offset: i64,
         bytes: Range<i32>,
         max_wait_ms: i32,
+    },
+    Offset {
+        at: OffsetAt
     }
 }
 
@@ -37,6 +40,11 @@ impl Debug for KfkReq {
                     .field("max_wait_ms", max_wait_ms)
                     .finish()
             }
+            KfkReq::Offset { at } => {
+                f.debug_struct("Offset")
+                    .field("at", at)
+                    .finish()
+            }
         }
     }
 }
@@ -47,6 +55,9 @@ impl KfkReq {
     }
     pub fn fetch(offset: i64, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         KfkReq::Fetch { offset, bytes, max_wait_ms }
+    }
+    pub fn offset(at: OffsetAt) -> Self {
+        KfkReq::Offset { at }
     }
 }
 
@@ -68,6 +79,10 @@ impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
                 let max_wait_ms = req.params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
                 Ok(KfkReq::fetch(offset, bytes, max_wait_ms))
             }
+            JrpMethod::Offset => {
+                let at = req.params.at.ok_or(JrpkError::Syntax("at is missing"))?;
+                Ok(KfkReq::offset(at.into()))
+            }
         }
     }
 }
@@ -79,7 +94,8 @@ pub enum KfkRsp {
     Fetch {
         recs_and_offsets: Vec<RecordAndOffset>,
         high_watermark: i64,
-    }
+    },
+    Offset(i64)
 }
 
 impl KfkRsp {
@@ -88,6 +104,9 @@ impl KfkRsp {
     }
     fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64) -> Self {
         KfkRsp::Fetch { recs_and_offsets, high_watermark }
+    }
+    fn offset(value: i64) -> Self {
+        KfkRsp::Offset(value)
     }
 }
 
@@ -103,6 +122,9 @@ impl Debug for KfkRsp {
                     debug_record_and_offset(f, &r.record, Some(r.offset)) }
                 )?;
                 write!(f, " }}")
+            }
+            KfkRsp::Offset(offset) => {
+                f.debug_tuple("Offset").field(offset).finish()
             }
         }
     }
@@ -131,6 +153,9 @@ async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> Jr
             KfkReq::Fetch { offset, bytes, max_wait_ms } => {
                 cli.fetch_records(offset, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark))
+            }
+            KfkReq::Offset { at } => {
+                cli.get_offset(at).await.map(|offset| KfkRsp::Offset(offset))
             }
         };
         let res_id = KfkResId::new(id, res_rsp);

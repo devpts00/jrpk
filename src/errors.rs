@@ -15,6 +15,9 @@ pub enum JrpkError {
     #[error("parse: {0}")]
     ParseInt(#[from] std::num::ParseIntError),
 
+    #[error("parse: {0}")]
+    ParseTimestamp(String),
+    
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
