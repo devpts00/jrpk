@@ -125,7 +125,7 @@ async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> Jr
         let res_id_snd = req_id.res_id_snd;
         let res_rsp = match req {
             KfkReq::Send { records } => {
-                cli.produce(records, Compression::Gzip).await
+                cli.produce(records, Compression::Snappy).await
                     .map(|offsets| KfkRsp::send(offsets))
             }
             KfkReq::Fetch { offset, bytes, max_wait_ms } => {

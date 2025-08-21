@@ -20,6 +20,7 @@ fn test_produce() -> () {
     info!("test, start");
 
     let addr = "jrpk:1133";
+
     let rs = TcpStream::connect(addr).unwrap();
     let ws = rs.try_clone().unwrap();
 
@@ -45,9 +46,9 @@ fn test_produce() -> () {
         let mut writer = BufWriter::with_capacity(4 * 1024, ws);
         let mut rng = rand::rng();
         let mut gen = DataGenerator::default();
-        let total: usize = rng.random_range(100..200);
+        let total: usize = rng.random_range(1000000..2000000);
         for n in 0..total {
-            let size: usize = rng.random_range(100..200);
+            let size: usize = rng.random_range(500..1000);
             let mut comma = false;
             let id: u32 = rng.random();
             write!(&mut writer, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "send", "params": {{ "topic": "posts", "partition": 0, "records": "#, id).unwrap();

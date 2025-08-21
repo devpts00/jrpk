@@ -131,6 +131,7 @@ impl From<KfkError> for JrpError {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum JrpRspData {
     Send {
         offsets: Vec<i64>,
@@ -213,47 +214,4 @@ impl Serialize for JrpRsp {
         }
         r.end()
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Read;
-
-    fn read(name: &str) -> Vec<u8> {
-        let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let path = format!("{}/files/{}", dir, name);
-        let mut file = std::fs::File::open(path).unwrap();
-        let mut content: Vec<u8> = Vec::new();
-        file.read_to_end(&mut content).unwrap();
-        content
-    }
-
-    // #[test]
-    // fn test_deserialize() {
-    //     init_tracing();
-    //     let mut bytes = BytesMut::from(read("requests.json").as_slice());
-    //     let mut framer = JsonCodec::new();
-    //     loop {
-    //         match framer.decode(&mut bytes) {
-    //             Ok(Some(frame)) => {
-    //                 let req: JrpReq = serde_json::from_slice(&frame).unwrap();
-    //                 info!("request: {:?}", req);
-    //                 if let Some(records) = req.params.records {
-    //                    for record in records {
-    //                        if let Some(value) = record.value {
-    //                            let v = value.get().as_bytes().to_vec();
-    //                            info!("vec: {:?}", v);
-    //                        }
-    //                    }
-    //                 }
-    //             }
-    //             Ok(None) => {
-    //                 break;
-    //             }
-    //             Err(error) => {
-    //                 error!("error: {}", error);
-    //             }
-    //         }
-    //     }
-    // }
 }

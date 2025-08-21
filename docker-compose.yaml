@@ -48,7 +48,7 @@ services:
     environment:
       #- RUST_BACKTRACE=full
       #- TOKIO_CONSOLE_BIND=0.0.0.0:6669
-      - RUST_LOG=info,jrpk=debug,tokio::task=info
+      - RUST_LOG=info,jrpk=info,tokio::task=info
     volumes:
       - .:/jrpk
       - cargo:/usr/local/cargo
