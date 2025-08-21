@@ -31,6 +31,9 @@ trace:
 test:
 	docker compose run --rm rst cargo test -- --nocapture
 
+produce:
+	docker compose run --rm rst cargo test test_produce -- --nocapture
+
 version:
 	docker compose run --rm rst rustc --version
 

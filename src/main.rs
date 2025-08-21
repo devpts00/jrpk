@@ -6,6 +6,7 @@ mod jsonrpc;
 mod kafka;
 mod codec;
 mod errors;
+mod tests;
 
 use crate::args::Cmd;
 use crate::client::connect;

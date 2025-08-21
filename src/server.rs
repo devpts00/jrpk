@@ -48,9 +48,11 @@ async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream,
     while let Some(kfk_res_id) = kfk_res_id_rcv.recv().await {
         let rsp_jrp: JrpRsp = kfk_res_id.into();
         debug!("output, response: {:?}", rsp_jrp);
-        sink.send(rsp_jrp).await?;
+        sink.feed(rsp_jrp).await?;
+        sink.flush().await?;
     }
     info!("output, end: {}", addr);
+    sink.flush().await?;
     Ok(())
 }
 

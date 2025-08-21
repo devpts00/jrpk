@@ -104,7 +104,9 @@ impl Decoder for JsonCodec {
 impl Encoder<JrpRsp> for JsonCodec {
     type Error = JrpkError;
     fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> JrpkResult<()> {
-        Ok(serde_json::to_writer(dst.writer(), &response)?)
+        serde_json::to_writer(dst.writer(), &response)?;
+        dst.put_u8(b'\n');
+        Ok(())
     }
 }
 
