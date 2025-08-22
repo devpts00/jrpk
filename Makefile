@@ -1,5 +1,14 @@
-kafka:
-	docker compose --profile kafka up --force-recreate
+docker-clean:
+	docker compose down -v --rmi all --remove-orphans
+
+docker-pull:
+	docker compose pull
+
+docker-build:
+	docker compose build
+
+docker-kafka:
+	docker compose --profile kafka up
 
 tree:
 	docker compose run --rm rst cargo tree
@@ -42,3 +51,4 @@ version:
 
 bash:
 	docker compose run --rm rst bash
+

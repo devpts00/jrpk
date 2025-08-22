@@ -17,21 +17,21 @@ use crate::codec::JsonCodec;
 use crate::errors::JrpkResult;
 
 async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JsonCodec>>, ctx: Arc<KfkClientCache>, kfk_res_id_snd: KfkResIdSnd) -> JrpkResult<()> {
-    info!("input, start: {}", addr);
+    info!("input, addr: {} - START", addr);
     while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
         let raw_str = unsafe { from_utf8_unchecked(bytes.as_ref()) };
-        debug!("input, json: {}", raw_str);
+        trace!("input, addr: {}, json: {}", addr, raw_str);
         match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
             Ok(jrp_req) => {
-                debug!("input, request: {:?}", jrp_req);
+                trace!("input, addr: {}, request: {:?}", addr, jrp_req);
                 let id = jrp_req.id;
                 let topic = jrp_req.params.topic.to_owned();
                 let partition = jrp_req.params.partition;
                 let kfk_req: KfkReq = jrp_req.try_into()?;
                 let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
-                let kfk_req_id_snd = ctx.lookup_kafka_sender(topic, partition, 64).await?;
+                let kfk_req_id_snd = ctx.lookup_kafka_sender(topic, partition, 4).await?;
                 kfk_req_id_snd.send(kfk_req_id).await?;
             }
             Err(err) => {
@@ -39,20 +39,20 @@ async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStre
             }
         }
     }
-    info!("input, end: {}", addr);
+    info!("input, addr: {} - END", addr);
     Ok(())
 }
 
 async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>, mut kfk_res_id_rcv: Receiver<KfkResId>) -> JrpkResult<()> {
-    info!("output, start: {}", addr);
+    info!("output, addr: {} - START", addr);
     while let Some(kfk_res_id) = kfk_res_id_rcv.recv().await {
         let rsp_jrp: JrpRsp = kfk_res_id.into();
-        debug!("output, response: {:?}", rsp_jrp);
+        trace!("output, addr: {}, response: {:?}", addr, rsp_jrp);
         sink.feed(rsp_jrp).await?;
         sink.flush().await?;
     }
-    info!("output, end: {}", addr);
     sink.flush().await?;
+    info!("output, addr: {} - END", addr);
     Ok(())
 }
 
@@ -72,7 +72,7 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> JrpkResult<()> 
         let codec = JsonCodec::new();
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();
-        let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<KfkResId>(1024);
+        let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<KfkResId>(4);
         tokio::spawn(handle_future("input", run_input_loop(addr, stream, ctx.clone(), kfk_res_id_snd)));
         tokio::spawn(handle_future("output", run_output_loop(addr, sink, kfk_res_id_rcv)));
     }

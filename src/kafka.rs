@@ -7,7 +7,7 @@ use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use crate::errors::{JrpkError, JrpkResult};
 use crate::jsonrpc::{JrpMethod, JrpReq};
 
@@ -139,9 +139,9 @@ pub type KfkReqIdSnd = Sender<KfkReqId>;
 pub type KfkReqIdRcv = Receiver<KfkReqId>;
 
 async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> JrpkResult<()> {
-    info!("kafka, client: {}/{}, start", cli.topic(), cli.partition());
+    info!("kafka, client: {}/{} - START", cli.topic(), cli.partition());
     while let Some(req_id) = req_id_rcv.recv().await {
-        debug!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_id);
+        trace!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_id);
         let id = req_id.id;
         let req = req_id.req;
         let res_id_snd = req_id.res_id_snd;
@@ -159,10 +159,10 @@ async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> Jr
             }
         };
         let res_id = KfkResId::new(id, res_rsp);
-        debug!("kafka, client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_id);
+        trace!("kafka, client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_id);
         res_id_snd.send(res_id).await?;
     }
-    info!("kafka, client: {}/{}, end", cli.topic(), cli.partition());
+    info!("kafka, client: {}/{} - END", cli.topic(), cli.partition());
     Ok(())
 }
 
@@ -204,7 +204,7 @@ impl KfkClientCache {
     }
 
     pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> JrpkResult<KfkReqIdSnd> {
-        debug!("kafka, lookup: {}:{}", topic, partition);
+        trace!("kafka, lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(&key, capacity);
         let req_id_snd = self.cache.try_get_with_by_ref(&key, init).await?;

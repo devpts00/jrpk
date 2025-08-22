@@ -11,7 +11,6 @@ use std::str::FromStr;
 use rskafka::client::partition::OffsetAt;
 use serde::de::{Error, Visitor};
 use crate::errors::{JrpkError, JrpkResult};
-use crate::errors::JrpkError::ParseTimestamp;
 
 fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
     match value {
@@ -56,7 +55,7 @@ impl <'a> Into<Record> for JrpRecSend<'a> {
             key: bytes_from_raw_value_ref(self.key),
             value: bytes_from_raw_value_ref(self.value),
             headers: BTreeMap::new(),
-            timestamp: DateTime::default(),
+            timestamp: Utc::now(),
         }
     }
 }
@@ -206,8 +205,10 @@ pub enum JrpRspData {
         offsets: Vec<i64>,
     },
     Fetch {
-        records: Vec<JrpRecFetch>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_offset: Option<i64>,
         high_watermark: i64,
+        records: Vec<JrpRecFetch>,
     },
     Offset(i64)
 }
@@ -217,7 +218,11 @@ impl JrpRspData {
         JrpRspData::Send { offsets }
     }
     fn fetch(records: Vec<JrpRecFetch>, high_watermark: i64) -> Self {
-        JrpRspData::Fetch { records, high_watermark }
+        let next_offset = records.iter()
+            .map(|r|r.offset)
+            .max()
+            .map(|o| o + 1);
+        JrpRspData::Fetch { records, next_offset, high_watermark }
     }
 }
 
@@ -231,7 +236,7 @@ impl TryFrom<KfkRsp> for JrpRspData {
             KfkRsp::Fetch { recs_and_offsets, high_watermark } => {
                 let res_records: JrpkResult<Vec<JrpRecFetch>> = recs_and_offsets.into_iter()
                     .map(|ro| { ro.try_into() }).collect();
-                res_records.map(|records| JrpRspData::Fetch { records, high_watermark })
+                res_records.map(|records| JrpRspData::fetch(records, high_watermark))
             }
             KfkRsp::Offset(offset) => {
                 Ok(JrpRspData::Offset(offset))
