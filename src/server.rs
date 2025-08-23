@@ -6,9 +6,11 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
 use std::net::SocketAddr;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::str::from_utf8_unchecked;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
+use socket2::SockRef;
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver};
 use tokio_util::codec::Framed;
@@ -69,7 +71,16 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> JrpkResult<()> 
 
     loop {
         let (stream, addr) = listener.accept().await?;
+
+        let socket = SockRef::from(&stream);
+        info!("recv: {}, send: {}", socket.recv_buffer_size()?, socket.send_buffer_size()?);
+        socket.set_recv_buffer_size(1024)?;
+        socket.set_send_buffer_size(1024)?;
+        info!("recv: {}, send: {}", socket.recv_buffer_size()?, socket.send_buffer_size()?);
+        drop(socket);
+
         info!("server, accepted: {:?}", addr);
+
         let codec = JsonCodec::new();
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();

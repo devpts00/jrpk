@@ -22,3 +22,4 @@ random-data = "0.1.0"
 rand = "0.9.2"
 chrono = { version = "0.4.41", features = ["now"] }
 anyhow = "1.0.99"
+socket2 = "0.6.0"

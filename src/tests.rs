@@ -12,7 +12,7 @@ use std::time::Duration;
 use bytes::{BufMut, BytesMut};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::net::{TcpStream};
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::io::{AsyncWriteExt, AsyncReadExt, AsyncBufReadExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -83,9 +83,9 @@ async fn test_produce() -> Result<(), JrpkError> {
     info!("produce, start");
     init_tracing();
     let partition_count = 120;
-    let send_count_per_producer = 100;
-    let rec_count_per_send = 20000;
-    let parallelism = 10;
+    let send_count_per_producer = 1000;
+    let rec_count_per_send = 1000;
+    let parallelism = 120;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * parallelism);
     for _ in 0..parallelism {
         let addr = "jrpk:1133";
@@ -206,11 +206,13 @@ async fn consumer_writer(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: 
 #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
 async fn test_consume() -> Result<(), JrpkError> {
     use tokio::net::{TcpStream};
+
+
     info!("consume, start");
     init_tracing();
     let partition_count: u8 = 120;
     let byte_size_min: u32 = 1000;
-    let byte_size_max: u32 = 100000;
+    let byte_size_max: u32 = 1000000;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * partition_count as usize);
     for partition in 0..partition_count {
         let addr = "jrpk:1133";
