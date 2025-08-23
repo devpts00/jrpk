@@ -23,6 +23,7 @@ use crate::kafka::KfkResId;
 use crate::util::handle_future;
 
 fn generate_send_req(buf: &mut Vec<u8>, rec_count_per_send: u16, partition_count: u8) {
+    buf.clear();
     let partitions = 120;
     let mut rng = rand::rng();
     let mut gen = DataGenerator::new();
@@ -49,9 +50,8 @@ async fn producer_writer(wh: OwnedWriteHalf, partition_count: u8, send_count_per
     info!("produce - write, start");
     let mut buf: Vec<u8> = Vec::with_capacity(4 * 1024);
     let mut writer = tokio::io::BufWriter::with_capacity(4 * 1024, wh);
-    let total: usize = 1000;
+    let total: usize = 1;
     for n in 0..send_count_per_producer {
-        buf.clear();
         generate_send_req(&mut buf, rec_count_per_send, partition_count);
         writer.write_all(&buf).await?;
         writer.flush().await?;
@@ -83,9 +83,9 @@ async fn test_produce() -> Result<(), JrpkError> {
     info!("produce, start");
     init_tracing();
     let partition_count = 120;
-    let send_count_per_producer = 1000;
-    let rec_count_per_send = 100;
-    let parallelism = 50;
+    let send_count_per_producer = 100;
+    let rec_count_per_send = 20000;
+    let parallelism = 10;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * parallelism);
     for _ in 0..parallelism {
         let addr = "jrpk:1133";

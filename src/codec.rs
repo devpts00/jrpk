@@ -1,10 +1,12 @@
 use std::cmp::min;
-use std::str::from_utf8;
+use std::str::{from_utf8, from_utf8_unchecked};
 use crate::jsonrpc::JrpRsp;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::trace;
+use tracing::{enabled, info, trace, Level};
 use crate::errors::{JrpkError, JrpkResult};
+use crate::errors::JrpkError::FrameTooBig;
+use crate::MAX_FRAME_SIZE;
 
 #[derive(Debug)]
 pub struct JsonCodec {
@@ -44,10 +46,19 @@ impl Decoder for JsonCodec {
     type Error = JrpkError;
 
     fn decode(&mut self, src: &mut BytesMut) -> JrpkResult<Option<Self::Item>> {
-        let text = from_utf8(src.as_ref()).unwrap();
-        let length = min(20, text.len());
-        trace!("decode, start, position: {}, length: {}, src: {}", self.position, src.len(), &text[..length]);
+
+        if enabled!(Level::TRACE) {
+            let text = unsafe { from_utf8_unchecked(src.as_ref()) };
+            let length = min(50, text.len() - self.position);
+            trace!("decode, start, position: {}, length: {}, src: {}", self.position, src.len(), &text[self.position..self.position + length]);
+        }
+
         while self.position < src.len() {
+
+            if (self.position > MAX_FRAME_SIZE) {
+                return Err(FrameTooBig(self.position));
+            }
+
             let b = src[self.position];
             self.dump(b);
             match b {
@@ -78,11 +89,9 @@ impl Decoder for JsonCodec {
                     self.position += 1;
                     if self.level == 0 {
                         let frame = src.split_to(self.position).freeze();
-                        let frame_str = from_utf8(&frame).unwrap();
-                        let src_str = from_utf8(src).unwrap();
-                        trace!("decode, frm : {}", frame_str);
-                        trace!("decode, src: {}", src_str);
-                        self.position = 0;
+                        info!("frame, length: {}", frame.len());
+                        trace!("decode, frm : {}", from_utf8(&frame).unwrap());
+                        self.reset();
                         return Ok(Some(frame))
                     }
                 }
@@ -91,11 +100,13 @@ impl Decoder for JsonCodec {
                 }
             }
         }
+
         if self.level == 0 && src.len() > 0 {
             trace!("decode, discard: {}", src.len());
             src.advance(src.len());
+            self.reset()
         }
-        self.reset();
+
         trace!("decode, end, position: {}", self.position);
         Ok(None)
     }

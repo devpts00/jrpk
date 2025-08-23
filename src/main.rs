@@ -22,6 +22,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 const QUEUE_SIZE: usize = 8;
+const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 async fn run(args: args::Args) {
     join_with_signal(

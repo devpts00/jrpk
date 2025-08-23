@@ -38,6 +38,9 @@ pub enum JrpkError {
 
     #[error("{0}")]
     Wrapped(#[from] Arc<JrpkError>),
+
+    #[error("frame too big: {0}")]
+    FrameTooBig(usize),
 }
 
 pub type JrpkResult<T> = Result<T, JrpkError>;
