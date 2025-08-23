@@ -157,7 +157,7 @@ async fn consumer_reader(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), Jrpk
                 match rsp.result {
                     TestJrpRspData::Fetch { next_offset: Some(offset), high_watermark } => {
                         trace!("consume - read, offset: {}, high_watermark: {}", offset, high_watermark);
-                        if (offset < high_watermark) {
+                        if offset < high_watermark {
                             snd.send(offset).await?;
                         } else {
                             break;

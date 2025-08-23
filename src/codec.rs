@@ -3,7 +3,7 @@ use std::str::{from_utf8, from_utf8_unchecked};
 use crate::jsonrpc::JrpRsp;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{enabled, info, trace, Level};
+use tracing::{debug, enabled, info, trace, Level};
 use crate::errors::{JrpkError, JrpkResult};
 use crate::errors::JrpkError::FrameTooBig;
 use crate::MAX_FRAME_SIZE;
@@ -89,7 +89,7 @@ impl Decoder for JsonCodec {
                     self.position += 1;
                     if self.level == 0 {
                         let frame = src.split_to(self.position).freeze();
-                        info!("frame, length: {}", frame.len());
+                        debug!("frame, length: {}", frame.len());
                         trace!("decode, frm : {}", from_utf8(&frame).unwrap());
                         self.reset();
                         return Ok(Some(frame))

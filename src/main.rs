@@ -1,6 +1,5 @@
 mod args;
 mod server;
-mod client;
 mod util;
 mod jsonrpc;
 mod kafka;
@@ -8,8 +7,6 @@ mod codec;
 mod errors;
 mod tests;
 
-use crate::args::Cmd;
-use crate::client::connect;
 use crate::server::listen;
 use crate::util::{handle_future, join_with_signal};
 use clap::Parser;
@@ -25,17 +22,7 @@ const QUEUE_SIZE: usize = 8;
 const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 async fn run(args: args::Args) {
-    join_with_signal(
-        "main",
-        match args.cmd {
-            Cmd::Server { bind, brokers} => {
-                tokio::spawn(handle_future("listen", listen(bind, brokers.0)))
-            }
-            Cmd::Client { file, target} => {
-                tokio::spawn(handle_future("connect", connect(target, file)))
-            }
-        }
-    ).await
+    join_with_signal("main", tokio::spawn(handle_future("listen", listen(args.bind, args.brokers.0)))).await
 }
 
 static TRACING: Once = Once::new();

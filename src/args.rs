@@ -1,10 +1,9 @@
-use clap::{Parser, Subcommand};
+use crate::errors::JrpkError;
+use clap::Parser;
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::ops::Deref;
-use std::path::PathBuf;
 use std::str::FromStr;
-use crate::errors::JrpkError;
 
 #[derive(Debug, Clone)]
 pub struct HostPort {
@@ -65,24 +64,10 @@ impl<C> From<C> for Ctr<C> {
     }
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum Cmd {
-    Server {
-        #[arg(long)]
-        brokers: Ctr<Vec<HostPort>>,
-        #[arg(long)]
-        bind: SocketAddr,
-    },
-    Client {
-        #[arg(long)]
-        file: PathBuf,
-        #[arg(long)]
-        target: HostPort,
-    }
-}
-
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
-    #[command(subcommand)]
-    pub cmd: Cmd,
+    #[arg(long)]
+    pub brokers: Ctr<Vec<HostPort>>,
+    #[arg(long)]
+    pub bind: SocketAddr,
 }
