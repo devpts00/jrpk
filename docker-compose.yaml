@@ -28,7 +28,7 @@ services:
     image: apache/kafka
     profiles:
       - kafka
-    command: ["./kafka-topics.sh", "--bootstrap-server", "kfk:9092", "--create", "--if-not-exists", "--topic", "posts"]
+    command: ["./kafka-topics.sh", "--bootstrap-server", "kfk:9092", "--create", "--if-not-exists", "--topic", "posts", "--partitions", "120"]
     working_dir: "/opt/kafka/bin"
     depends_on:
       kfk:

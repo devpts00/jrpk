@@ -15,6 +15,7 @@ use tokio_util::codec::Framed;
 use tracing::{debug, error, info, trace};
 use crate::codec::JsonCodec;
 use crate::errors::JrpkResult;
+use crate::QUEUE_SIZE;
 
 async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JsonCodec>>, ctx: Arc<KfkClientCache>, kfk_res_id_snd: KfkResIdSnd) -> JrpkResult<()> {
     info!("input, addr: {} - START", addr);
@@ -31,7 +32,7 @@ async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStre
                 let partition = jrp_req.params.partition;
                 let kfk_req: KfkReq = jrp_req.try_into()?;
                 let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
-                let kfk_req_id_snd = ctx.lookup_kafka_sender(topic, partition, 4).await?;
+                let kfk_req_id_snd = ctx.lookup_kafka_sender(topic, partition, QUEUE_SIZE).await?;
                 kfk_req_id_snd.send(kfk_req_id).await?;
             }
             Err(err) => {
@@ -72,7 +73,7 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> JrpkResult<()> 
         let codec = JsonCodec::new();
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();
-        let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<KfkResId>(4);
+        let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<KfkResId>(QUEUE_SIZE);
         tokio::spawn(handle_future("input", run_input_loop(addr, stream, ctx.clone(), kfk_res_id_snd)));
         tokio::spawn(handle_future("output", run_output_loop(addr, sink, kfk_res_id_rcv)));
     }

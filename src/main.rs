@@ -21,6 +21,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
+const QUEUE_SIZE: usize = 8;
 
 async fn run(args: args::Args) {
     join_with_signal(

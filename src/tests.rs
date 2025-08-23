@@ -5,7 +5,7 @@ use futures::stream::{SplitSink, SplitStream};
 use rand::{Rng, SeedableRng};
 use random_data::{DataGenerator, DataType};
 use std::io::{Read, Write};
-use std::ops::Add;
+use std::ops::{Add, Range};
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -22,14 +22,15 @@ use crate::errors::JrpkError;
 use crate::kafka::KfkResId;
 use crate::util::handle_future;
 
-fn generate_send_req(buf: &mut Vec<u8>) {
+fn generate_send_req(buf: &mut Vec<u8>, rec_count_per_send: u16, partition_count: u8) {
+    let partitions = 120;
     let mut rng = rand::rng();
     let mut gen = DataGenerator::new();
-    let size: usize = rng.random_range(10..20);
     let mut comma = false;
     let id: u32 = rng.random();
-    write!(buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "send", "params": {{ "topic": "posts", "partition": 0, "records": ["#, id).unwrap();
-    for n in 0..size {
+    let partition = rng.random_range(0..partition_count);
+    write!(buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "send", "params": {{ "topic": "posts", "partition": {}, "records": ["#, id, partition).unwrap();
+    for n in 0..rec_count_per_send {
         if comma {
             buf.push(b',');
         } else {
@@ -44,14 +45,14 @@ fn generate_send_req(buf: &mut Vec<u8>) {
     buf.extend_from_slice(b"] }}");
 }
 
-async fn producer_writer(wh: OwnedWriteHalf) -> Result<(), anyhow::Error> {
+async fn producer_writer(wh: OwnedWriteHalf, partition_count: u8, send_count_per_producer: u16, rec_count_per_send: u16) -> Result<(), anyhow::Error> {
     info!("produce - write, start");
     let mut buf: Vec<u8> = Vec::with_capacity(4 * 1024);
     let mut writer = tokio::io::BufWriter::with_capacity(4 * 1024, wh);
-    let total: usize = rand::rng().random_range(100..200);
-    for n in 0..total {
+    let total: usize = 1000;
+    for n in 0..send_count_per_producer {
         buf.clear();
-        generate_send_req(&mut buf);
+        generate_send_req(&mut buf, rec_count_per_send, partition_count);
         writer.write_all(&buf).await?;
         writer.flush().await?;
     }
@@ -67,7 +68,7 @@ async fn producer_reader(rh: OwnedReadHalf) -> Result<(), anyhow::Error> {
     while let Ok(n) = reader.read_line(&mut line).await {
         if n > 0 {
             line.pop();
-            info!("produce - read, response: {}", line);
+            trace!("produce - read, response: {}", line);
             line.clear()
         } else {
             break;
@@ -81,6 +82,9 @@ async fn producer_reader(rh: OwnedReadHalf) -> Result<(), anyhow::Error> {
 async fn test_produce() -> Result<(), JrpkError> {
     info!("produce, start");
     init_tracing();
+    let partition_count = 120;
+    let send_count_per_producer = 1000;
+    let rec_count_per_send = 100;
     let parallelism = 50;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * parallelism);
     for _ in 0..parallelism {
@@ -88,7 +92,7 @@ async fn test_produce() -> Result<(), JrpkError> {
         let stream = TcpStream::connect(addr).await?;
         let (rh, wh) = stream.into_split();
         let wh = tokio::spawn(async move {
-            producer_writer(wh).await.unwrap();
+            producer_writer(wh, partition_count, send_count_per_producer, rec_count_per_send).await.unwrap();
         });
         tasks.push(wh);
         let rh = tokio::spawn(async move {
@@ -155,10 +159,13 @@ async fn consumer_reader(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), Jrpk
                         trace!("consume - read, offset: {}, high_watermark: {}", offset, high_watermark);
                         if (offset < high_watermark) {
                             snd.send(offset).await?;
+                        } else {
+                            break;
                         }
                     }
                     TestJrpRspData::Fetch { next_offset: None, high_watermark } => {
                         trace!("reader, offset: None, high_watermark: {}", high_watermark);
+                        break;
                     }
                 }
             }
@@ -169,21 +176,24 @@ async fn consumer_reader(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), Jrpk
     Ok(())
 }
 
-async fn consumer_writer(wh: OwnedWriteHalf, mut rcv: Receiver<i64>) -> Result<(), anyhow::Error> {
+async fn consumer_writer(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: u8, byte_size_min: u32, byte_size_max: u32) -> Result<(), anyhow::Error> {
     info!("writer, start");
     let mut buf: Vec<u8> = Vec::with_capacity(4 * 1024);
     let mut writer = tokio::io::BufWriter::with_capacity(4 * 1024, wh);
 
     // write earliest offset request
-    write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": 0, "method": "offset", "params": {{ "topic": "posts", "partition": 0, "at": "earliest" }} }}"#)?;
+    write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": 0, "method": "offset", "params": {{ "topic": "posts", "partition": {}, "at": "earliest" }} }}"#, partition)?;
     writer.write_all(&buf).await?;
     writer.flush().await?;
     buf.clear();
 
+    let mut id: usize = 0;
     // receive offsets and write fetch requests
     while let Some(offset) = rcv.recv().await {
+        id = id + 1;
         trace!("writer, offset: {}", offset);
-        write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": 0, "method": "fetch", "params": {{ "topic": "posts", "partition": 0, "offset": {}, "bytes": {{ "start": 10000, "end": 100000 }}, "max_wait_ms": 1000 }} }}"#, offset)?;
+        write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "fetch", "params": {{ "topic": "posts", "partition": {}, "offset": {}, "bytes": {{ "start": {}, "end": {} }}, "max_wait_ms": 1000 }} }}"#,
+               id, partition, offset, byte_size_min, byte_size_max)?;
         writer.write_all(&buf).await?;
         writer.flush().await?;
         buf.clear();
@@ -198,15 +208,17 @@ async fn test_consume() -> Result<(), JrpkError> {
     use tokio::net::{TcpStream};
     info!("consume, start");
     init_tracing();
-    let parallelism = 50;
-    let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * parallelism);
-    for _ in 0..parallelism {
+    let partition_count: u8 = 120;
+    let byte_size_min: u32 = 1000;
+    let byte_size_max: u32 = 100000;
+    let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * partition_count as usize);
+    for partition in 0..partition_count {
         let addr = "jrpk:1133";
         let stream = TcpStream::connect(addr).await?;
         let (rh, wh) = stream.into_split();
         let (snd, rcv) = tokio::sync::mpsc::channel::<i64>(8);
         let wh = tokio::spawn(async move {
-            consumer_writer(wh, rcv).await.unwrap();
+            consumer_writer(wh, rcv, partition, byte_size_min, byte_size_max).await.unwrap();
         });
         tasks.push(wh);
         let rh = tokio::spawn(async move {
