@@ -4,10 +4,13 @@ use std::future::Future;
 use std::str::{from_utf8};
 use std::sync::Arc;
 use rskafka::record::{Record, RecordAndOffset};
+use socket2::SockRef;
+use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
+use crate::{RECV_BUFFER_SIZE, SEND_BUFFER_SIZE};
 
 #[derive(Debug)]
 pub struct ResId<RSP, E: Error> {
@@ -173,4 +176,10 @@ pub fn debug_record_and_offset(f: &mut Formatter<'_>, record: &Record, offset: O
         write!(f, ", ")?;
     }
     write!(f, "timestamp: {} }}", record.timestamp)
+}
+
+pub fn set_buf_sizes(stream: &TcpStream, recv: usize, send: usize) -> std::io::Result<()> {
+    let socket = SockRef::from(&stream);
+    socket.set_recv_buffer_size(recv)?;
+    socket.set_send_buffer_size(send)
 }

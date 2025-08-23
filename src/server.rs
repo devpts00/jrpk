@@ -1,23 +1,23 @@
 use crate::args::HostPort;
+use crate::codec::JsonCodec;
+use crate::errors::JrpkResult;
 use crate::jsonrpc::{JrpReq, JrpRsp};
-use crate::kafka::{KfkClientCache, KfkReq, KfkResIdSnd, KfkRsp, KfkResId};
-use crate::util::{handle_future, ReqId};
+use crate::kafka::{KfkClientCache, KfkReq, KfkResId, KfkResIdSnd, KfkRsp};
+use crate::util::{handle_future, set_buf_sizes, ReqId};
+use crate::{QUEUE_SIZE, RECV_BUFFER_SIZE, SEND_BUFFER_SIZE};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
+use socket2::SockRef;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::str::from_utf8_unchecked;
 use std::sync::Arc;
-use socket2::SockRef;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver};
+use tokio::sync::mpsc::Receiver;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, trace};
-use crate::codec::JsonCodec;
-use crate::errors::JrpkResult;
-use crate::QUEUE_SIZE;
 
 async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JsonCodec>>, ctx: Arc<KfkClientCache>, kfk_res_id_snd: KfkResIdSnd) -> JrpkResult<()> {
     info!("input, addr: {} - START", addr);
@@ -71,13 +71,7 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> JrpkResult<()> 
 
     loop {
         let (stream, addr) = listener.accept().await?;
-
-        let socket = SockRef::from(&stream);
-        info!("recv: {}, send: {}", socket.recv_buffer_size()?, socket.send_buffer_size()?);
-        socket.set_recv_buffer_size(1024)?;
-        socket.set_send_buffer_size(1024)?;
-        info!("recv: {}, send: {}", socket.recv_buffer_size()?, socket.send_buffer_size()?);
-        drop(socket);
+        set_buf_sizes(&stream, RECV_BUFFER_SIZE, SEND_BUFFER_SIZE)?;
 
         info!("server, accepted: {:?}", addr);
 
