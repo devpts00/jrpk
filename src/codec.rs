@@ -2,10 +2,9 @@ use std::cmp::min;
 use std::str::{from_utf8, from_utf8_unchecked};
 use crate::jsonrpc::JrpRsp;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, enabled, info, trace, Level};
-use crate::errors::{JrpkError, JrpkResult};
-use crate::errors::JrpkError::FrameTooBig;
 use crate::MAX_FRAME_SIZE;
 
 #[derive(Debug)]
@@ -40,12 +39,20 @@ impl JsonCodec {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum BytesFrameDecoderError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("frame too big: {0}")]
+    FrameTooBig(usize),
+}
+
 impl Decoder for JsonCodec {
 
     type Item = Bytes;
-    type Error = JrpkError;
+    type Error = BytesFrameDecoderError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> JrpkResult<Option<Self::Item>> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
 
         if enabled!(Level::TRACE) {
             let text = unsafe { from_utf8_unchecked(src.as_ref()) };
@@ -55,8 +62,8 @@ impl Decoder for JsonCodec {
 
         while self.position < src.len() {
 
-            if (self.position > MAX_FRAME_SIZE) {
-                return Err(FrameTooBig(self.position));
+            if self.position > MAX_FRAME_SIZE {
+                return Err(BytesFrameDecoderError::FrameTooBig(self.position));
             }
 
             let b = src[self.position];
@@ -112,9 +119,17 @@ impl Decoder for JsonCodec {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum JsonEncoderError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::error::Error),
+}
+
 impl Encoder<JrpRsp> for JsonCodec {
-    type Error = JrpkError;
-    fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> JrpkResult<()> {
+    type Error = JsonEncoderError;
+    fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> Result<(), Self::Error> {
         serde_json::to_writer(dst.writer(), &response)?;
         dst.put_u8(b'\n');
         Ok(())
@@ -122,8 +137,8 @@ impl Encoder<JrpRsp> for JsonCodec {
 }
 
 impl Encoder<&[u8]> for JsonCodec {
-    type Error = JrpkError;
-    fn encode(&mut self, response: &[u8], dst: &mut BytesMut) -> JrpkResult<()> {
+    type Error = std::io::Error;
+    fn encode(&mut self, response: &[u8], dst: &mut BytesMut) -> Result<(), Self::Error> {
         dst.put_slice(response);
         Ok(())
     }

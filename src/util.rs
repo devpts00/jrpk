@@ -1,16 +1,15 @@
+use crate::{RECV_BUFFER_SIZE, SEND_BUFFER_SIZE};
+use rskafka::record::Record;
+use socket2::SockRef;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
-use std::str::{from_utf8};
-use std::sync::Arc;
-use rskafka::record::{Record, RecordAndOffset};
-use socket2::SockRef;
+use std::str::from_utf8;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
-use crate::{RECV_BUFFER_SIZE, SEND_BUFFER_SIZE};
 
 #[derive(Debug)]
 pub struct ResId<RSP, E: Error> {

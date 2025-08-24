@@ -1,33 +1,9 @@
-use crate::errors::JrpkError;
 use clap::Parser;
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::str::FromStr;
-
-#[derive(Debug, Clone)]
-pub struct HostPort {
-    pub host: String,
-    pub port: u16,
-}
-
-impl Display for HostPort {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.host, self.port)
-    }
-}
-
-impl FromStr for HostPort {
-    type Err = JrpkError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (host, port) = s.split_once(':')
-            .ok_or(JrpkError::General("endpoint must be host:port"))?;
-        Ok(HostPort {
-            host: String::from(host),
-            port: u16::from_str_radix(port, 10)?
-        })
-    }
-}
+use bytesize::ByteSize;
 
 #[derive(Debug, Clone)]
 pub struct Ctr<C>(pub C);
@@ -67,7 +43,9 @@ impl<C> From<C> for Ctr<C> {
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
     #[arg(long)]
-    pub brokers: Ctr<Vec<HostPort>>,
+    pub brokers: Ctr<Vec<String>>,
     #[arg(long)]
     pub bind: SocketAddr,
+    #[arg(long)]
+    pub max_frame_size: ByteSize,
 }

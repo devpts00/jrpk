@@ -1,4 +1,4 @@
-use crate::kafka::{KfkError, KfkResId, KfkRsp};
+use crate::kafka::{RsKafkaError, KfkResId, KfkRsp};
 use rskafka::chrono::{DateTime, Utc};
 use rskafka::record::{Record, RecordAndOffset};
 use serde::ser::SerializeStruct;
@@ -8,9 +8,10 @@ use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::str::FromStr;
+use std::string::FromUtf8Error;
 use rskafka::client::partition::OffsetAt;
 use serde::de::{Error, Visitor};
-use crate::errors::{JrpkError, JrpkResult};
+use thiserror::Error;
 
 fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
     match value {
@@ -19,7 +20,17 @@ fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
     }
 }
 
-fn raw_value_from_bytes(bytes: Option<Vec<u8>>) -> Result<Option<Box<RawValue>>, JrpkError> {
+#[derive(Error, Debug)]
+pub enum JrpError {
+    #[error("syntax: {0}")]
+    Syntax(&'static str),
+    #[error("utf8: {0}")]
+    Utf8(#[from] FromUtf8Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::error::Error),
+}
+
+fn raw_value_from_bytes(bytes: Option<Vec<u8>>) -> Result<Option<Box<RawValue>>, JrpError> {
     match bytes {
         Some(bytes) => {
             let string = String::from_utf8(bytes)?;
@@ -71,7 +82,7 @@ pub struct JrpRecFetch {
 /// JSONRPC output record can fail to be created from Kafka record.
 /// Kafka bytes might not be UTF-8 or JSON.
 impl TryFrom<RecordAndOffset> for JrpRecFetch {
-    type Error = JrpkError;
+    type Error = JrpError;
     fn try_from(rec_and_offset: RecordAndOffset) -> Result<Self, Self::Error> {
         let offset = rec_and_offset.offset;
         let key = raw_value_from_bytes(rec_and_offset.record.key)?;
@@ -176,25 +187,25 @@ pub struct JrpReq<'a> {
 
 /// JSONRPC error.
 #[derive(Debug, Serialize)]
-pub struct JrpError {
+pub struct JrpErrorMsg {
     message: String,
 }
 
-impl JrpError {
+impl JrpErrorMsg {
     pub fn new(message: String) -> Self {
-        JrpError { message }
+        JrpErrorMsg { message }
     }
 }
 
-impl From<JrpkError> for JrpError {
-    fn from(error: JrpkError) -> Self {
-        JrpError::new(format!("{}", error))
+impl From<JrpError> for JrpErrorMsg {
+    fn from(error: JrpError) -> Self {
+        JrpErrorMsg::new(format!("{}", error))
     }
 }
 
-impl From<KfkError> for JrpError {
-    fn from(value: KfkError) -> Self {
-        JrpError::new(format!("{}", value))
+impl From<RsKafkaError> for JrpErrorMsg {
+    fn from(value: RsKafkaError) -> Self {
+        JrpErrorMsg::new(format!("{}", value))
     }
 }
 
@@ -227,14 +238,14 @@ impl JrpRspData {
 }
 
 impl TryFrom<KfkRsp> for JrpRspData {
-    type Error = JrpkError;
-    fn try_from(value: KfkRsp) -> JrpkResult<Self> {
+    type Error = JrpError;
+    fn try_from(value: KfkRsp) -> Result<Self, Self::Error> {
         match value {
             KfkRsp::Send { offsets } => {
                 Ok(JrpRspData::send(offsets))
             }
             KfkRsp::Fetch { recs_and_offsets, high_watermark } => {
-                let res_records: JrpkResult<Vec<JrpRecFetch>> = recs_and_offsets.into_iter()
+                let res_records: Result<Vec<JrpRecFetch>, Self::Error> = recs_and_offsets.into_iter()
                     .map(|ro| { ro.try_into() }).collect();
                 res_records.map(|records| JrpRspData::fetch(records, high_watermark))
             }
@@ -248,17 +259,17 @@ impl TryFrom<KfkRsp> for JrpRspData {
 #[derive(Debug)]
 pub struct JrpRsp {
     pub id: usize,
-    pub result: Result<JrpRspData, JrpError>,
+    pub result: Result<JrpRspData, JrpErrorMsg>,
 }
 
 impl JrpRsp {
-    pub fn new(id: usize, result: Result<JrpRspData, JrpError>) -> Self {
+    pub fn new(id: usize, result: Result<JrpRspData, JrpErrorMsg>) -> Self {
         JrpRsp { id, result }
     }
     pub fn ok(id: usize, data: JrpRspData) -> Self {
         JrpRsp::new(id, Ok(data))
     }
-    pub fn err(id: usize, error: JrpError) -> Self {
+    pub fn err(id: usize, error: JrpErrorMsg) -> Self {
         JrpRsp::new(id, Err(error))
     }
 }
@@ -268,7 +279,7 @@ impl From<KfkResId> for JrpRsp {
         let id = value.id;
         match value.res {
             Ok(rsp) => {
-                let res_data: JrpkResult<JrpRspData> = rsp.try_into();
+                let res_data: Result<JrpRspData, JrpError> = rsp.try_into();
                 match res_data {
                     Ok(data) => JrpRsp::ok(id, data),
                     Err(err) => JrpRsp::err(id, err.into())

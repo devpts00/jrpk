@@ -16,9 +16,8 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::io::{AsyncWriteExt, AsyncReadExt, AsyncBufReadExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tracing::{debug, error, info, trace};
-use crate::errors::JrpkError;
 use crate::kafka::KfkResId;
 use crate::util::handle_future;
 
@@ -79,7 +78,7 @@ async fn producer_reader(rh: OwnedReadHalf) -> Result<(), anyhow::Error> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
-async fn test_produce() -> Result<(), JrpkError> {
+async fn test_produce() -> Result<(), anyhow::Error> {
     info!("produce, start");
     init_tracing();
     let partition_count = 120;
@@ -136,7 +135,7 @@ fn get_offset_from_fetch(line: &str) -> serde_json::Result<TestJrpRsp> {
     serde_json::from_str::<TestJrpRsp>(line)
 }
 
-async fn consumer_reader(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), JrpkError> {
+async fn consumer_reader(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), anyhow::Error> {
     info!("consume - read, start");
     let mut reader = BufReader::with_capacity(4 * 1024, rh);
     let mut line = String::with_capacity(4 * 1024);
@@ -204,9 +203,8 @@ async fn consumer_writer(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
-async fn test_consume() -> Result<(), JrpkError> {
+async fn test_consume() -> Result<(), anyhow::Error> {
     use tokio::net::{TcpStream};
-
 
     info!("consume, start");
     init_tracing();

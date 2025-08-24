@@ -1,25 +1,55 @@
-use crate::args::HostPort;
-use crate::codec::JsonCodec;
-use crate::errors::JrpkResult;
-use crate::jsonrpc::{JrpReq, JrpRsp};
-use crate::kafka::{KfkClientCache, KfkReq, KfkResId, KfkResIdSnd, KfkRsp};
+use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
+use crate::jsonrpc::{JrpError, JrpReq, JrpRsp};
+use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkResId, KfkResIdSnd, RsKafkaError};
 use crate::util::{handle_future, set_buf_sizes, ReqId};
 use crate::{QUEUE_SIZE, RECV_BUFFER_SIZE, SEND_BUFFER_SIZE};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
-use socket2::SockRef;
 use std::net::SocketAddr;
-use std::os::fd::{AsRawFd, FromRawFd};
 use std::str::from_utf8_unchecked;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use thiserror::Error;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, trace};
+use tracing::{error, info, trace};
 
-async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStream, JsonCodec>>, ctx: Arc<KfkClientCache>, kfk_res_id_snd: KfkResIdSnd) -> JrpkResult<()> {
+#[derive(Error, Debug)]
+pub enum ServerError {
+    #[error("decoder: {0}")]
+    Decoder(#[from] BytesFrameDecoderError),
+    #[error("encoder: {0}")]
+    Encoder(#[from] JsonEncoderError),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::error::Error),
+    #[error("kafka: {0}")]
+    Kafka(#[from] KfkError),
+    #[error("jsonrpc: {0}")]
+    Jsonrpc(#[from] JrpError),
+    #[error("send: {0}")]
+    Send(SendError<()>),
+    #[error("rs kafka: {0}")]
+    Rs(#[from] RsKafkaError),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// deliberately drop payload
+impl <T> From<SendError<T>> for ServerError {
+    fn from(value: SendError<T>) -> Self {
+        ServerError::Send(SendError(()))
+    }
+}
+
+async fn run_input_loop(
+    addr: SocketAddr,
+    mut stream: SplitStream<Framed<TcpStream, JsonCodec>>,
+    ctx: Arc<KfkClientCache>,
+    kfk_res_id_snd: KfkResIdSnd
+) -> Result<(), ServerError> {
     info!("input, addr: {} - START", addr);
     while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect
@@ -46,7 +76,11 @@ async fn run_input_loop(addr: SocketAddr, mut stream: SplitStream<Framed<TcpStre
     Ok(())
 }
 
-async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>, mut kfk_res_id_rcv: Receiver<KfkResId>) -> JrpkResult<()> {
+async fn run_output_loop(
+    addr: SocketAddr,
+    mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>,
+    mut kfk_res_id_rcv: Receiver<KfkResId>
+) -> Result<(), ServerError> {
     info!("output, addr: {} - START", addr);
     while let Some(kfk_res_id) = kfk_res_id_rcv.recv().await {
         let rsp_jrp: JrpRsp = kfk_res_id.into();
@@ -59,11 +93,10 @@ async fn run_output_loop(addr: SocketAddr, mut sink: SplitSink<Framed<TcpStream,
     Ok(())
 }
 
-pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> JrpkResult<()> {
+pub async fn listen(bind: SocketAddr, brokers: Vec<String>) -> Result<(), ServerError> {
 
     info!("server, kafka: {:?}", brokers);
-    let bs: Vec<String> = brokers.iter().map(|hp| { hp.to_string() }).collect();
-    let client = ClientBuilder::new(bs).build().await?;
+    let client = ClientBuilder::new(brokers).build().await?;
     let ctx = Arc::new(KfkClientCache::new(client, 1024));
 
     info!("server, listen: {:?}", bind);
@@ -71,10 +104,8 @@ pub async fn listen(bind: SocketAddr, brokers: Vec<HostPort>) -> JrpkResult<()> 
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        set_buf_sizes(&stream, RECV_BUFFER_SIZE, SEND_BUFFER_SIZE)?;
-
         info!("server, accepted: {:?}", addr);
-
+        set_buf_sizes(&stream, RECV_BUFFER_SIZE, SEND_BUFFER_SIZE)?;
         let codec = JsonCodec::new();
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();

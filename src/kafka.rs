@@ -5,11 +5,13 @@ use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, Unknown
 use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
+use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::error::SendError;
 use tracing::{debug, info, trace, warn};
-use crate::errors::{JrpkError, JrpkResult};
-use crate::jsonrpc::{JrpMethod, JrpReq};
+use crate::jsonrpc::{JrpError, JrpMethod, JrpReq};
 
 pub enum KfkReq {
     Send {
@@ -62,25 +64,25 @@ impl KfkReq {
 }
 
 impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
-    type Error = JrpkError;
+    type Error = JrpError;
     fn try_from(req: JrpReq<'a>) -> Result<Self, Self::Error> {
         match req.method {
             JrpMethod::Send => {
                 let jrp_records = req.params.records
-                    .ok_or(JrpkError::Syntax("records is missing"))?;
+                    .ok_or(JrpError::Syntax("records is missing"))?;
                 let records: Vec<Record> = jrp_records.into_iter()
                     .map(|x| x.into())
                     .collect();
                 Ok(KfkReq::send(records))
             }
             JrpMethod::Fetch => {
-                let offset = req.params.offset.ok_or(JrpkError::Syntax("offset is missing"))?;
-                let bytes = req.params.bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
-                let max_wait_ms = req.params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
+                let offset = req.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;
+                let bytes = req.params.bytes.ok_or(JrpError::Syntax("bytes is missing"))?;
+                let max_wait_ms = req.params.max_wait_ms.ok_or(JrpError::Syntax("max_wait_ms is missing"))?;
                 Ok(KfkReq::fetch(offset, bytes, max_wait_ms))
             }
             JrpMethod::Offset => {
-                let at = req.params.at.ok_or(JrpkError::Syntax("at is missing"))?;
+                let at = req.params.at.ok_or(JrpError::Syntax("at is missing"))?;
                 Ok(KfkReq::offset(at.into()))
             }
         }
@@ -130,15 +132,34 @@ impl Debug for KfkRsp {
     }
 }
 
-pub type KfkError = rskafka::client::error::Error;
-pub type KfkReqId = ReqId<KfkReq, KfkRsp, KfkError>;
-pub type KfkResId = ResId<KfkRsp, KfkError>;
+pub type RsKafkaError = rskafka::client::error::Error;
+pub type KfkReqId = ReqId<KfkReq, KfkRsp, RsKafkaError>;
+pub type KfkResId = ResId<KfkRsp, RsKafkaError>;
 pub type KfkResIdSnd = Sender<KfkResId>;
 pub type KfkResIdRcv = Receiver<KfkResId>;
 pub type KfkReqIdSnd = Sender<KfkReqId>;
 pub type KfkReqIdRcv = Receiver<KfkReqId>;
 
-async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> JrpkResult<()> {
+#[derive(Error, Debug)]
+pub enum KfkError {
+    #[error("rs kafka: {0}")]
+    Rs(#[from] RsKafkaError),
+
+    #[error("send: {0}")]
+    Send(SendError<()>),
+
+    #[error("{0}")]
+    Wrapped(#[from] Arc<KfkError>),
+}
+
+/// deliberately drop payload
+impl <T> From<tokio::sync::mpsc::error::SendError<T>> for KfkError {
+    fn from(value: SendError<T>) -> Self {
+        KfkError::Send(tokio::sync::mpsc::error::SendError(()))
+    }
+}
+
+async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> Result<(), KfkError> {
     info!("kafka, client: {}/{} - START", cli.topic(), cli.partition());
     while let Some(req_id) = req_id_rcv.recv().await {
         trace!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_id);
@@ -195,7 +216,7 @@ impl KfkClientCache {
         Self { client, cache: Cache::new(capacity) }
     }
 
-    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> JrpkResult<KfkReqIdSnd> {
+    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> Result<KfkReqIdSnd, KfkError> {
         info!("kafka, init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
@@ -203,7 +224,7 @@ impl KfkClientCache {
         Ok(req_id_snd)
     }
 
-    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> JrpkResult<KfkReqIdSnd> {
+    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> Result<KfkReqIdSnd, KfkError> {
         trace!("kafka, lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(&key, capacity);

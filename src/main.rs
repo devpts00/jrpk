@@ -4,7 +4,6 @@ mod util;
 mod jsonrpc;
 mod kafka;
 mod codec;
-mod errors;
 mod tests;
 
 use crate::server::listen;
@@ -13,6 +12,7 @@ use clap::Parser;
 use std::sync::Once;
 use std::time::Duration;
 use tokio;
+use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
@@ -52,6 +52,7 @@ fn init_tracing() {
 fn main() {
     init_tracing();
     let args = args::Args::parse();
+    info!("args: {:?}", args);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
