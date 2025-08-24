@@ -18,13 +18,8 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
-const QUEUE_SIZE: usize = 8;
-const MAX_FRAME_SIZE: usize = 1024 * 1024;
-const RECV_BUFFER_SIZE: usize = 8 * 1024;
-const SEND_BUFFER_SIZE: usize = 8 * 1024;
-
 async fn run(args: args::Args) {
-    join_with_signal("main", tokio::spawn(handle_future("listen", listen(args.bind, args.brokers.0)))).await
+    join_with_signal("main", tokio::spawn(handle_future("listen", listen(args)))).await
 }
 
 static TRACING: Once = Once::new();

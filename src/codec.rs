@@ -5,10 +5,10 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, enabled, info, trace, Level};
-use crate::MAX_FRAME_SIZE;
 
 #[derive(Debug)]
 pub struct JsonCodec {
+    max_frame_size: usize,
     level: u8,
     position: usize,
     quotes: bool,
@@ -16,8 +16,9 @@ pub struct JsonCodec {
 }
 
 impl JsonCodec {
-    pub fn new() -> Self {
+    pub fn new(max_frame_size: usize) -> Self {
         JsonCodec {
+            max_frame_size,
             level: 0,
             position: 0,
             quotes: false,
@@ -62,7 +63,7 @@ impl Decoder for JsonCodec {
 
         while self.position < src.len() {
 
-            if self.position > MAX_FRAME_SIZE {
+            if self.position > self.max_frame_size {
                 return Err(BytesFrameDecoderError::FrameTooBig(self.position));
             }
 

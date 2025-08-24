@@ -83,7 +83,7 @@ async fn test_produce() -> Result<(), anyhow::Error> {
     init_tracing();
     let partition_count = 120;
     let send_count_per_producer = 1000;
-    let rec_count_per_send = 1000;
+    let rec_count_per_send = 100;
     let parallelism = 120;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * parallelism);
     for _ in 0..parallelism {

@@ -1,4 +1,3 @@
-use crate::{RECV_BUFFER_SIZE, SEND_BUFFER_SIZE};
 use rskafka::record::Record;
 use socket2::SockRef;
 use std::error::Error;

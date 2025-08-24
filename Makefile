@@ -23,10 +23,10 @@ build-release:
 	docker compose run --rm rst cargo build --release
 
 server-debug: build-debug
-	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk --brokers kfk:9092 --bind 0.0.0.0:1133 --max-frame-size 1Mib
+	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk --brokers kfk:9092 --bind 0.0.0.0:1133 --queue-size 8
 
 server-release: build-release
-	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/release/jrpk --brokers kfk:9092 --bind 0.0.0.0:1133
+	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/release/jrpk --brokers kfk:9092 --bind 0.0.0.0:1133 --queue-size 8
 
 trace:
 	docker compose run --rm -it --rm --use-aliases --remove-orphans trc

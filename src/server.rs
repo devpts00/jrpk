@@ -2,7 +2,6 @@ use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpError, JrpReq, JrpRsp};
 use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkResId, KfkResIdSnd, RsKafkaError};
 use crate::util::{handle_future, set_buf_sizes, ReqId};
-use crate::{QUEUE_SIZE, RECV_BUFFER_SIZE, SEND_BUFFER_SIZE};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
@@ -16,6 +15,7 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::codec::Framed;
 use tracing::{error, info, trace};
+use crate::args::Args;
 
 #[derive(Error, Debug)]
 pub enum ServerError {
@@ -48,7 +48,8 @@ async fn run_input_loop(
     addr: SocketAddr,
     mut stream: SplitStream<Framed<TcpStream, JsonCodec>>,
     ctx: Arc<KfkClientCache>,
-    kfk_res_id_snd: KfkResIdSnd
+    kfk_res_id_snd: KfkResIdSnd,
+    queue_size: usize,
 ) -> Result<(), ServerError> {
     info!("input, addr: {} - START", addr);
     while let Some(result) = stream.next().await {
@@ -64,7 +65,7 @@ async fn run_input_loop(
                 let partition = jrp_req.params.partition;
                 let kfk_req: KfkReq = jrp_req.try_into()?;
                 let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
-                let kfk_req_id_snd = ctx.lookup_kafka_sender(topic, partition, QUEUE_SIZE).await?;
+                let kfk_req_id_snd = ctx.lookup_kafka_sender(topic, partition, queue_size).await?;
                 kfk_req_id_snd.send(kfk_req_id).await?;
             }
             Err(err) => {
@@ -93,24 +94,28 @@ async fn run_output_loop(
     Ok(())
 }
 
-pub async fn listen(bind: SocketAddr, brokers: Vec<String>) -> Result<(), ServerError> {
+pub async fn listen(args: Args) -> Result<(), ServerError> {
 
-    info!("server, kafka: {:?}", brokers);
-    let client = ClientBuilder::new(brokers).build().await?;
+    info!("server, kafka: {:?}", args.brokers);
+    let client = ClientBuilder::new(args.brokers.0).build().await?;
     let ctx = Arc::new(KfkClientCache::new(client, 1024));
 
-    info!("server, listen: {:?}", bind);
-    let listener = TcpListener::bind(bind).await?;
+    info!("server, listen: {:?}", args.bind);
+    let listener = TcpListener::bind(args.bind).await?;
 
     loop {
         let (stream, addr) = listener.accept().await?;
         info!("server, accepted: {:?}", addr);
-        set_buf_sizes(&stream, RECV_BUFFER_SIZE, SEND_BUFFER_SIZE)?;
-        let codec = JsonCodec::new();
+        set_buf_sizes(
+            &stream,
+            args.recv_buffer_size.as_u64() as usize,
+            args.send_buffer_size.as_u64() as usize
+        )?;
+        let codec = JsonCodec::new(args.max_frame_size.as_u64() as usize);
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();
-        let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<KfkResId>(QUEUE_SIZE);
-        tokio::spawn(handle_future("input", run_input_loop(addr, stream, ctx.clone(), kfk_res_id_snd)));
+        let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<KfkResId>(args.queue_size);
+        tokio::spawn(handle_future("input", run_input_loop(addr, stream, ctx.clone(), kfk_res_id_snd, args.queue_size)));
         tokio::spawn(handle_future("output", run_output_loop(addr, sink, kfk_res_id_rcv)));
     }
 }

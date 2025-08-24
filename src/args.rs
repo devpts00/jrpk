@@ -46,6 +46,12 @@ pub struct Args {
     pub brokers: Ctr<Vec<String>>,
     #[arg(long)]
     pub bind: SocketAddr,
-    #[arg(long)]
+    #[arg(long, default_value = "1MiB")]
     pub max_frame_size: ByteSize,
+    #[arg(long, default_value = "32KiB")]
+    pub send_buffer_size: ByteSize,
+    #[arg(long, default_value = "32KiB")]
+    pub recv_buffer_size: ByteSize,
+    #[arg(long, default_value_t = 32)]
+    pub queue_size: usize
 }
