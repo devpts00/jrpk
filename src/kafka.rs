@@ -6,6 +6,7 @@ use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
 use std::sync::Arc;
+use base64::DecodeError;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -70,10 +71,10 @@ impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
             JrpMethod::Send => {
                 let jrp_records = req.params.records
                     .ok_or(JrpError::Syntax("records is missing"))?;
-                let records: Vec<Record> = jrp_records.into_iter()
-                    .map(|x| x.into())
+                let records: Result<Vec<Record>, DecodeError> = jrp_records.into_iter()
+                    .map(|x| x.try_into())
                     .collect();
-                Ok(KfkReq::send(records))
+                Ok(KfkReq::send(records?))
             }
             JrpMethod::Fetch => {
                 let offset = req.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;

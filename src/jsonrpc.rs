@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use crate::kafka::{RsKafkaError, KfkResId, KfkRsp};
 use rskafka::chrono::{DateTime, Utc};
 use rskafka::record::{Record, RecordAndOffset};
@@ -9,8 +10,11 @@ use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
+use base64::{DecodeError, Engine};
+use base64::prelude::BASE64_STANDARD;
 use rskafka::client::partition::OffsetAt;
 use serde::de::{Error, Visitor};
+use serde_json::Value;
 use thiserror::Error;
 
 fn bytes_from_raw_value_ref(value: Option<&RawValue>) -> Option<Vec<u8>> {
@@ -28,6 +32,8 @@ pub enum JrpError {
     Utf8(#[from] FromUtf8Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::error::Error),
+    #[error("base64: {0}")]
+    Base64(#[from] DecodeError),
 }
 
 fn raw_value_from_bytes(bytes: Option<Vec<u8>>) -> Result<Option<Box<RawValue>>, JrpError> {
@@ -49,25 +55,68 @@ pub enum JrpCodec {
     Base64
 }
 
+/// Send codec defines how encode JSON to Kafka bytes
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JrpSendCodec<'a> {
+    /// JSON fragment utf-8 slice will be interpreted as bytes
+    Json(&'a RawValue),
+    /// JSON string (without quotes) utf-8 slice will be interpreted as bytes
+    Str(&'a str),
+    /// JSON string (without quotest) utf-8 slice will be base64 decoded to bytes
+    Base64(&'a str),
+}
+
+impl <'a> TryInto<Vec<u8>> for JrpSendCodec<'a> {
+    type Error = DecodeError;
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        match self {
+            JrpSendCodec::<'a>::Json(fragment) => {
+                Ok(fragment.get().as_bytes().to_vec())
+            },
+            JrpSendCodec::<'a>::Str(text) => {
+                Ok(text.as_bytes().to_vec())
+            },
+            JrpSendCodec::<'a>::Base64(text) => {
+                BASE64_STANDARD.decode(text)
+            }
+        }
+    }
+}
+
+/// Fetch codec defines how to decode Kafka bytes to JSON
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JrpFetchCodec {
+    /// bytes will be interpreted as utf-8 and output as they are, assuming valid JSON fragment
+    Json,
+    /// bytes will be interpreted as utf-8 and output double-quoted, assuming valid
+    Str,
+    /// bytes will be base64 encoded to string and output double-quoted
+    Base64,
+}
+
 /// JSONRPC send record captures payload as references to raw JSON,
 /// because there is no way to turn RawValue into Vec<u8>.
 #[derive(Debug, Deserialize)]
-pub struct JrpRecSend<'a> {
+pub struct JrpSendRec<'a> {
     #[serde(borrow)]
-    key: Option<&'a RawValue>,
+    key: Option<JrpSendCodec<'a>>,
     #[serde(borrow)]
-    value: Option<&'a RawValue>,
+    value: Option<JrpSendCodec<'a>>,
 }
 
-/// JSONRPC input record can always be created consuming Kafka record.
-impl <'a> Into<Record> for JrpRecSend<'a> {
-    fn into(self) -> Record {
-        Record {
-            key: bytes_from_raw_value_ref(self.key),
-            value: bytes_from_raw_value_ref(self.value),
+impl <'a> TryInto<Record> for JrpSendRec<'a> {
+    type Error = DecodeError;
+    fn try_into(self) -> Result<Record, Self::Error> {
+        let key: Option<Vec<u8>> = self.key.map(|k| k.try_into()).transpose()?;
+        let value: Option<Vec<u8>> = self.value.map(|v| v.try_into()).transpose()?;
+        Ok(Record {
+            key,
+            value,
             headers: BTreeMap::new(),
             timestamp: Utc::now(),
-        }
+        })
     }
 }
 
@@ -169,7 +218,7 @@ pub struct JrpParams<'a> {
     pub topic: &'a str,
     pub partition: i32,
     pub codec: Option<JrpCodec>,
-    pub records: Option<Vec<JrpRecSend<'a>>>,
+    pub records: Option<Vec<JrpSendRec<'a>>>,
     pub offset: Option<i64>,
     pub bytes: Option<Range<i32>>,
     pub max_wait_ms: Option<i32>,

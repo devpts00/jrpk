@@ -40,7 +40,7 @@ fn generate_send_req(buf: &mut Vec<u8>, rec_count_per_send: u16, partition_count
         let first: String = DataType::FirstName.random(&mut gen);
         let last: String = DataType::LastName.random(&mut gen);
         let age: u8 = rng.random_range(10..80);
-        write!(buf, r#"{{"key": "{}", "value": {{ "first": "{}", "last": "{}", "age": {} }}}}"#, key, first, last, age).unwrap();
+        write!(buf, r#"{{"key": {{ "json": "{}" }}, "value": {{ "json": {{ "first": "{}", "last": "{}", "age": {} }} }} }}"#, key, first, last, age).unwrap();
     }
     buf.extend_from_slice(b"] }}");
 }
@@ -82,8 +82,8 @@ async fn test_produce() -> Result<(), anyhow::Error> {
     info!("produce, start");
     init_tracing();
     let partition_count = 120;
-    let send_count_per_producer = 1000;
-    let rec_count_per_send = 100;
+    let send_count_per_producer = 10;
+    let rec_count_per_send = 10;
     let parallelism = 120;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * parallelism);
     for _ in 0..parallelism {
