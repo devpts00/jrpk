@@ -12,9 +12,10 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tracing::{debug, info, trace, warn};
-use crate::jsonrpc::{JrpError, JrpMethod, JrpReq};
+use crate::jsonrpc::{JrpError, JrpMethod, JrpRecFetchCodecs, JrpReq};
 
-pub enum KfkReq {
+
+pub enum KfkReq<C> {
     Send {
         records: Vec<Record>
     },
@@ -22,13 +23,14 @@ pub enum KfkReq {
         offset: i64,
         bytes: Range<i32>,
         max_wait_ms: i32,
+        codecs: C,
     },
     Offset {
         at: OffsetAt
     }
 }
 
-impl Debug for KfkReq {
+impl <C: Debug> Debug for KfkReq<C> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             KfkReq::Send { records} => {
@@ -36,11 +38,12 @@ impl Debug for KfkReq {
                 debug_vec_fn(f, records, |f, r| { debug_record_and_offset(f, r, None) })?;
                 write!(f, " }}")
             }
-            KfkReq::Fetch { offset, bytes, max_wait_ms } => {
+            KfkReq::Fetch { offset, bytes, max_wait_ms, codecs } => {
                 f.debug_struct("Fetch")
                     .field("offset", offset)
                     .field("bytes", bytes)
                     .field("max_wait_ms", max_wait_ms)
+                    .field("codecs", codecs)
                     .finish()
             }
             KfkReq::Offset { at } => {
@@ -52,19 +55,19 @@ impl Debug for KfkReq {
     }
 }
 
-impl KfkReq {
+impl <C> KfkReq<C> {
     pub fn send(records: Vec<Record>) -> Self {
         KfkReq::Send { records }
     }
-    pub fn fetch(offset: i64, bytes: Range<i32>, max_wait_ms: i32) -> Self {
-        KfkReq::Fetch { offset, bytes, max_wait_ms }
+    pub fn fetch( offset: i64, bytes: Range<i32>, max_wait_ms: i32, codecs: C) -> Self {
+        KfkReq::Fetch { offset, bytes, max_wait_ms, codecs }
     }
     pub fn offset(at: OffsetAt) -> Self {
         KfkReq::Offset { at }
     }
 }
 
-impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
+impl <'a> TryFrom<JrpReq<'a>> for KfkReq<JrpRecFetchCodecs> {
     type Error = JrpError;
     fn try_from(req: JrpReq<'a>) -> Result<Self, Self::Error> {
         match req.method {
@@ -80,7 +83,8 @@ impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
                 let offset = req.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;
                 let bytes = req.params.bytes.ok_or(JrpError::Syntax("bytes is missing"))?;
                 let max_wait_ms = req.params.max_wait_ms.ok_or(JrpError::Syntax("max_wait_ms is missing"))?;
-                Ok(KfkReq::fetch(offset, bytes, max_wait_ms))
+                let codecs = req.params.codecs.ok_or(JrpError::Syntax("codecs are missing"))?;
+                Ok(KfkReq::fetch(offset, bytes, max_wait_ms, codecs))
             }
             JrpMethod::Offset => {
                 let at = req.params.at.ok_or(JrpError::Syntax("at is missing"))?;
@@ -90,40 +94,43 @@ impl <'a> TryFrom<JrpReq<'a>> for KfkReq {
     }
 }
 
-pub enum KfkRsp {
+pub enum KfkRsp<C> {
     Send {
         offsets: Vec<i64>,
     },
     Fetch {
         recs_and_offsets: Vec<RecordAndOffset>,
         high_watermark: i64,
+        codecs: C
     },
     Offset(i64)
 }
 
-impl KfkRsp {
+impl <C> KfkRsp<C> {
     fn send(offsets: Vec<i64>) -> Self {
         KfkRsp::Send { offsets }
     }
-    fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64) -> Self {
-        KfkRsp::Fetch { recs_and_offsets, high_watermark }
+    fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64, codecs: C) -> Self {
+        KfkRsp::Fetch { recs_and_offsets, high_watermark, codecs }
     }
     fn offset(value: i64) -> Self {
         KfkRsp::Offset(value)
     }
 }
 
-impl Debug for KfkRsp {
+impl <C: Debug> Debug for KfkRsp<C> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             KfkRsp::Send { offsets } => {
                 f.debug_struct("Send").field("offsets", offsets).finish()
             }
-            KfkRsp::Fetch { recs_and_offsets, high_watermark } => {
+            KfkRsp::Fetch { recs_and_offsets, high_watermark, codecs } => {
                 write!(f, "Send {{ ")?;
                 debug_vec_fn(f, recs_and_offsets, |f, r| {
-                    debug_record_and_offset(f, &r.record, Some(r.offset)) }
-                )?;
+                    debug_record_and_offset(f, &r.record, Some(r.offset))
+                })?;
+                write!(f, ", high_watermark: {:?}", high_watermark)?;
+                write!(f, ", codecs: {:?}", codecs)?;
                 write!(f, " }}")
             }
             KfkRsp::Offset(offset) => {
@@ -134,12 +141,12 @@ impl Debug for KfkRsp {
 }
 
 pub type RsKafkaError = rskafka::client::error::Error;
-pub type KfkReqId = ReqId<KfkReq, KfkRsp, RsKafkaError>;
-pub type KfkResId = ResId<KfkRsp, RsKafkaError>;
-pub type KfkResIdSnd = Sender<KfkResId>;
-pub type KfkResIdRcv = Receiver<KfkResId>;
-pub type KfkReqIdSnd = Sender<KfkReqId>;
-pub type KfkReqIdRcv = Receiver<KfkReqId>;
+pub type KfkReqId<C> = ReqId<KfkReq<C>, KfkRsp<C>, RsKafkaError>;
+pub type KfkResId<C> = ResId<KfkRsp<C>, RsKafkaError>;
+pub type KfkResIdSnd<C> = Sender<KfkResId<C>>;
+pub type KfkResIdRcv<C> = Receiver<KfkResId<C>>;
+pub type KfkReqIdSnd<C> = Sender<KfkReqId<C>>;
+pub type KfkReqIdRcv<C> = Receiver<KfkReqId<C>>;
 
 #[derive(Error, Debug)]
 pub enum KfkError {
@@ -154,13 +161,13 @@ pub enum KfkError {
 }
 
 /// deliberately drop payload
-impl <T> From<tokio::sync::mpsc::error::SendError<T>> for KfkError {
+impl <T> From<SendError<T>> for KfkError {
     fn from(value: SendError<T>) -> Self {
-        KfkError::Send(tokio::sync::mpsc::error::SendError(()))
+        KfkError::Send(SendError(()))
     }
 }
 
-async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> Result<(), KfkError> {
+async fn run_kafka_loop<C: Debug>(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv<C>) -> Result<(), KfkError> {
     info!("kafka, client: {}/{} - START", cli.topic(), cli.partition());
     while let Some(req_id) = req_id_rcv.recv().await {
         trace!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_id);
@@ -172,9 +179,9 @@ async fn run_kafka_loop(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv) -> Re
                 cli.produce(records, Compression::Snappy).await
                     .map(|offsets| KfkRsp::send(offsets))
             }
-            KfkReq::Fetch { offset, bytes, max_wait_ms } => {
+            KfkReq::Fetch { offset, bytes, max_wait_ms, codecs } => {
                 cli.fetch_records(offset, bytes, max_wait_ms).await
-                    .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark))
+                    .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark, codecs))
             }
             KfkReq::Offset { at } => {
                 cli.get_offset(at).await.map(|offset| KfkRsp::Offset(offset))
@@ -206,18 +213,18 @@ impl Clone for KfkClientKey {
     }
 }
 
-pub struct KfkClientCache {
+pub struct KfkClientCache<C> {
     client: Client,
-    cache: Cache<KfkClientKey, KfkReqIdSnd>,
+    cache: Cache<KfkClientKey, KfkReqIdSnd<C>>,
 }
 
-impl KfkClientCache {
+impl <C: Debug + Send + 'static> KfkClientCache<C> {
 
     pub fn new(client: Client, capacity: u64) -> Self {
         Self { client, cache: Cache::new(capacity) }
     }
 
-    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> Result<KfkReqIdSnd, KfkError> {
+    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> Result<KfkReqIdSnd<C>, KfkError> {
         info!("kafka, init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
@@ -225,7 +232,7 @@ impl KfkClientCache {
         Ok(req_id_snd)
     }
 
-    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> Result<KfkReqIdSnd, KfkError> {
+    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> Result<KfkReqIdSnd<C>, KfkError> {
         trace!("kafka, lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(&key, capacity);
