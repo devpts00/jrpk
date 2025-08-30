@@ -135,7 +135,7 @@ fn get_offset_from_fetch(line: &str) -> serde_json::Result<TestJrpRsp> {
     serde_json::from_str::<TestJrpRsp>(line)
 }
 
-async fn consumer_reader(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), anyhow::Error> {
+async fn consumer_read(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), anyhow::Error> {
     let mut reader = BufReader::with_capacity(4 * 1024, rh);
     let mut line = String::with_capacity(4 * 1024);
     let mut offset_read = false;
@@ -143,36 +143,37 @@ async fn consumer_reader(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), anyh
         line.pop();
         info!("read, response: {}", line);
         if let Some(offset) = get_offset_from_offset(&line)? {
-            info!("reader, offset: {}", offset);
+            info!("read, offset: {}", offset);
             snd.send(offset).await?;
             while let Ok(n) = reader.read_line(&mut line).await {
-                if n > 0 {
-                    line.pop();
-                    info!("read, response: {}", &line);
-                    let rsp = get_offset_from_fetch(&line)?;
-                    match rsp.result {
-                        TestJrpRspData::Fetch { next_offset: Some(offset), high_watermark } => {
-                            info!("read, offset: {}, high_watermark: {}", offset, high_watermark);
-                            if offset < high_watermark {
-                                snd.send(offset).await?;
-                            } else {
-                                break;
-                            }
-                        }
-                        TestJrpRspData::Fetch { next_offset: None, high_watermark } => {
-                            info!("read, offset: None, high_watermark: {}", high_watermark);
+                if n == 0 {
+                    break;
+                }
+                line.pop();
+                info!("read, response: {}", &line);
+                let rsp = get_offset_from_fetch(&line)?;
+                match rsp.result {
+                    TestJrpRspData::Fetch { next_offset: Some(offset), high_watermark } => {
+                        info!("read, offset: {}, high_watermark: {}", offset, high_watermark);
+                        if offset < high_watermark {
+                            snd.send(offset).await?;
+                        } else {
                             break;
                         }
                     }
-                    line.clear()
+                    TestJrpRspData::Fetch { next_offset: None, high_watermark } => {
+                        info!("read, offset: None, high_watermark: {}", high_watermark);
+                        break;
+                    }
                 }
+                line.clear()
             }
         }
     }
     Ok(())
 }
 
-async fn consumer_writer(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: u8, byte_size_min: u32, byte_size_max: u32) -> Result<(), anyhow::Error> {
+async fn consumer_write(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: u8, byte_size_min: u32, byte_size_max: u32) -> Result<(), anyhow::Error> {
     let mut buf: Vec<u8> = Vec::with_capacity(4 * 1024);
     let mut writer = tokio::io::BufWriter::with_capacity(4 * 1024, wh);
 
@@ -181,6 +182,7 @@ async fn consumer_writer(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: 
     writer.write_all(&buf).await?;
     writer.flush().await?;
     buf.clear();
+    info!("write, requested earliest offsets...");
 
     let mut id: usize = 1;
     // receive offsets and write fetch requests
@@ -191,6 +193,7 @@ async fn consumer_writer(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: 
                id, partition, offset, byte_size_min, byte_size_max)?;
         writer.write_all(&buf).await?;
         writer.flush().await?;
+        info!("write, requested fetch...");
         buf.clear();
     }
     Ok(())
@@ -210,11 +213,11 @@ async fn test_consume() {
         let (rh, wh) = stream.into_split();
         let (snd, rcv) = tokio::sync::mpsc::channel::<i64>(8);
         let wh = tokio::spawn(
-            handle_future_result("write", addr, consumer_writer(wh, rcv, partition, byte_size_min, byte_size_max))
+            handle_future_result("write", addr, consumer_write(wh, rcv, partition, byte_size_min, byte_size_max))
         );
         tasks.push(wh);
         let rh = tokio::spawn(
-            handle_future_result("read", addr, consumer_reader(rh, snd))
+            handle_future_result("read", addr, consumer_read(rh, snd))
         );
         tasks.push(rh);
     }
