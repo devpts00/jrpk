@@ -7,7 +7,7 @@ mod codec;
 mod tests;
 
 use crate::server::listen;
-use crate::util::{handle_future, join_with_signal};
+use crate::util::{handle_future_result, join_with_signal};
 use clap::Parser;
 use std::sync::Once;
 use std::time::Duration;
@@ -19,7 +19,17 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 async fn run(args: args::Args) {
-    join_with_signal("main", tokio::spawn(handle_future("listen", listen(args)))).await
+    join_with_signal(
+        "main", 
+        args.bind, 
+        tokio::spawn(
+            handle_future_result(
+                "listen", 
+                args.bind, 
+                listen(args)
+            )
+        )
+    ).await
 }
 
 static TRACING: Once = Once::new();

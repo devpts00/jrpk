@@ -1,5 +1,5 @@
-use std::fmt::{Debug, Formatter};
-use crate::util::{debug_vec_fn, handle_future, ReqId, ResId, debug_record_and_offset};
+use std::fmt::{Debug, Display, Formatter};
+use crate::util::{debug_vec_fn, handle_future_result, ReqId, ResId, debug_record_and_offset};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
@@ -168,7 +168,6 @@ impl <T> From<SendError<T>> for KfkError {
 }
 
 async fn run_kafka_loop<C: Debug>(cli: PartitionClient, mut req_id_rcv: KfkReqIdRcv<C>) -> Result<(), KfkError> {
-    info!("kafka, client: {}/{} - START", cli.topic(), cli.partition());
     while let Some(req_id) = req_id_rcv.recv().await {
         trace!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_id);
         let id = req_id.id;
@@ -191,7 +190,6 @@ async fn run_kafka_loop<C: Debug>(cli: PartitionClient, mut req_id_rcv: KfkReqId
         trace!("kafka, client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_id);
         res_id_snd.send(res_id).await?;
     }
-    info!("kafka, client: {}/{} - END", cli.topic(), cli.partition());
     Ok(())
 }
 
@@ -213,6 +211,12 @@ impl Clone for KfkClientKey {
     }
 }
 
+impl Display for KfkClientKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.topic, self.partition)
+    }
+}
+
 pub struct KfkClientCache<C> {
     client: Client,
     cache: Cache<KfkClientKey, KfkReqIdSnd<C>>,
@@ -228,7 +232,7 @@ impl <C: Debug + Send + 'static> KfkClientCache<C> {
         info!("kafka, init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
-        tokio::spawn(handle_future("kafka", run_kafka_loop(pc, req_id_rcv)));
+        tokio::spawn(handle_future_result("kafka", key.clone(), run_kafka_loop(pc, req_id_rcv)));
         Ok(req_id_snd)
     }
 
@@ -237,6 +241,8 @@ impl <C: Debug + Send + 'static> KfkClientCache<C> {
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(&key, capacity);
         let req_id_snd = self.cache.try_get_with_by_ref(&key, init).await?;
+        self.cache.run_pending_tasks().await;
+        info!("kafka, cache: {}", self.cache.entry_count());
         Ok(req_id_snd)
     }
 }

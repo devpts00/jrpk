@@ -1,31 +1,30 @@
 @startuml
 
+actor client
 control listener
-control processor1
-queue responses1
-
-control processor2
-queue responses2
-
+control reader
+control writer
 queue requests
-control kafka_rd
+queue responses
+control kafka
 
-listener -> processor1: spawn
-activate processor1
-processor1 -> responses1: create
-processor1 --> requests: send
-kafka_rd <-- requests: receive
-kafka_rd --> responses1: send
-processor1 <-- responses1: receive
-deactivate processor1
+activate kafka
+activate listener
 
-listener -> processor2: spawn
-activate processor2
-processor2 -> responses2: create
-processor2 --> requests: send
-kafka_rd <-- requests: receive
-kafka_rd --> responses2: send
-processor2 <-- responses2: receive
-deactivate processor2
+client -> listener: connect
+client <- listener: accept
+
+listener -> responses: create
+listener -> reader: spawn
+activate reader
+listener -> writer: spawn
+activate writer
+
+client -> reader: req
+reader -> requests: req
+requests -> kafka: req
+responses <- kafka: res
+writer <- responses: res
+client <- writer: res
 
 @enduml

@@ -71,30 +71,34 @@ impl <REQ: Display, RSP, E: Error> Display for ReqId<REQ, RSP, E> {
 //     })
 // }
 
-pub fn handle_result<T: Default + Debug, E: Display> (ctx: &str, r: Result<T, E>) -> T {
+pub fn handle_result<T, C, E> (name: &str, ctx: C, r: Result<T, E>) -> T
+where T: Default + Debug, C: Display, E: Display {
     match r {
         Ok(value) => {
-            debug!("{}, success: {:?}", &ctx, value);
+            info!("{}, ctx: {}, res: {:?} - END", name, ctx, value);
             value
         }
         Err(error) => {
-            error!("{}, error: {}", &ctx, error);
+            error!("{}, ctx: {}, err: '{}' - END", name, ctx, error);
             T::default()
         }
     }
 }
 
-pub async fn handle_future<T: Debug + Default, E: Display, F: Future<Output = Result<T, E>>>(ctx: &str, future: F) -> T {
-    handle_result(ctx, future.await)
+pub async fn handle_future_result<T, E, C, F>(name: &str, ctx: C, future: F) -> T
+where T: Debug + Default, E: Display, C: Display, F: Future<Output = Result<T, E>> {
+    info!("{}, ctx: {} - START", name, ctx);
+    handle_result(name, ctx, future.await)
 }
 
-pub async fn join_with_signal<T: Default + Debug>(ctx: &str, jh: JoinHandle<T>) -> () {
+pub async fn join_with_signal<T, C>(name: &str, ctx: C, jh: JoinHandle<T>) -> ()
+where T: Default + Debug, C: Display {
     select! {
         res = jh => {
-            handle_result(ctx, res);
+            handle_result(name, ctx, res);
         },
         _ = tokio::signal::ctrl_c() => {
-            info!("{} - signal, exiting...", &ctx);
+            info!("{}, ctx: {} - signal, exiting...", name, ctx);
         }
     }
 }
