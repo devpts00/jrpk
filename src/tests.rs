@@ -5,6 +5,7 @@ use futures::stream::{SplitSink, SplitStream};
 use rand::{Rng, SeedableRng};
 use random_data::{DataGenerator, DataType};
 use std::io::{Read, Write};
+use std::net::SocketAddr;
 use std::ops::{Add, Range};
 use std::path::PathBuf;
 use std::thread;
@@ -135,26 +136,30 @@ fn get_offset_from_fetch(line: &str) -> serde_json::Result<TestJrpRsp> {
     serde_json::from_str::<TestJrpRsp>(line)
 }
 
-async fn consumer_read(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), anyhow::Error> {
+async fn consumer_read(
+    addr: SocketAddr,
+    rh: OwnedReadHalf,
+    snd: Sender<i64>
+) -> Result<(), anyhow::Error> {
     let mut reader = BufReader::with_capacity(4 * 1024, rh);
     let mut line = String::with_capacity(4 * 1024);
     let mut offset_read = false;
     if let Ok(n) = reader.read_line(&mut line).await {
         line.pop();
-        info!("read, response: {}", line);
+        info!("read, ctx: {}, response: {}", addr, line);
         if let Some(offset) = get_offset_from_offset(&line)? {
-            info!("read, offset: {}", offset);
+            info!("read, ctx: {}, offset: {}", addr, offset);
             snd.send(offset).await?;
             while let Ok(n) = reader.read_line(&mut line).await {
                 if n == 0 {
                     break;
                 }
                 line.pop();
-                info!("read, response: {}", &line);
+                info!("read, ctx: {}, response: {}", addr, &line);
                 let rsp = get_offset_from_fetch(&line)?;
                 match rsp.result {
                     TestJrpRspData::Fetch { next_offset: Some(offset), high_watermark } => {
-                        info!("read, offset: {}, high_watermark: {}", offset, high_watermark);
+                        info!("read, ctx: {}, offset: {}, high_watermark: {}", addr, offset, high_watermark);
                         if offset < high_watermark {
                             snd.send(offset).await?;
                         } else {
@@ -162,7 +167,7 @@ async fn consumer_read(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), anyhow
                         }
                     }
                     TestJrpRspData::Fetch { next_offset: None, high_watermark } => {
-                        info!("read, offset: None, high_watermark: {}", high_watermark);
+                        info!("read, ctx: {}, offset: None, high_watermark: {}", addr, high_watermark);
                         break;
                     }
                 }
@@ -173,7 +178,14 @@ async fn consumer_read(rh: OwnedReadHalf, snd: Sender<i64>) -> Result<(), anyhow
     Ok(())
 }
 
-async fn consumer_write(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: u8, byte_size_min: u32, byte_size_max: u32) -> Result<(), anyhow::Error> {
+async fn consumer_write(
+    addr: SocketAddr,
+    wh: OwnedWriteHalf,
+    mut rcv: Receiver<i64>,
+    partition: u8,
+    byte_size_min: u32,
+    byte_size_max: u32
+) -> Result<(), anyhow::Error> {
     let mut buf: Vec<u8> = Vec::with_capacity(4 * 1024);
     let mut writer = tokio::io::BufWriter::with_capacity(4 * 1024, wh);
 
@@ -182,18 +194,16 @@ async fn consumer_write(wh: OwnedWriteHalf, mut rcv: Receiver<i64>, partition: u
     writer.write_all(&buf).await?;
     writer.flush().await?;
     buf.clear();
-    info!("write, requested earliest offsets...");
 
     let mut id: usize = 1;
     // receive offsets and write fetch requests
     while let Some(offset) = rcv.recv().await {
         id = id + 1;
-        info!("writer, offset: {}", offset);
+        info!("writer, ctx: {}, offset: {}", addr, offset);
         write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "fetch", "params": {{ "topic": "posts", "partition": {}, "offset": {}, "bytes": {{ "start": {}, "end": {} }}, "max_wait_ms": 1000 }} }}"#,
                id, partition, offset, byte_size_min, byte_size_max)?;
         writer.write_all(&buf).await?;
         writer.flush().await?;
-        info!("write, requested fetch...");
         buf.clear();
     }
     Ok(())
@@ -208,16 +218,16 @@ async fn test_consume() {
     let byte_size_max: u32 = 1000000;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * partition_count as usize);
     for partition in 0..partition_count {
-        let addr = "jrpk:1133";
-        let stream = TcpStream::connect(addr).await.unwrap();
+        let stream = TcpStream::connect("jrpk:1133").await.unwrap();
+        let addr = stream.peer_addr().unwrap();
         let (rh, wh) = stream.into_split();
         let (snd, rcv) = tokio::sync::mpsc::channel::<i64>(8);
         let wh = tokio::spawn(
-            handle_future_result("write", addr, consumer_write(wh, rcv, partition, byte_size_min, byte_size_max))
+            handle_future_result("write", addr, consumer_write(addr, wh, rcv, partition, byte_size_min, byte_size_max))
         );
         tasks.push(wh);
         let rh = tokio::spawn(
-            handle_future_result("read", addr, consumer_read(rh, snd))
+            handle_future_result("read", addr, consumer_read(addr, rh, snd))
         );
         tasks.push(rh);
     }
