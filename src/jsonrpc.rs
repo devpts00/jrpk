@@ -174,7 +174,9 @@ impl JrpRecFetch {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JrpMethod {
-    Send, Fetch, Offset
+    Send,
+    Fetch,
+    Offset,
 }
 
 #[derive(Debug)]
@@ -262,6 +264,11 @@ pub struct JrpReq<'a> {
     pub id: usize,
     pub method: JrpMethod,
     pub params: JrpParams<'a>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JrpId {
+    pub id: usize,
 }
 
 /// JSONRPC error.

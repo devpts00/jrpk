@@ -200,7 +200,7 @@ async fn consumer_write(
     while let Some(offset) = rcv.recv().await {
         id = id + 1;
         info!("writer, ctx: {}, offset: {}", addr, offset);
-        write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "fetch", "params": {{ "topic": "posts", "partition": {}, "offset": {}, "bytes": {{ "start": {}, "end": {} }}, "max_wait_ms": 1000 }} }}"#,
+        write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "fetch123", "params": {{ "topic": "posts", "partition": {}, "offset": {}, "bytes": {{ "start": {}, "end": {} }}, "max_wait_ms": 1000 }} }}"#,
                id, partition, offset, byte_size_min, byte_size_max)?;
         writer.write_all(&buf).await?;
         writer.flush().await?;

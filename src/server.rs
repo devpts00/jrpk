@@ -1,5 +1,5 @@
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpError, JrpRecFetchCodecs, JrpReq, JrpRsp};
+use crate::jsonrpc::{JrpError, JrpErrorMsg, JrpId, JrpRecFetchCodecs, JrpReq, JrpRsp};
 use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkReqId, KfkReqIdRcv, KfkReqIdSnd, KfkResId, KfkResIdRcv, KfkResIdSnd, KfkRsp, RsKafkaError};
 use crate::util::{handle_future_result, set_buf_sizes, ReqId, ResId};
 use futures::stream::{SplitSink, SplitStream};
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use crate::args::Args;
 
 type JrpKfkReq = KfkReq<JrpRecFetchCodecs>;
@@ -67,15 +67,30 @@ async fn run_reader_loop(
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
         trace!("reader, ctx: {}, json: {}", addr, from_utf8(bytes.as_ref())?);
-        let jrp_req = serde_json::from_slice::<JrpReq>(bytes.as_ref())?;
-        debug!("reader, ctx: {}, request: {:?}", addr, jrp_req);
-        let id = jrp_req.id;
-        let topic = jrp_req.params.topic.to_owned();
-        let partition = jrp_req.params.partition;
-        let kfk_req: JrpKfkReq = jrp_req.try_into()?;
-        let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
-        let kfk_req_id_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
-        kfk_req_id_snd.send(kfk_req_id).await?;
+        // we are optimistic and expect most requests to be well-formed
+        match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
+            // if request is well-formed, we proceed
+            Ok(jrp_req) => {
+                debug!("reader, ctx: {}, request: {:?}", addr, jrp_req);
+                let id = jrp_req.id;
+                let topic = jrp_req.params.topic.to_owned();
+                let partition = jrp_req.params.partition;
+                let kfk_req: JrpKfkReq = jrp_req.try_into()?;
+                let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
+                let kfk_req_id_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
+                kfk_req_id_snd.send(kfk_req_id).await?;
+            }
+            // if request is not well-formed we attempt to get at least and id to respond
+            Err(err) => {
+                warn!("jsonrpc decode error: {}", err);
+                // if even an id is absent we give up and disconnect
+                let jrp_id = serde_json::from_slice::<JrpId>(bytes.as_ref())?;
+                let err_msg = format!("jsonrpc decode error: {}", err);
+                let jrp_err_msg = JrpErrorMsg::new(err_msg);
+                let jrp_rsp = JrpRsp::err(jrp_id.id, jrp_err_msg);
+                // TODO: send to the writer loop
+            }
+        }
     }
     Ok(())
 

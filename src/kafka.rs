@@ -1,5 +1,4 @@
 use std::fmt::{Debug, Display, Formatter};
-use crate::util::{debug_vec_fn, handle_future_result, ReqId, ResId, debug_record_and_offset};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
@@ -12,6 +11,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tracing::{debug, info, trace, warn};
+use crate::util::{debug_vec_fn, handle_future_result, ReqId, ResId, debug_record_and_offset};
 use crate::jsonrpc::{JrpError, JrpMethod, JrpRecFetchCodecs, JrpReq};
 
 
