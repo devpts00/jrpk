@@ -41,21 +41,21 @@ impl <RSP: Display, E: Error> Display for ResId<RSP, E> {
     }
 }
 
-pub struct ReqId<REQ, RSP, E: Error> {
+pub struct ReqId<REQ, RSP> {
     pub id: usize,
     pub req: REQ,
-    pub res_id_snd: Sender<ResId<RSP, E>>,
+    pub rsp_snd: Sender<RSP>,
 }
 
-impl <REQ: Debug, RSP, E: Error> Debug for ReqId<REQ, RSP, E> {
+impl <REQ: Debug, RSP> Debug for ReqId<REQ, RSP> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "ReqId {{ id: {:?}, req: {:?} }}>", self.id, self.req)
     }
 }
 
 impl <REQ, RES, E: Error> ReqId<REQ, RES, E> {
-    pub fn new(id: usize, request: REQ, responses: Sender<ResId<RES, E>>) -> Self {
-        ReqId { id, req: request, res_id_snd: responses }
+    pub fn new(id: usize, request: REQ, responses: Sender<RES>) -> Self {
+        ReqId { id, req: request, res_snd: responses }
     }
 }
 

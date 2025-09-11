@@ -5,6 +5,7 @@ use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use base64::DecodeError;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -108,6 +109,10 @@ pub enum KfkRsp<C> {
 
 impl <C> KfkRsp<C> {
     fn send(offsets: Vec<i64>) -> Self {
+
+        let x = AtomicI64::new(0);
+        x.swap(1, Ordering::AcqRel)
+
         KfkRsp::Send { offsets }
     }
     fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64, codecs: C) -> Self {
@@ -143,8 +148,11 @@ impl <C: Debug> Debug for KfkRsp<C> {
 pub type RsKafkaError = rskafka::client::error::Error;
 pub type KfkReqId<C> = ReqId<KfkReq<C>, KfkRsp<C>, RsKafkaError>;
 pub type KfkResId<C> = ResId<KfkRsp<C>, RsKafkaError>;
-pub type KfkResIdSnd<C> = Sender<KfkResId<C>>;
-pub type KfkResIdRcv<C> = Receiver<KfkResId<C>>;
+
+// R: From<KfkResId<C>>
+pub type KfkResIdSnd<R> = Sender<R>;
+pub type KfkResIdRcv<R> = Receiver<R>;
+
 pub type KfkReqIdSnd<C> = Sender<KfkReqId<C>>;
 pub type KfkReqIdRcv<C> = Receiver<KfkReqId<C>>;
 
@@ -172,7 +180,7 @@ async fn run_kafka_loop<C: Debug>(cli: PartitionClient, mut req_id_rcv: KfkReqId
         trace!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_id);
         let id = req_id.id;
         let req = req_id.req;
-        let res_id_snd = req_id.res_id_snd;
+        let res_id_snd = req_id.rsp_snd;
         let res_rsp = match req {
             KfkReq::Send { records } => {
                 cli.produce(records, Compression::Snappy).await

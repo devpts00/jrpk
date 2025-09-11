@@ -59,7 +59,7 @@ async fn run_reader_loop(
     addr: SocketAddr,
     mut stream: SplitStream<Framed<TcpStream, JsonCodec>>,
     cache: Arc<JrpKfkClientCache>,
-    kfk_res_id_snd: JrpKfkResIdSnd,
+    jrp_rsp_snd: Sender<JrpRsp>,
     queue_size: usize,
 ) -> Result<(), ServerError> {
 
@@ -76,7 +76,7 @@ async fn run_reader_loop(
                 let topic = jrp_req.params.topic.to_owned();
                 let partition = jrp_req.params.partition;
                 let kfk_req: JrpKfkReq = jrp_req.try_into()?;
-                let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
+                let kfk_req_id = ReqId::new(id, kfk_req, jrp_rsp_snd.clone());
                 let kfk_req_id_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
                 kfk_req_id_snd.send(kfk_req_id).await?;
             }
@@ -88,7 +88,7 @@ async fn run_reader_loop(
                 let err_msg = format!("jsonrpc decode error: {}", err);
                 let jrp_err_msg = JrpErrorMsg::new(err_msg);
                 let jrp_rsp = JrpRsp::err(jrp_id.id, jrp_err_msg);
-                // TODO: send to the writer loop
+                jrp_rsp_snd.send(jrp_rsp).await?;
             }
         }
     }
@@ -99,12 +99,11 @@ async fn run_reader_loop(
 async fn run_writer_loop(
     addr: SocketAddr,
     mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>,
-    mut kfk_res_rcv: Receiver<JrpKfkResId>
+    mut kfk_res_rcv: Receiver<JrpRsp>
 ) -> Result<(), ServerError> {
-    while let Some(kfk_res_id) = kfk_res_rcv.recv().await {
-        let rsp_jrp: JrpRsp = kfk_res_id.into();
-        info!("writer, ctx: {}, response: {:?}", addr, rsp_jrp);
-        sink.send(rsp_jrp).await?;
+    while let Some(jrp_rsp) = kfk_res_rcv.recv().await {
+        info!("writer, ctx: {}, response: {:?}", addr, jrp_rsp);
+        sink.send(jrp_rsp).await?;
     }
     sink.flush().await?;
     Ok(())
@@ -130,7 +129,7 @@ pub async fn listen(args: Args) -> Result<(), ServerError> {
         let codec = JsonCodec::new(args.max_frame_size.as_u64() as usize);
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();
-        let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<JrpKfkResId>(args.queue_size);
+        let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<JrpRsp>(args.queue_size);
         tokio::spawn(
             handle_future_result(
                 "reader",
