@@ -1,13 +1,18 @@
+use std::collections::BTreeMap;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpError, JrpErrorMsg, JrpId, JrpRecFetchCodecs, JrpReq, JrpRsp};
-use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkReqId, KfkReqIdRcv, KfkReqIdSnd, KfkResId, KfkResIdRcv, KfkResIdSnd, KfkRsp, RsKafkaError};
-use crate::util::{handle_future_result, set_buf_sizes, ReqId, ResId};
+use crate::jsonrpc::{JrpCtx, JrpDataCodec, JrpDataOwn, JrpDataRef, JrpError, JrpErrorMsg, JrpId, JrpRecFetch, JrpDataCodecs, JrpRecSend, JrpReq, JrpRsp, JrpRspData, JrpMethod, JrpExtra};
+use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkReqCtxRcv, KfkReqCtxSnd, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
+use crate::util::{handle_future_result, set_buf_sizes, ReqCtx, ResCtx};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
 use std::net::SocketAddr;
 use std::str::{from_utf8, from_utf8_unchecked, Utf8Error};
 use std::sync::Arc;
+use base64::{DecodeError, Engine};
+use base64::prelude::BASE64_STANDARD;
+use chrono::Utc;
+use rskafka::record::{Record, RecordAndOffset};
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -17,19 +22,10 @@ use tokio_util::codec::Framed;
 use tracing::{debug, error, info, trace, warn};
 use crate::args::Args;
 
-type JrpKfkReq = KfkReq<JrpRecFetchCodecs>;
-type JrpKfkClientCache = KfkClientCache<JrpRecFetchCodecs>;
-type JrpKfkReqId = KfkReqId<JrpRecFetchCodecs>;
-type JrpKfkResId = KfkResId<JrpRecFetchCodecs>;
-type JrpKfkResIdSnd = KfkResIdSnd<JrpRecFetchCodecs>;
-type JrpKfkResIdRcv = KfkResIdRcv<JrpRecFetchCodecs>;
-type JrpKfkReqIdSnd = KfkReqIdSnd<JrpRecFetchCodecs>;
-type JrpKfkReqIdRcv = KfkReqIdRcv<JrpRecFetchCodecs>;
-
 #[derive(Error, Debug)]
 pub enum ServerError {
     #[error("decoder: {0}")]
-    Decoder(#[from] BytesFrameDecoderError),
+    Frame(#[from] BytesFrameDecoderError),
     #[error("encoder: {0}")]
     Encoder(#[from] JsonEncoderError),
     #[error("utf8: {0}")]
@@ -39,13 +35,17 @@ pub enum ServerError {
     #[error("kafka: {0}")]
     Kafka(#[from] KfkError),
     #[error("jsonrpc: {0}")]
-    Jsonrpc(#[from] JrpError),
+    Jrp(#[from] JrpError),
     #[error("send: {0}")]
     Send(SendError<()>),
     #[error("rs kafka: {0}")]
     Rs(#[from] RsKafkaError),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("base64: {0}")]
+    Base64(#[from] DecodeError),
+    #[error("unexpected: {0}")]
+    Unexpected(&'static str),
 }
 
 /// deliberately drop payload
@@ -55,11 +55,75 @@ impl <T> From<SendError<T>> for ServerError {
     }
 }
 
+fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
+    let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.to_bytes()).transpose()?;
+    let value: Option<Vec<u8>> = jrp_rec_send.value.map(|v| v.to_bytes()).transpose()?;
+    Ok(Record { key, value, headers: BTreeMap::new(), timestamp: Utc::now() })
+}
+
+fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, codecs: &JrpDataCodecs) -> Result<JrpRecFetch, JrpError> {
+    let offset = rec_and_offset.offset;
+    let record = rec_and_offset.record;
+    let key = record.key.map(|k|JrpDataOwn::from_bytes(k, codecs.key)).transpose()?;
+    let value = record.value.map(|v|JrpDataOwn::from_bytes(v, codecs.value)).transpose()?;
+    Ok(JrpRecFetch::new(offset, key, value))
+}
+
+fn k2j_rsp(rsp: KfkRsp, extra: JrpExtra) -> Result<JrpRspData, ServerError> {
+    match (rsp, extra) {
+        (KfkRsp::Send { offsets }, _) => {
+            Ok(JrpRspData::send(offsets))
+        }
+        (KfkRsp::Fetch { recs_and_offsets, high_watermark }, JrpExtra::DataCodecs(codecs)) => {
+            let res: Result<Vec<JrpRecFetch>, JrpError> = recs_and_offsets.into_iter()
+                .map(|ro| { k2j_rec_fetch(ro, &codecs) }).collect();
+            let records = res?;
+            Ok(JrpRspData::fetch(records, high_watermark))
+        }
+        (KfkRsp::Offset(offset), _) => {
+            Ok(JrpRspData::Offset(offset))
+        }
+        (k, e) => {
+            error!("unexpected, response: {:?}, extra: {:?}", k, e);
+            Err(ServerError::Unexpected("Unexpected state"))
+        }
+    }
+}
+
+#[inline]
+fn k2j_err(err: KfkError) -> JrpErrorMsg {
+    JrpErrorMsg::new(err.to_string())
+}
+
+fn j2k_req(jrp: JrpReq) -> Result<(KfkReq, JrpExtra), ServerError> {
+    match jrp.method {
+        JrpMethod::Send => {
+            let jrp_records = jrp.params.records
+                .ok_or(JrpError::Syntax("records is missing"))?;
+            let records: Result<Vec<Record>, DecodeError> = jrp_records.into_iter()
+                .map(|jrs| j2k_rec_send(jrs))
+                .collect();
+            Ok((KfkReq::send(records?), JrpExtra::None))
+        }
+        JrpMethod::Fetch => {
+            let codecs = jrp.params.codecs.ok_or(JrpError::Syntax("codecs are missing"))?;
+            let offset = jrp.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;
+            let bytes = jrp.params.bytes.ok_or(JrpError::Syntax("bytes is missing"))?;
+            let max_wait_ms = jrp.params.max_wait_ms.ok_or(JrpError::Syntax("max_wait_ms is missing"))?;
+            Ok((KfkReq::fetch(offset, bytes, max_wait_ms), JrpExtra::DataCodecs(codecs)))
+        }
+        JrpMethod::Offset => {
+            let at = jrp.params.at.ok_or(JrpError::Syntax("at is missing"))?;
+            Ok((KfkReq::offset(at.into()), JrpExtra::None))
+        }
+    }
+}
+
 async fn run_reader_loop(
     addr: SocketAddr,
     mut stream: SplitStream<Framed<TcpStream, JsonCodec>>,
-    cache: Arc<JrpKfkClientCache>,
-    jrp_rsp_snd: Sender<JrpRsp>,
+    cache: Arc<KfkClientCache<JrpCtx>>,
+    kfk_res_ctx_snd: KfkResCtxSnd<JrpCtx>,
     queue_size: usize,
 ) -> Result<(), ServerError> {
 
@@ -75,20 +139,22 @@ async fn run_reader_loop(
                 let id = jrp_req.id;
                 let topic = jrp_req.params.topic.to_owned();
                 let partition = jrp_req.params.partition;
-                let kfk_req: JrpKfkReq = jrp_req.try_into()?;
-                let kfk_req_id = ReqId::new(id, kfk_req, jrp_rsp_snd.clone());
-                let kfk_req_id_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
-                kfk_req_id_snd.send(kfk_req_id).await?;
+                let (kfk_req, extra) = j2k_req(jrp_req)?;
+                let jrp_ctx = JrpCtx::new(id, extra);
+                let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
+                let kfk_req_ctx_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
+                kfk_req_ctx_snd.send(kfk_req_ctx).await?;
             }
             // if request is not well-formed we attempt to get at least and id to respond
+            // and send decode error directly to the result channel, without round-trip to kafka client
             Err(err) => {
                 warn!("jsonrpc decode error: {}", err);
                 // if even an id is absent we give up and disconnect
                 let jrp_id = serde_json::from_slice::<JrpId>(bytes.as_ref())?;
-                let err_msg = format!("jsonrpc decode error: {}", err);
-                let jrp_err_msg = JrpErrorMsg::new(err_msg);
-                let jrp_rsp = JrpRsp::err(jrp_id.id, jrp_err_msg);
-                jrp_rsp_snd.send(jrp_rsp).await?;
+                let jrp_ctx = JrpCtx::new(jrp_id.id, JrpExtra::None);
+                let kfk_err = KfkError::General(format!("jsonrpc decode error: {}", err));
+                let kfk_res = KfkResCtx::err(jrp_ctx, kfk_err);
+                kfk_res_ctx_snd.send(kfk_res).await?;
             }
         }
     }
@@ -99,10 +165,19 @@ async fn run_reader_loop(
 async fn run_writer_loop(
     addr: SocketAddr,
     mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>,
-    mut kfk_res_rcv: Receiver<JrpRsp>
+    mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
 ) -> Result<(), ServerError> {
-    while let Some(jrp_rsp) = kfk_res_rcv.recv().await {
-        info!("writer, ctx: {}, response: {:?}", addr, jrp_rsp);
+    while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
+        info!("writer, ctx: {}, response: {:?}", addr, kfk_res_ctx);
+        let ctx = kfk_res_ctx.ctx;
+        let jrp_rsp = match kfk_res_ctx.res {
+            Ok(rsp) => {
+                JrpRsp::ok(ctx.id, k2j_rsp(rsp, ctx.extra)?)
+            }
+            Err(err) => {
+                JrpRsp::err(ctx.id, k2j_err(err))
+            }
+        };
         sink.send(jrp_rsp).await?;
     }
     sink.flush().await?;
@@ -113,7 +188,7 @@ pub async fn listen(args: Args) -> Result<(), ServerError> {
 
     info!("listen, kafka: {:?}", args.brokers);
     let client = ClientBuilder::new(args.brokers.0).build().await?;
-    let cache = Arc::new(KfkClientCache::new(client, 1024));
+    let cache: Arc<KfkClientCache<JrpCtx>> = Arc::new(KfkClientCache::new(client, 1024));
 
     info!("listen, bind: {:?}", args.bind);
     let listener = TcpListener::bind(args.bind).await?;
@@ -129,7 +204,7 @@ pub async fn listen(args: Args) -> Result<(), ServerError> {
         let codec = JsonCodec::new(args.max_frame_size.as_u64() as usize);
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();
-        let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<JrpRsp>(args.queue_size);
+        let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(args.queue_size);
         tokio::spawn(
             handle_future_result(
                 "reader",

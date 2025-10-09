@@ -1,4 +1,4 @@
-use crate::kafka::{RsKafkaError, KfkResId, KfkRsp};
+use crate::kafka::{RsKafkaError, KfkResCtx, KfkRsp};
 use rskafka::chrono::{DateTime, Utc};
 use rskafka::record::{Record, RecordAndOffset};
 use serde::ser::SerializeStruct;
@@ -53,17 +53,16 @@ pub enum JrpDataRef<'a> {
     Base64(&'a str),
 }
 
-impl <'a> TryInto<Vec<u8>> for JrpDataRef<'a> {
-    type Error = DecodeError;
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+impl <'a> JrpDataRef<'a> {
+    pub fn to_bytes(self: JrpDataRef<'a>) -> Result<Vec<u8>, DecodeError> {
         match self {
-            JrpDataRef::<'a>::Json(fragment) => {
+            JrpDataRef::Json(fragment) => {
                 Ok(fragment.get().as_bytes().to_vec())
             },
-            JrpDataRef::<'a>::Str(text) => {
+            JrpDataRef::Str(text) => {
                 Ok(text.as_bytes().to_vec())
             },
-            JrpDataRef::<'a>::Base64(text) => {
+            JrpDataRef::Base64(text) => {
                 BASE64_STANDARD.decode(text)
             }
         }
@@ -88,20 +87,20 @@ impl JrpDataOwn {
     fn base64(v: Vec<u8>) -> Self {
         JrpDataOwn::Base64(BASE64_STANDARD.encode(v.as_slice()))
     }
-    fn from_vec(v: Vec<u8>, codec: JrpDataCodec) -> Result<Self, JrpError> {
+    pub fn from_bytes(bytes: Vec<u8>, codec: JrpDataCodec) -> Result<Self, JrpError> {
         match codec {
             JrpDataCodec::Json => {
-                let string = String::from_utf8(v)?;
+                let string = String::from_utf8(bytes)?;
                 let data = JrpDataOwn::json(string)?;
                 Ok(data)
             }
             JrpDataCodec::Str => {
-                let string = String::from_utf8(v)?;
+                let string = String::from_utf8(bytes)?;
                 let data = JrpDataOwn::str(string);
                 Ok(data)
             }
             JrpDataCodec::Base64 => {
-                let base64 = JrpDataOwn::base64(v);
+                let base64 = JrpDataOwn::base64(bytes);
                 Ok(base64)
             }
         }
@@ -120,34 +119,38 @@ pub enum JrpDataCodec {
     Base64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct JrpDataCodecs {
+    pub key: JrpDataCodec,
+    pub value: JrpDataCodec,
+}
+
+#[derive(Debug)]
+pub enum JrpExtra {
+    None,
+    DataCodecs(JrpDataCodecs),
+}
+
+#[derive(Debug)]
+pub struct JrpCtx {
+    pub id: usize,
+    pub extra: JrpExtra,
+}
+
+impl JrpCtx {
+    pub fn new(id: usize, extra: JrpExtra) -> Self {
+        Self { id, extra }
+    }
+}
+
 /// JSONRPC send record captures payload as references to raw JSON,
 /// because there is no way to turn RawValue into Vec<u8>.
 #[derive(Debug, Deserialize)]
 pub struct JrpRecSend<'a> {
     #[serde(borrow)]
-    key: Option<JrpDataRef<'a>>,
+    pub key: Option<JrpDataRef<'a>>,
     #[serde(borrow)]
-    value: Option<JrpDataRef<'a>>,
-}
-
-impl <'a> TryInto<Record> for JrpRecSend<'a> {
-    type Error = DecodeError;
-    fn try_into(self) -> Result<Record, Self::Error> {
-        let key: Option<Vec<u8>> = self.key.map(|k| k.try_into()).transpose()?;
-        let value: Option<Vec<u8>> = self.value.map(|v| v.try_into()).transpose()?;
-        Ok(Record {
-            key,
-            value,
-            headers: BTreeMap::new(),
-            timestamp: Utc::now(),
-        })
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct JrpRecFetchCodecs {
-    key: JrpDataCodec,
-    value: JrpDataCodec,
+    pub value: Option<JrpDataRef<'a>>,
 }
 
 /// JSONRPC output record captures Kafka messages as owned raw JSON.
@@ -161,12 +164,8 @@ pub struct JrpRecFetch {
 /// JSONRPC output record can fail to be created from Kafka record.
 /// Kafka bytes might not be UTF-8 or JSON.
 impl JrpRecFetch {
-    pub fn from_record_and_offset(rec_and_offset: RecordAndOffset, codecs: &JrpRecFetchCodecs) -> Result<Self, JrpError> {
-        let offset = rec_and_offset.offset;
-        let record = rec_and_offset.record;
-        let key = record.key.map(|k|JrpDataOwn::from_vec(k, codecs.key)).transpose()?;
-        let value = record.value.map(|v|JrpDataOwn::from_vec(v, codecs.value)).transpose()?;
-        Ok(JrpRecFetch { offset, key, value })
+    pub fn new (offset: i64, key: Option<JrpDataOwn>, value: Option<JrpDataOwn>) -> Self {
+        JrpRecFetch { offset, key, value }
     }
 }
 
@@ -249,7 +248,7 @@ impl <'de> Deserialize<'de> for JrpOffsetAt {
 pub struct JrpParams<'a> {
     pub topic: &'a str,
     pub partition: i32,
-    pub codecs: Option<JrpRecFetchCodecs>,
+    pub codecs: Option<JrpDataCodecs>,
     pub records: Option<Vec<JrpRecSend<'a>>>,
     pub offset: Option<i64>,
     pub bytes: Option<Range<i32>>,
@@ -311,34 +310,15 @@ pub enum JrpRspData {
 }
 
 impl JrpRspData {
-    fn send(offsets: Vec<i64>) -> Self {
+    pub fn send(offsets: Vec<i64>) -> Self {
         JrpRspData::Send { offsets }
     }
-    fn fetch(records: Vec<JrpRecFetch>, high_watermark: i64) -> Self {
+    pub fn fetch(records: Vec<JrpRecFetch>, high_watermark: i64) -> Self {
         let next_offset = records.iter()
             .map(|r|r.offset)
             .max()
             .map(|o| o + 1);
         JrpRspData::Fetch { records, next_offset, high_watermark }
-    }
-}
-
-impl TryFrom<KfkRsp<JrpRecFetchCodecs>> for JrpRspData {
-    type Error = JrpError;
-    fn try_from(value: KfkRsp<JrpRecFetchCodecs>) -> Result<Self, Self::Error> {
-        match value {
-            KfkRsp::Send { offsets } => {
-                Ok(JrpRspData::send(offsets))
-            }
-            KfkRsp::Fetch { recs_and_offsets, high_watermark, codecs } => {
-                let res_records: Result<Vec<JrpRecFetch>, Self::Error> = recs_and_offsets.into_iter()
-                    .map(|ro| { JrpRecFetch::from_record_and_offset(ro, &codecs) }).collect();
-                res_records.map(|records| JrpRspData::fetch(records, high_watermark))
-            }
-            KfkRsp::Offset(offset) => {
-                Ok(JrpRspData::Offset(offset))
-            }
-        }
     }
 }
 
@@ -357,24 +337,6 @@ impl JrpRsp {
     }
     pub fn err(id: usize, error: JrpErrorMsg) -> Self {
         JrpRsp::new(id, Err(error))
-    }
-}
-
-impl From<KfkResId<JrpRecFetchCodecs>> for JrpRsp {
-    fn from(value: KfkResId<JrpRecFetchCodecs>) -> Self {
-        let id = value.id;
-        match value.res {
-            Ok(rsp) => {
-                let res_data: Result<JrpRspData, JrpError> = rsp.try_into();
-                match res_data {
-                    Ok(data) => JrpRsp::ok(id, data),
-                    Err(err) => JrpRsp::err(id, err.into())
-                }
-            },
-            Err(err) => {
-                JrpRsp::err(id, err.into())
-            }
-        }
     }
 }
 

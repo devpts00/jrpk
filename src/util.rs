@@ -11,57 +11,57 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
 #[derive(Debug)]
-pub struct ResId<RSP, E: Error> {
-    pub id: usize,
-    pub res: Result<RSP, E>,
+pub struct ResCtx<RSP, CTX, ERR: Error> {
+    pub ctx: CTX,
+    pub res: Result<RSP, ERR>,
 }
 
-impl <RSP, E: Error> ResId<RSP, E> {
-    pub fn new(id: usize, result: Result<RSP, E>) -> Self {
-        Self { id, res: result }
+impl <RSP, CTX, ERR: Error> ResCtx<RSP, CTX, ERR> {
+    pub fn new(ctx: CTX, res: Result<RSP, ERR>) -> Self {
+        Self { ctx, res }
     }
-    pub fn ok(id: usize, data: RSP) -> Self {
-        ResId { id, res: Ok(data) }
+    pub fn ok(ctx: CTX, data: RSP) -> Self {
+        ResCtx { ctx, res: Ok(data) }
     }
-    pub fn err(id: usize, err: E) -> Self {
-        ResId { id, res: Err(err) }
+    pub fn err(ctx: CTX, err: ERR) -> Self {
+        ResCtx { ctx, res: Err(err) }
     }
 }
 
-impl <RSP: Display, E: Error> Display for ResId<RSP, E> {
+impl <RSP: Display, CTX: Display, ERR: Error> Display for ResCtx<RSP, CTX, ERR> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.res {
-            Ok(ref rsp) => {
-                write!(f, "id: {}: {}", self.id, rsp)
+        match self.res.as_ref() {
+            Ok(rsp) => {
+                write!(f, "tag: {}: {}", self.ctx, rsp)
             }
-            Err(ref err) => {
-                write!(f, "id: {}: {}", self.id, err)
+            Err(err) => {
+                write!(f, "tag: {}: {}", self.ctx, err)
             }
         }
     }
 }
 
-pub struct ReqId<REQ, RSP> {
-    pub id: usize,
+pub struct ReqCtx<REQ, RSP, CTX, ERR: Error> {
+    pub ctx: CTX,
     pub req: REQ,
-    pub rsp_snd: Sender<RSP>,
+    pub rsp_snd: Sender<ResCtx<RSP, CTX, ERR>>,
 }
 
-impl <REQ: Debug, RSP> Debug for ReqId<REQ, RSP> {
+impl <REQ: Debug, RSP, CTX: Debug, ERR: Error> Debug for ReqCtx<REQ, RSP, CTX, ERR> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ReqId {{ id: {:?}, req: {:?} }}>", self.id, self.req)
+        write!(f, "ReqTag {{ ctx: {:?}, req: {:?} }}>", self.ctx, self.req)
     }
 }
 
-impl <REQ, RES, E: Error> ReqId<REQ, RES, E> {
-    pub fn new(id: usize, request: REQ, responses: Sender<RES>) -> Self {
-        ReqId { id, req: request, res_snd: responses }
+impl <REQ, RSP, CTX, ERR: Error> ReqCtx<REQ, RSP, CTX, ERR> {
+    pub fn new(ctx: CTX, req: REQ, rsp_snd: Sender<ResCtx<RSP, CTX, ERR>>) -> Self {
+        ReqCtx { ctx, req, rsp_snd }
     }
 }
 
-impl <REQ: Display, RSP, E: Error> Display for ReqId<REQ, RSP, E> {
+impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, TAG, ERR> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "id: {}, {}", self.id, self.req)
+        write!(f, "tag: {}, req: {}", self.ctx, self.req)
     }
 }
 

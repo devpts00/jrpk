@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use bytes::{BufMut, BytesMut};
+use rand::rngs::ThreadRng;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::{TcpSocket, TcpStream};
@@ -19,10 +20,27 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::{JoinError, JoinHandle};
 use tracing::{debug, error, info, trace};
-use crate::kafka::KfkResId;
+use log::warn;
+use crate::kafka::KfkResCtx;
 use crate::util::handle_future_result;
 
-fn generate_send_req(buf: &mut Vec<u8>, rec_count_per_send: u16, partition_count: u8) {
+fn generate_send_req_valid(buf: &mut Vec<u8>, rng: &mut ThreadRng, gen: &mut DataGenerator) {
+    let key: String = DataType::Country.random(gen);
+    let first: String = DataType::FirstName.random(gen);
+    let last: String = DataType::LastName.random(gen);
+    let age: u8 = rng.random_range(10..80);
+    write!(buf, r#"{{"key": {{ "json": "{}" }}, "value": {{ "json": {{ "first": "{}", "last": "{}", "age": {} }} }} }}"#, key, first, last, age).unwrap();
+}
+
+fn generate_send_req_invalid(buf: &mut Vec<u8>, rng: &mut ThreadRng, gen: &mut DataGenerator) {
+    let key: String = DataType::FirstName.random(gen);
+    let first: String = DataType::FirstName.random(gen);
+    let last: String = DataType::LastName.random(gen);
+    let age: u8 = rng.random_range(10..80);
+    write!(buf, r#"{{"key": "{}", "value": {{ "json": {{ "first": "{}", "last": "{}", "age": {} }} }} }}"#, key, first, last, age).unwrap();
+}
+
+fn generate_send_reqs(buf: &mut Vec<u8>, rec_count_per_send: u16, partition_count: u8) {
     buf.clear();
     let partitions = 120;
     let mut rng = rand::rng();
@@ -37,11 +55,7 @@ fn generate_send_req(buf: &mut Vec<u8>, rec_count_per_send: u16, partition_count
         } else {
             comma = true;
         }
-        let key: String = DataType::Country.random(&mut gen);
-        let first: String = DataType::FirstName.random(&mut gen);
-        let last: String = DataType::LastName.random(&mut gen);
-        let age: u8 = rng.random_range(10..80);
-        write!(buf, r#"{{"key": {{ "json": "{}" }}, "value": {{ "json": {{ "first": "{}", "last": "{}", "age": {} }} }} }}"#, key, first, last, age).unwrap();
+        generate_send_req_invalid(buf, &mut rng, &mut gen);
     }
     buf.extend_from_slice(b"] }}");
 }
@@ -52,7 +66,7 @@ async fn producer_writer(wh: OwnedWriteHalf, partition_count: u8, send_count_per
     let mut writer = tokio::io::BufWriter::with_capacity(4 * 1024, wh);
     let total: usize = 1;
     for n in 0..send_count_per_producer {
-        generate_send_req(&mut buf, rec_count_per_send, partition_count);
+        generate_send_reqs(&mut buf, rec_count_per_send, partition_count);
         writer.write_all(&buf).await?;
         writer.flush().await?;
     }
@@ -68,7 +82,7 @@ async fn producer_reader(rh: OwnedReadHalf) -> Result<(), anyhow::Error> {
     while let Ok(n) = reader.read_line(&mut line).await {
         if n > 0 {
             line.pop();
-            trace!("produce - read, response: {}", line);
+            info!("produce - read, response: {}", line);
             line.clear()
         } else {
             break;
@@ -83,8 +97,8 @@ async fn test_produce() -> Result<(), anyhow::Error> {
     info!("produce, start");
     init_tracing();
     let partition_count = 120;
-    let send_count_per_producer = 10;
-    let rec_count_per_send = 10;
+    let send_count_per_producer = 100;
+    let rec_count_per_send = 100;
     let parallelism = 120;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * parallelism);
     for _ in 0..parallelism {
@@ -120,20 +134,21 @@ fn get_offset_from_offset(line: &str) -> Result<Option<i64>, serde_json::Error> 
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum TestJrpRspData {
+enum TestJrpRspResult {
+    Send {
+        offsets: Vec<i64>,
+    },
     Fetch {
         next_offset: Option<i64>,
         high_watermark: i64,
-    }
+    },
+    Offset(i64)
 }
 
 #[derive(Debug, Deserialize)]
 struct TestJrpRsp {
-    result: TestJrpRspData,
-}
-
-fn get_offset_from_fetch(line: &str) -> serde_json::Result<TestJrpRsp> {
-    serde_json::from_str::<TestJrpRsp>(line)
+    id: usize,
+    result: TestJrpRspResult,
 }
 
 async fn consumer_read(
@@ -143,37 +158,34 @@ async fn consumer_read(
 ) -> Result<(), anyhow::Error> {
     let mut reader = BufReader::with_capacity(4 * 1024, rh);
     let mut line = String::with_capacity(4 * 1024);
-    let mut offset_read = false;
-    if let Ok(n) = reader.read_line(&mut line).await {
+    while let Ok(n) = reader.read_line(&mut line).await {
+        if n > 0 {
+            break;
+        }
         line.pop();
-        info!("read, ctx: {}, response: {}", addr, line);
-        if let Some(offset) = get_offset_from_offset(&line)? {
-            info!("read, ctx: {}, offset: {}", addr, offset);
-            snd.send(offset).await?;
-            while let Ok(n) = reader.read_line(&mut line).await {
-                if n == 0 {
+        trace!("read, ctx: {}, line: {}", addr, &line);
+        let rsp = serde_json::from_str::<TestJrpRsp>(&line)?;
+        match rsp.result {
+            TestJrpRspResult::Send { offsets } => {
+                warn!("read, ctx: {}, offsets: {:?}", addr, offsets);
+            }
+            TestJrpRspResult::Fetch { next_offset: Some(offset), high_watermark } => {
+                info!("read, ctx: {}, offset: {}, high_watermark: {}", addr, offset, high_watermark);
+                if offset < high_watermark {
+                    snd.send(offset).await?;
+                } else {
                     break;
                 }
-                line.pop();
-                info!("read, ctx: {}, response: {}", addr, &line);
-                let rsp = get_offset_from_fetch(&line)?;
-                match rsp.result {
-                    TestJrpRspData::Fetch { next_offset: Some(offset), high_watermark } => {
-                        info!("read, ctx: {}, offset: {}, high_watermark: {}", addr, offset, high_watermark);
-                        if offset < high_watermark {
-                            snd.send(offset).await?;
-                        } else {
-                            break;
-                        }
-                    }
-                    TestJrpRspData::Fetch { next_offset: None, high_watermark } => {
-                        info!("read, ctx: {}, offset: None, high_watermark: {}", addr, high_watermark);
-                        break;
-                    }
-                }
-                line.clear()
+            }
+            TestJrpRspResult::Fetch { next_offset: None, high_watermark } => {
+                info!("read, ctx: {}, offset: None, high_watermark: {}", addr, high_watermark);
+                break;
+            }
+            TestJrpRspResult::Offset(offset) => {
+                snd.send(offset).await?;
             }
         }
+        line.clear()
     }
     Ok(())
 }
@@ -200,7 +212,7 @@ async fn consumer_write(
     while let Some(offset) = rcv.recv().await {
         id = id + 1;
         info!("writer, ctx: {}, offset: {}", addr, offset);
-        write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "fetch123", "params": {{ "topic": "posts", "partition": {}, "offset": {}, "bytes": {{ "start": {}, "end": {} }}, "max_wait_ms": 1000 }} }}"#,
+        write!(&mut buf, r#"{{ "jsonrpc": "2.0", "id": {}, "method": "fetch", "params": {{ "topic": "posts", "partition": {}, "codecs": {{ "key": "json", "value": "json" }}, "offset": {}, "bytes": {{ "start": {}, "end": {} }}, "max_wait_ms": 1000 }} }}"#,
                id, partition, offset, byte_size_min, byte_size_max)?;
         writer.write_all(&buf).await?;
         writer.flush().await?;
@@ -213,7 +225,7 @@ async fn consumer_write(
 async fn test_consume() {
     init_tracing();
     info!("consume, main - START");
-    let partition_count: u8 = 1;
+    let partition_count: u8 = 120;
     let byte_size_min: u32 = 1000;
     let byte_size_max: u32 = 1000000;
     let mut tasks: Vec<JoinHandle<()>> = Vec::with_capacity(2 * partition_count as usize);
