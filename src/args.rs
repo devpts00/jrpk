@@ -84,6 +84,8 @@ pub enum Mode {
         partition: i32,
         #[arg(long)]
         file: PathBuf,
+        #[arg(long, default_value = "1MiB")]
+        max_frame_size: ByteSize,
         #[command(subcommand)]
         command: Command,
     }

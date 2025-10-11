@@ -1,7 +1,7 @@
-use crate::jsonrpc::JrpRsp;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::cmp::min;
 use std::str::{from_utf8, from_utf8_unchecked};
+use serde::Serialize;
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, enabled, trace, Level};
@@ -128,6 +128,7 @@ pub enum JsonEncoderError {
     Json(#[from] serde_json::error::Error),
 }
 
+/*
 impl Encoder<JrpRsp> for JsonCodec {
     type Error = JsonEncoderError;
     fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> Result<(), Self::Error> {
@@ -141,6 +142,16 @@ impl Encoder<&[u8]> for JsonCodec {
     type Error = std::io::Error;
     fn encode(&mut self, response: &[u8], dst: &mut BytesMut) -> Result<(), Self::Error> {
         dst.put_slice(response);
+        Ok(())
+    }
+}
+ */
+
+impl <T: Serialize> Encoder<T> for JsonCodec {
+    type Error = JsonEncoderError;
+    fn encode(&mut self, item: T, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        serde_json::to_writer(dst.writer(), &item)?;
+        dst.put_u8(b'\n');
         Ok(())
     }
 }

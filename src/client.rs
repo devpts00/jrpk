@@ -1,13 +1,48 @@
 use std::path::PathBuf;
+use bytesize::ByteSize;
 use thiserror::Error;
+use futures::stream::{SplitSink, SplitStream};
+use futures::{SinkExt, StreamExt};
+use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
+use tracing::info;
 use crate::args::Offset;
+use crate::codec::JsonCodec;
+use crate::jsonrpc::JrpRsp;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
-
+    #[error("io: {0}")]
+    IO(#[from] std::io::Error),
 }
 
-pub async fn consume(address: String, topic: String, partition: i32, from: Offset, until: Offset, file: PathBuf) -> Result<(), ClientError> {
+async fn consumer_writer(mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>) -> Result<(), ClientError> {
+    Ok(())
+}
+
+async fn consumer_reader(mut stream: SplitStream<Framed<TcpStream, JsonCodec>>) -> Result<(), ClientError> {
+    Ok(())
+}
+
+pub async fn consume(
+    address: String,
+    topic: String,
+    partition: i32,
+    from: Offset,
+    until: Offset,
+    file: PathBuf,
+    max_frame_size: ByteSize,
+) -> Result<(), ClientError> {
+
+    info!("consume, address: {}, topic: {}, partition: {}, from: {:?}, until: {:?}, file: {:?}, max_frame_size: {}",
+        address, topic, partition, from, until, file, max_frame_size
+    );
+    let stream = TcpStream::connect(address).await?;
+    info!("connected: {}", stream.peer_addr()?);
+    let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
+    let framed = Framed::new(stream, codec);
+    //let (sink, stream) = framed.split();
+
     Ok(())
 }
 
@@ -19,6 +54,6 @@ pub async fn producer_reader() -> Result<(), ClientError> {
     Ok(())
 }
 
-pub async fn produce(address: String, topic: String, partition: i32, file: PathBuf) -> Result<(), ClientError> {
+pub async fn produce(address: String, topic: String, partition: i32, file: PathBuf, max_frame_size: ByteSize) -> Result<(), ClientError> {
     Ok(())
 }
