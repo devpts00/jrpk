@@ -4,54 +4,64 @@ mod util;
 mod jsonrpc;
 mod kafka;
 mod codec;
-mod tests;
+mod client;
 
 use crate::server::listen;
-use crate::util::{handle_future_result, join_with_signal};
+use crate::util::{handle_future_result, init_tracing, join_with_signal};
 use clap::Parser;
-use std::sync::Once;
 use std::time::Duration;
 use tokio;
 use tracing::info;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::EnvFilter;
+use crate::args::{Command, Mode};
+use crate::client::{consume, produce};
 
 async fn run(args: args::Args) {
-    join_with_signal(
-        "main", 
-        args.bind, 
-        tokio::spawn(
-            handle_future_result(
-                "listen", 
-                args.bind, 
-                listen(args)
-            )
-        )
-    ).await
-}
-
-static TRACING: Once = Once::new();
-
-fn init_tracing() {
-    TRACING.call_once(|| {
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer()
-                .pretty()
-                .with_file(false)
-                .with_line_number(false)
-                .with_thread_ids(true)
-                .with_thread_names(true)
-                .with_span_events(FmtSpan::NONE)
-            )
-            .with(EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env()
-                .unwrap()
-            )
-            .init();
-    })
+    match args.mode {
+        Mode::Server { brokers, bind, max_frame_size, send_buffer_size, recv_buffer_size, queue_size } => {
+            join_with_signal(
+                "main",
+                bind,
+                tokio::spawn(
+                    handle_future_result(
+                        "listen",
+                        bind,
+                        listen(brokers, bind, max_frame_size, send_buffer_size, recv_buffer_size, queue_size)
+                    )
+                )
+            ).await
+        }
+        Mode::Client { address, topic, partition, file, command } => {
+            info!("client, address: {}, topic: {}, partition: {:?}, dir: {:?}, command: {:?}", address, topic, partition, file, command);
+            match command {
+                Command::Produce { batch_rec_count } => {
+                    join_with_signal(
+                        "produce",
+                        address.clone(),
+                        tokio::spawn(
+                            handle_future_result(
+                                "produce",
+                                address.clone(),
+                                produce(address, topic, partition, file)
+                            )
+                        )
+                    ).await
+                }
+                Command::Consume { from, until, batch_bytes_size, max_wait_ms } => {
+                    join_with_signal(
+                        "consume",
+                        address.clone(),
+                        tokio::spawn(
+                            handle_future_result(
+                                "consume",
+                                address.clone(),
+                                consume(address, topic, partition, from, until, file)
+                            )
+                        )
+                    ).await
+                }
+            }
+        }
+    }
 }
 
 fn main() {

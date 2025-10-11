@@ -1,28 +1,17 @@
-#[cfg(test)]
-use crate::init_tracing;
-use std::cmp::min;
-use futures::stream::{SplitSink, SplitStream};
-use rand::{Rng, SeedableRng};
-use random_data::{DataGenerator, DataType};
-use std::io::{Read, Write};
-use std::net::SocketAddr;
-use std::ops::{Add, Range};
-use std::path::PathBuf;
-use std::thread;
-use std::time::Duration;
-use bytes::{BufMut, BytesMut};
+use log::warn;
 use rand::rngs::ThreadRng;
+use rand::Rng;
+use random_data::{DataGenerator, DataType};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::net::{TcpSocket, TcpStream};
-use tokio::io::{AsyncWriteExt, AsyncReadExt, AsyncBufReadExt, BufReader};
+use std::io::Write;
+use std::net::SocketAddr;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::{JoinError, JoinHandle};
-use tracing::{debug, error, info, trace};
-use log::warn;
-use crate::kafka::KfkResCtx;
-use crate::util::handle_future_result;
+use tokio::task::JoinHandle;
+use tracing::{info, trace};
 
 fn generate_send_req_valid(buf: &mut Vec<u8>, rng: &mut ThreadRng, gen: &mut DataGenerator) {
     let key: String = DataType::Country.random(gen);

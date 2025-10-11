@@ -4,11 +4,39 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::from_utf8;
+use std::sync::Once;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info};
+use tracing::{error, info};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+static TRACING: Once = Once::new();
+
+pub fn init_tracing() {
+    TRACING.call_once(|| {
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer()
+                .pretty()
+                .with_file(false)
+                .with_line_number(false)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_span_events(FmtSpan::NONE)
+            )
+            .with(EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env()
+                .unwrap()
+            )
+            .init();
+    })
+}
 
 #[derive(Debug)]
 pub struct ResCtx<RSP, CTX, ERR: Error> {
@@ -17,9 +45,6 @@ pub struct ResCtx<RSP, CTX, ERR: Error> {
 }
 
 impl <RSP, CTX, ERR: Error> ResCtx<RSP, CTX, ERR> {
-    pub fn new(ctx: CTX, res: Result<RSP, ERR>) -> Self {
-        Self { ctx, res }
-    }
     pub fn ok(ctx: CTX, data: RSP) -> Self {
         ResCtx { ctx, res: Ok(data) }
     }
@@ -130,6 +155,7 @@ pub fn debug_vec_fn<T, F>(f: &mut Formatter<'_>, v: &Vec<T>, d: F) -> std::fmt::
     write!(f, "]")
 }
 
+#[allow(dead_code)]
 pub fn debug_vec<T: Display>(f: &mut Formatter<'_>, v: &Vec<T>) -> std::fmt::Result {
     debug_vec_fn(f, v, |f, x| x.fmt(f))
 }

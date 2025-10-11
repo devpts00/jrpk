@@ -1,19 +1,16 @@
-use std::fmt::{Debug, Display, Formatter};
+use crate::util::{debug_record_and_offset, debug_vec_fn, handle_future_result, ReqCtx, ResCtx};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
-use base64::DecodeError;
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
-use tracing::{debug, info, trace, warn};
-use crate::util::{debug_vec_fn, handle_future_result, ReqCtx, ResCtx, debug_record_and_offset};
-use crate::jsonrpc::{JrpError, JrpMethod, JrpDataCodecs, JrpReq};
+use tokio::sync::mpsc::{Receiver, Sender};
+use tracing::{info, trace};
 
 
 pub enum KfkReq {
@@ -138,7 +135,7 @@ pub enum KfkError {
 
 /// deliberately drop payload
 impl <T> From<SendError<T>> for KfkError {
-    fn from(value: SendError<T>) -> Self {
+    fn from(_: SendError<T>) -> Self {
         KfkError::Send(SendError(()))
     }
 }
@@ -159,10 +156,13 @@ async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkRe
                     .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark))
             }
             KfkReq::Offset { at } => {
-                cli.get_offset(at).await.map(|offset| KfkRsp::Offset(offset))
+                cli.get_offset(at).await.map(|offset| KfkRsp::offset(offset))
             }
         };
-        let res_ctx = KfkResCtx::new(ctx, res_rsp.map_err(|e| e.into()));
+        let res_ctx = match res_rsp {
+            Ok(rsp) => KfkResCtx::ok(ctx, rsp),
+            Err(err) => KfkResCtx::err(ctx, err.into())
+        };
         trace!("kafka, client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_ctx);
         res_ctx_snd.send(res_ctx).await?;
     }

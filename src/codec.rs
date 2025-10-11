@@ -1,10 +1,10 @@
-use std::cmp::min;
-use std::str::{from_utf8, from_utf8_unchecked};
 use crate::jsonrpc::JrpRsp;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use std::cmp::min;
+use std::str::{from_utf8, from_utf8_unchecked};
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, enabled, info, trace, Level};
+use tracing::{debug, enabled, trace, Level};
 
 #[derive(Debug)]
 pub struct JsonCodec {

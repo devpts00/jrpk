@@ -1,26 +1,24 @@
-use std::collections::BTreeMap;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpCtx, JrpDataCodec, JrpDataOwn, JrpDataRef, JrpError, JrpErrorMsg, JrpId, JrpRecFetch, JrpDataCodecs, JrpRecSend, JrpReq, JrpRsp, JrpRspData, JrpMethod, JrpExtra};
-use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkReqCtxRcv, KfkReqCtxSnd, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
-use crate::util::{handle_future_result, set_buf_sizes, ReqCtx, ResCtx};
+use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpDataOwn, JrpError, JrpErrorMsg, JrpExtra, JrpId, JrpMethod, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
+use crate::util::{handle_future_result, set_buf_sizes, ReqCtx};
+use base64::DecodeError;
+use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
-use std::net::SocketAddr;
-use std::str::{from_utf8, from_utf8_unchecked, Utf8Error};
-use std::sync::Arc;
-use base64::{DecodeError, Engine};
-use base64::prelude::BASE64_STANDARD;
-use chrono::Utc;
 use rskafka::record::{Record, RecordAndOffset};
+use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::str::{from_utf8, Utf8Error};
+use std::sync::Arc;
+use bytesize::ByteSize;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, trace, warn};
-use crate::args::Args;
 
 #[derive(Error, Debug)]
 pub enum ServerError {
@@ -50,7 +48,7 @@ pub enum ServerError {
 
 /// deliberately drop payload
 impl <T> From<SendError<T>> for ServerError {
-    fn from(value: SendError<T>) -> Self {
+    fn from(_: SendError<T>) -> Self {
         ServerError::Send(SendError(()))
     }
 }
@@ -184,32 +182,39 @@ async fn run_writer_loop(
     Ok(())
 }
 
-pub async fn listen(args: Args) -> Result<(), ServerError> {
+pub async fn listen(
+    brokers: Vec<String>,
+    bind: SocketAddr,
+    max_frame_size: ByteSize,
+    send_buffer_size: ByteSize,
+    recv_buffer_size: ByteSize,
+    queue_size: usize
+) -> Result<(), ServerError> {
 
-    info!("listen, kafka: {:?}", args.brokers);
-    let client = ClientBuilder::new(args.brokers.0).build().await?;
+    info!("listen, kafka: {:?}", brokers);
+    let client = ClientBuilder::new(brokers).build().await?;
     let cache: Arc<KfkClientCache<JrpCtx>> = Arc::new(KfkClientCache::new(client, 1024));
 
-    info!("listen, bind: {:?}", args.bind);
-    let listener = TcpListener::bind(args.bind).await?;
+    info!("listen, bind: {:?}", bind);
+    let listener = TcpListener::bind(bind).await?;
 
     loop {
         let (stream, addr) = listener.accept().await?;
         info!("listen, accepted: {:?}", addr);
         set_buf_sizes(
             &stream,
-            args.recv_buffer_size.as_u64() as usize,
-            args.send_buffer_size.as_u64() as usize
+            recv_buffer_size.as_u64() as usize,
+            send_buffer_size.as_u64() as usize
         )?;
-        let codec = JsonCodec::new(args.max_frame_size.as_u64() as usize);
+        let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
         let framed = Framed::new(stream, codec);
         let (sink, stream) = framed.split();
-        let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(args.queue_size);
+        let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(queue_size);
         tokio::spawn(
             handle_future_result(
                 "reader",
                 addr,
-                run_reader_loop(addr, stream, cache.clone(), kfk_res_snd, args.queue_size)
+                run_reader_loop(addr, stream, cache.clone(), kfk_res_snd, queue_size)
             )
         );
         tokio::spawn(

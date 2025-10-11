@@ -23,7 +23,13 @@ build-release:
 	docker compose run --rm rst cargo build --release
 
 server-debug: build-debug
-	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk --brokers kfk:9092 --bind 0.0.0.0:1133 --queue-size 8
+	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk server --brokers kfk:9092 --bind 0.0.0.0:1133 --queue-size 8
+
+client-debug-consume: build-debug
+	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk client --address=jrpk:1133 --topic=posts --partition=0 --file=test.json consume --from=1000 --until=2000 --batch-bytes-size=1MiB --max-wait-ms=100
+
+client-debug-produce: build-debug
+	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk client --address=jrpk:1133 --topic=posts --partition=0 --file=test.json produce --batch-rec-count=1000
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/release/jrpk --brokers kfk:9092 --bind 0.0.0.0:1133 --queue-size 8

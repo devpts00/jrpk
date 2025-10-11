@@ -1,57 +1,91 @@
-use clap::Parser;
-use std::fmt::{Display, Formatter};
-use std::net::SocketAddr;
-use std::ops::Deref;
-use std::str::FromStr;
 use bytesize::ByteSize;
-
-#[derive(Debug, Clone)]
-pub struct Ctr<C>(pub C);
-
-impl<C> Deref for Ctr<C> {
-    type Target = C;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T: FromStr> FromStr for Ctr<Vec<T>> {
-    type Err = T::Err;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let vec: Result<Vec<T>, T::Err> = s.split(',')
-            .map(T::from_str)
-            .collect();
-        Ok(Ctr(vec?))
-    }
-}
-
-impl<T: Display> Display for Ctr<Vec<T>> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for x in self.0.iter() {
-            write!(f, "{}", x)?
-        }
-        Ok(())
-    }
-}
-
-impl<C> From<C> for Ctr<C> {
-    fn from(value: C) -> Self {
-        Ctr(value)
-    }
-}
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::str::FromStr;
+use chrono::{DateTime, Utc};
+use clap::{Parser, Subcommand};
+use thiserror::Error;
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
-    #[arg(long)]
-    pub brokers: Ctr<Vec<String>>,
-    #[arg(long)]
-    pub bind: SocketAddr,
-    #[arg(long, default_value = "1MiB")]
-    pub max_frame_size: ByteSize,
-    #[arg(long, default_value = "32KiB")]
-    pub send_buffer_size: ByteSize,
-    #[arg(long, default_value = "32KiB")]
-    pub recv_buffer_size: ByteSize,
-    #[arg(long, default_value_t = 32)]
-    pub queue_size: usize
+    #[command(subcommand)]
+    pub mode: Mode
 }
+
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub struct ParseError(String);
+
+#[derive(Debug, Clone)]
+pub enum Offset {
+    Earliest,
+    Latest,
+    Timestamp(DateTime<Utc>),
+    Offset(i64)
+}
+
+impl FromStr for Offset {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("earliest") {
+            Ok(Offset::Earliest)
+        } else if s.eq_ignore_ascii_case("latest") {
+            Ok(Offset::Latest)
+        } else if let Ok(ts) = DateTime::<Utc>::from_str(s) {
+            Ok(Offset::Timestamp(ts))
+        } else if let Ok(offset) = i64::from_str(s) {
+            Ok(Offset::Offset(offset))
+        } else {
+            Err(ParseError(format!("invalid offset: {}", s)))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    Produce {
+        #[arg(long)]
+        batch_rec_count: usize,
+    },
+    Consume {
+        #[arg(long, value_parser = clap::value_parser!(Offset))]
+        from: Offset,
+        #[arg(long, value_parser = clap::value_parser!(Offset))]
+        until: Offset,
+        #[arg(long)]
+        batch_bytes_size: ByteSize,
+        #[arg(long)]
+        max_wait_ms: i32,
+    }
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Mode {
+    Server {
+        #[arg(long, value_delimiter = ',')]
+        brokers: Vec<String>,
+        #[arg(long)]
+        bind: SocketAddr,
+        #[arg(long, default_value = "1MiB")]
+        max_frame_size: ByteSize,
+        #[arg(long, default_value = "32KiB")]
+        send_buffer_size: ByteSize,
+        #[arg(long, default_value = "32KiB")]
+        recv_buffer_size: ByteSize,
+        #[arg(long, default_value_t = 32)]
+        queue_size: usize
+    },
+    Client {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        topic: String,
+        #[arg(long, required = false)]
+        partition: i32,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(subcommand)]
+        command: Command,
+    }
+}
+

@@ -1,18 +1,17 @@
-use crate::kafka::{RsKafkaError, KfkResCtx, KfkRsp};
+use crate::kafka::RsKafkaError;
+use base64::prelude::BASE64_STANDARD;
+use base64::{DecodeError, Engine};
 use rskafka::chrono::{DateTime, Utc};
-use rskafka::record::{Record, RecordAndOffset};
+use rskafka::client::partition::OffsetAt;
+use serde::de::{Error, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
-use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
-use base64::{DecodeError, Engine};
-use base64::prelude::BASE64_STANDARD;
-use rskafka::client::partition::OffsetAt;
-use serde::de::{Error, Visitor};
+use serde_valid::Validate;
 use thiserror::Error;
 
 
@@ -26,19 +25,6 @@ pub enum JrpError {
     Json(#[from] serde_json::error::Error),
     #[error("base64: {0}")]
     Base64(#[from] DecodeError),
-}
-
-fn raw_value_from_bytes(bytes: Option<Vec<u8>>) -> Result<Option<Box<RawValue>>, JrpError> {
-    match bytes {
-        Some(bytes) => {
-            let string = String::from_utf8(bytes)?;
-            let value = RawValue::from_string(string)?;
-            Ok(Some(value))
-        }
-        None => {
-            Ok(None)
-        }
-    }
 }
 
 /// Send codec defines how encode JSON to Kafka bytes
@@ -257,8 +243,9 @@ pub struct JrpParams<'a> {
 }
 
 /// JSONRPC request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct JrpReq<'a> {
+    #[validate(enumerate = ["2.0"])]
     pub jsonrpc: &'a str,
     pub id: usize,
     pub method: JrpMethod,
