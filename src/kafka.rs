@@ -6,24 +6,31 @@ use rskafka::record::{Record, RecordAndOffset};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
+use chrono::Utc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, trace};
+use crate::jsonrpc::JrpOffset;
 
+#[derive(Debug)]
+pub enum KfkOffset {
+    Implicit(OffsetAt),
+    Explicit(i64)
+}
 
 pub enum KfkReq {
     Send {
         records: Vec<Record>
     },
     Fetch {
-        offset: i64,
+        offset: KfkOffset,
         bytes: Range<i32>,
         max_wait_ms: i32,
     },
     Offset {
-        at: OffsetAt
+        offset: KfkOffset
     }
 }
 
@@ -42,9 +49,9 @@ impl Debug for KfkReq {
                     .field("max_wait_ms", max_wait_ms)
                     .finish()
             }
-            KfkReq::Offset { at } => {
+            KfkReq::Offset { offset } => {
                 f.debug_struct("Offset")
-                    .field("at", at)
+                    .field("offset", offset)
                     .finish()
             }
         }
@@ -55,11 +62,11 @@ impl KfkReq {
     pub fn send(records: Vec<Record>) -> Self {
         KfkReq::Send { records }
     }
-    pub fn fetch( offset: i64, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+    pub fn fetch(offset: KfkOffset, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         KfkReq::Fetch { offset, bytes, max_wait_ms }
     }
-    pub fn offset(at: OffsetAt) -> Self {
-        KfkReq::Offset { at }
+    pub fn offset(offset: KfkOffset) -> Self {
+        KfkReq::Offset { offset }
     }
 }
 
@@ -152,11 +159,22 @@ async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkRe
                     .map(|offsets| KfkRsp::send(offsets))
             }
             KfkReq::Fetch { offset, bytes, max_wait_ms } => {
-                cli.fetch_records(offset, bytes, max_wait_ms).await
+                let offset_explicit = match offset {
+                    KfkOffset::Implicit(at) => cli.get_offset(at).await?,
+                    KfkOffset::Explicit(n) => n
+                };
+                cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark))
             }
-            KfkReq::Offset { at } => {
-                cli.get_offset(at).await.map(|offset| KfkRsp::offset(offset))
+            KfkReq::Offset { offset } => {
+                match offset {
+                    KfkOffset::Implicit(at) => {
+                        cli.get_offset(at).await.map(|offset| KfkRsp::offset(offset))
+                    }
+                    KfkOffset::Explicit(pos) => {
+                        Ok(KfkRsp::offset(pos))
+                    }
+                }
             }
         };
         let res_ctx = match res_rsp {

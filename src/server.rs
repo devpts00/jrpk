@@ -1,6 +1,6 @@
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpDataOwn, JrpError, JrpErrorMsg, JrpExtra, JrpId, JrpMethod, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::kafka::{KfkClientCache, KfkError, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
+use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpDataOwn, JrpError, JrpErrorMsg, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
 use crate::util::{handle_future_result, set_buf_sizes, ReqCtx};
 use base64::DecodeError;
 use chrono::Utc;
@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
 use bytesize::ByteSize;
+use rskafka::client::partition::OffsetAt;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -93,6 +94,15 @@ fn k2j_err(err: KfkError) -> JrpErrorMsg {
     JrpErrorMsg::new(err.to_string())
 }
 
+fn j2k_offset(offset: JrpOffset) -> KfkOffset {
+    match offset {
+        JrpOffset::Earliest => KfkOffset::Implicit(OffsetAt::Earliest),
+        JrpOffset::Latest => KfkOffset::Implicit(OffsetAt::Latest),
+        JrpOffset::Timestamp(ts) => KfkOffset::Implicit(OffsetAt::Timestamp(ts)),
+        JrpOffset::Offset(pos) => KfkOffset::Explicit(pos)
+    }
+}
+
 fn j2k_req(jrp: JrpReq) -> Result<(KfkReq, JrpExtra), ServerError> {
     match jrp.method {
         JrpMethod::Send => {
@@ -108,11 +118,11 @@ fn j2k_req(jrp: JrpReq) -> Result<(KfkReq, JrpExtra), ServerError> {
             let offset = jrp.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;
             let bytes = jrp.params.bytes.ok_or(JrpError::Syntax("bytes is missing"))?;
             let max_wait_ms = jrp.params.max_wait_ms.ok_or(JrpError::Syntax("max_wait_ms is missing"))?;
-            Ok((KfkReq::fetch(offset, bytes, max_wait_ms), JrpExtra::DataCodecs(codecs)))
+            Ok((KfkReq::fetch(j2k_offset(offset), bytes, max_wait_ms), JrpExtra::DataCodecs(codecs)))
         }
         JrpMethod::Offset => {
-            let at = jrp.params.at.ok_or(JrpError::Syntax("at is missing"))?;
-            Ok((KfkReq::offset(at.into()), JrpExtra::None))
+            let offset = jrp.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;
+            Ok((KfkReq::offset(j2k_offset(offset)), JrpExtra::None))
         }
     }
 }
@@ -186,8 +196,8 @@ pub async fn listen(
     brokers: Vec<String>,
     bind: SocketAddr,
     max_frame_size: ByteSize,
-    send_buffer_size: ByteSize,
-    recv_buffer_size: ByteSize,
+    send_buf_size: ByteSize,
+    recv_buf_size: ByteSize,
     queue_size: usize
 ) -> Result<(), ServerError> {
 
@@ -199,15 +209,11 @@ pub async fn listen(
     let listener = TcpListener::bind(bind).await?;
 
     loop {
-        let (stream, addr) = listener.accept().await?;
+        let (tcp, addr) = listener.accept().await?;
         info!("listen, accepted: {:?}", addr);
-        set_buf_sizes(
-            &stream,
-            recv_buffer_size.as_u64() as usize,
-            send_buffer_size.as_u64() as usize
-        )?;
+        set_buf_sizes(&tcp, recv_buf_size.as_u64() as usize, send_buf_size.as_u64() as usize)?;
         let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
-        let framed = Framed::new(stream, codec);
+        let framed = Framed::new(tcp, codec);
         let (sink, stream) = framed.split();
         let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(queue_size);
         tokio::spawn(

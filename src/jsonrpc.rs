@@ -28,7 +28,7 @@ pub enum JrpError {
 }
 
 /// Send codec defines how encode JSON to Kafka bytes
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JrpDataRef<'a> {
     /// JSON fragment utf-8 slice will be interpreted as bytes
@@ -94,7 +94,7 @@ impl JrpDataOwn {
 }
 
 /// Fetch codec defines how to decode Kafka bytes to JSON
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum JrpDataCodec {
     /// bytes will be interpreted as utf-8 and output as they are, assuming valid JSON fragment
@@ -105,7 +105,7 @@ pub enum JrpDataCodec {
     Base64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct JrpDataCodecs {
     pub key: JrpDataCodec,
     pub value: JrpDataCodec,
@@ -131,7 +131,7 @@ impl JrpCtx {
 
 /// JSONRPC send record captures payload as references to raw JSON,
 /// because there is no way to turn RawValue into Vec<u8>.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct JrpRecSend<'a> {
     #[serde(borrow)]
     pub key: Option<JrpDataRef<'a>>,
@@ -156,7 +156,7 @@ impl JrpRecFetch {
 }
 
 /// JSONRPC method as an enumeration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JrpMethod {
     Send,
@@ -165,28 +165,32 @@ pub enum JrpMethod {
 }
 
 #[derive(Debug)]
-pub enum JrpOffsetAt {
-    Earliest, Latest, Timestamp(DateTime<Utc>)
+pub enum JrpOffset {
+    Earliest,
+    Latest,
+    Timestamp(DateTime<Utc>),
+    Offset(i64)
 }
 
-impl Into<OffsetAt> for JrpOffsetAt {
-    fn into(self) -> OffsetAt {
+impl Serialize for JrpOffset {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
-            JrpOffsetAt::Earliest => OffsetAt::Earliest,
-            JrpOffsetAt::Latest => OffsetAt::Latest,
-            JrpOffsetAt::Timestamp(t) => OffsetAt::Timestamp(t)
+            JrpOffset::Earliest => s.serialize_str("earliest"),
+            JrpOffset::Latest => s.serialize_str("latest"),
+            JrpOffset::Timestamp(t) => s.serialize_str(t.to_rfc3339().as_str()),
+            JrpOffset::Offset(offset) => s.serialize_i64(*offset),
         }
     }
 }
 
-impl <'de> Deserialize<'de> for JrpOffsetAt {
+impl <'de> Deserialize<'de> for JrpOffset {
 
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
 
         struct JrpOffsetVisitor;
 
         impl <'de> Visitor<'de> for JrpOffsetVisitor {
-            type Value = JrpOffsetAt;
+            type Value = JrpOffset;
             fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
                 write!(f, r#""earliest", "latest", 1755794154497 or "2024-12-31T21:00:00.000Z""#)
             }
@@ -204,22 +208,20 @@ impl <'de> Deserialize<'de> for JrpOffsetAt {
             }
 
             fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
-                DateTime::<Utc>::from_timestamp_millis(v)
-                    .map(|ms| JrpOffsetAt::Timestamp(ms))
-                    .ok_or(E::custom(format!("invalid timestamp: {}", v)))
+                Ok(JrpOffset::Offset(v))
             }
 
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
                 if v == "earliest" {
-                    Ok(JrpOffsetAt::Earliest)
+                    Ok(JrpOffset::Earliest)
                 } else if v == "latest" {
-                    Ok(JrpOffsetAt::Latest)
+                    Ok(JrpOffset::Latest)
                 } else if let Ok(ts) = DateTime::<Utc>::from_str(v) {
-                    Ok(JrpOffsetAt::Timestamp(ts))
+                    Ok(JrpOffset::Timestamp(ts))
                 } else if let Ok(ms) = i64::from_str(v) {
                     self.visit_i64(ms)
                 } else {
-                    Err(E::custom(format!("invalid timestamp: {}", v)))
+                    Err(E::custom(format!("invalid offset: {}", v)))
                 }
             }
         }
@@ -230,26 +232,61 @@ impl <'de> Deserialize<'de> for JrpOffsetAt {
 
 /// JSONRPC params is a superset of arguments for all methods.
 /// That is a consequence of RawValue usage, that requires same structure of Rust and JSON.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct JrpParams<'a> {
     pub topic: &'a str,
     pub partition: i32,
+    pub offset: Option<JrpOffset>,
     pub codecs: Option<JrpDataCodecs>,
     pub records: Option<Vec<JrpRecSend<'a>>>,
-    pub offset: Option<i64>,
     pub bytes: Option<Range<i32>>,
     pub max_wait_ms: Option<i32>,
-    pub at: Option<JrpOffsetAt>,
+}
+
+impl <'a> JrpParams<'a> {
+    #[inline]
+    pub fn new(
+        topic: &'a str,
+        partition: i32,
+        offset: Option<JrpOffset>,
+        codecs: Option<JrpDataCodecs>,
+        records: Option<Vec<JrpRecSend<'a>>>,
+        bytes: Option<Range<i32>>,
+        max_wait_ms: Option<i32>,
+    ) -> Self {
+        JrpParams { topic, partition, offset, codecs, records, bytes, max_wait_ms }
+    }
+
+    #[inline]
+    pub fn send (topic: &'a str, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
+        JrpParams::new(topic, partition, None, None, Some(records), None, None)
+    }
+
+    #[inline]
+    pub fn fetch(topic: &'a str, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+        JrpParams::new(topic, partition, Some(offset), Some(codecs), None, Some(bytes), Some(max_wait_ms))
+    }
+
+    #[inline]
+    pub fn offset (topic: &'a str, partition: i32, offset: JrpOffset) -> Self {
+        JrpParams::new(topic, partition, Some(offset), None, None, None, None)
+    }
 }
 
 /// JSONRPC request.
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, Serialize)]
 pub struct JrpReq<'a> {
     #[validate(enumerate = ["2.0"])]
     pub jsonrpc: &'a str,
     pub id: usize,
     pub method: JrpMethod,
     pub params: JrpParams<'a>,
+}
+
+impl <'a> JrpReq<'a> {
+    pub fn new(id: usize, method: JrpMethod, params: JrpParams<'a>) -> Self {
+        JrpReq { jsonrpc: "2.0", id, method, params }
+    }
 }
 
 #[derive(Debug, Deserialize)]

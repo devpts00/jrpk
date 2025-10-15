@@ -2,13 +2,13 @@ use std::path::PathBuf;
 use bytesize::ByteSize;
 use thiserror::Error;
 use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, TryFutureExt};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use tracing::info;
 use crate::args::Offset;
 use crate::codec::JsonCodec;
-use crate::jsonrpc::JrpRsp;
+use crate::jsonrpc::{JrpMethod, JrpParams, JrpRecSend, JrpReq, JrpRsp};
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -16,11 +16,17 @@ pub enum ClientError {
     IO(#[from] std::io::Error),
 }
 
-async fn consumer_writer(mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>) -> Result<(), ClientError> {
+async fn consumer_writer<'a>(mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpReq<'a>>) -> Result<(), ClientError> {
+    
+    
+    
     Ok(())
 }
 
 async fn consumer_reader(mut stream: SplitStream<Framed<TcpStream, JsonCodec>>) -> Result<(), ClientError> {
+    while let Some(result) = stream.next().await {
+        
+    }
     Ok(())
 }
 
@@ -41,7 +47,10 @@ pub async fn consume(
     info!("connected: {}", stream.peer_addr()?);
     let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
     let framed = Framed::new(stream, codec);
-    //let (sink, stream) = framed.split();
+    let (sink, stream) = framed.split();
+
+    consumer_writer(sink).await?;
+    consumer_reader(stream).await?;
 
     Ok(())
 }
