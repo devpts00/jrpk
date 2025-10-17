@@ -7,7 +7,7 @@ control writer
 queue requests
 queue responses
 control kafka
-
+ 
 activate kafka
 activate listener
 

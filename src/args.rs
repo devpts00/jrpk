@@ -53,7 +53,7 @@ pub enum Command {
         #[arg(long, value_parser = clap::value_parser!(Offset))]
         until: Offset,
         #[arg(long)]
-        batch_bytes_size: ByteSize,
+        batch_size: ByteSize,
         #[arg(long)]
         max_wait_ms: i32,
     }
@@ -77,13 +77,13 @@ pub enum Mode {
     },
     Client {
         #[arg(long)]
+        path: PathBuf,
+        #[arg(long)]
         address: String,
         #[arg(long)]
         topic: String,
         #[arg(long, required = false)]
         partition: i32,
-        #[arg(long)]
-        file: PathBuf,
         #[arg(long, default_value = "1MiB")]
         max_frame_size: ByteSize,
         #[command(subcommand)]

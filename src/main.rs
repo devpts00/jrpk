@@ -30,8 +30,8 @@ async fn run(args: args::Args) {
                 )
             ).await
         }
-        Mode::Client { address, topic, partition, file, max_frame_size, command } => {
-            info!("client, address: {}, topic: {}, partition: {:?}, dir: {:?}, command: {:?}", address, topic, partition, file, command);
+        Mode::Client { address, topic, partition, path, max_frame_size, command } => {
+            info!("client, address: {}, topic: {}, partition: {:?}, path: {:?}, command: {:?}", address, topic, partition, path, command);
             match command {
                 Command::Produce { batch_rec_count } => {
                     join_with_signal(
@@ -41,12 +41,12 @@ async fn run(args: args::Args) {
                             handle_future_result(
                                 "produce",
                                 address.clone(),
-                                produce(address, topic, partition, file, max_frame_size)
+                                produce(address, topic, partition, path, max_frame_size)
                             )
                         )
                     ).await
                 }
-                Command::Consume { from, until, batch_bytes_size, max_wait_ms } => {
+                Command::Consume { from, until, batch_size, max_wait_ms } => {
                     join_with_signal(
                         "consume",
                         address.clone(),
@@ -54,7 +54,7 @@ async fn run(args: args::Args) {
                             handle_future_result(
                                 "consume",
                                 address.clone(),
-                                consume(address, topic, partition, from, until, file, max_frame_size)
+                                consume(path, address, topic, partition, from, until, batch_size, max_wait_ms, max_frame_size)
                             )
                         )
                     ).await

@@ -1,11 +1,11 @@
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpDataOwn, JrpError, JrpErrorMsg, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpData, JrpError, JrpErrorMsg, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
 use crate::util::{handle_future_result, set_buf_sizes, ReqCtx};
 use base64::DecodeError;
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, Sink};
 use rskafka::client::ClientBuilder;
 use rskafka::record::{Record, RecordAndOffset};
 use std::collections::BTreeMap;
@@ -55,20 +55,20 @@ impl <T> From<SendError<T>> for ServerError {
 }
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
-    let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.to_bytes()).transpose()?;
-    let value: Option<Vec<u8>> = jrp_rec_send.value.map(|v| v.to_bytes()).transpose()?;
+    let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
+    let value: Option<Vec<u8>> = jrp_rec_send.value.map(|v| v.into_bytes()).transpose()?;
     Ok(Record { key, value, headers: BTreeMap::new(), timestamp: Utc::now() })
 }
 
-fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, codecs: &JrpDataCodecs) -> Result<JrpRecFetch, JrpError> {
+fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, codecs: &JrpDataCodecs) -> Result<JrpRecFetch<'static>, JrpError> {
     let offset = rec_and_offset.offset;
     let record = rec_and_offset.record;
-    let key = record.key.map(|k|JrpDataOwn::from_bytes(k, codecs.key)).transpose()?;
-    let value = record.value.map(|v|JrpDataOwn::from_bytes(v, codecs.value)).transpose()?;
+    let key = record.key.map(|k|JrpData::from_bytes(k, codecs.key)).transpose()?;
+    let value = record.value.map(|v|JrpData::from_bytes(v, codecs.value)).transpose()?;
     Ok(JrpRecFetch::new(offset, key, value))
 }
 
-fn k2j_rsp(rsp: KfkRsp, extra: JrpExtra) -> Result<JrpRspData, ServerError> {
+fn k2j_rsp(rsp: KfkRsp, extra: JrpExtra) -> Result<JrpRspData<'static>, ServerError> {
     match (rsp, extra) {
         (KfkRsp::Send { offsets }, _) => {
             Ok(JrpRspData::send(offsets))
@@ -89,11 +89,11 @@ fn k2j_rsp(rsp: KfkRsp, extra: JrpExtra) -> Result<JrpRspData, ServerError> {
     }
 }
 
-#[inline]
-fn k2j_err(err: KfkError) -> JrpErrorMsg {
+/*#[inline]
+fn x2j_err<E: Error>(err: E) -> JrpErrorMsg {
     JrpErrorMsg::new(err.to_string())
 }
-
+*/
 fn j2k_offset(offset: JrpOffset) -> KfkOffset {
     match offset {
         JrpOffset::Earliest => KfkOffset::Implicit(OffsetAt::Earliest),
@@ -103,7 +103,10 @@ fn j2k_offset(offset: JrpOffset) -> KfkOffset {
     }
 }
 
-fn j2k_req(jrp: JrpReq) -> Result<(KfkReq, JrpExtra), ServerError> {
+fn j2k_req(jrp: JrpReq) -> Result<(usize, String, i32, KfkReq, JrpExtra), ServerError> {
+    let id = jrp.id;
+    let topic = jrp.params.topic.into_owned();
+    let partition = jrp.params.partition;
     match jrp.method {
         JrpMethod::Send => {
             let jrp_records = jrp.params.records
@@ -111,18 +114,18 @@ fn j2k_req(jrp: JrpReq) -> Result<(KfkReq, JrpExtra), ServerError> {
             let records: Result<Vec<Record>, DecodeError> = jrp_records.into_iter()
                 .map(|jrs| j2k_rec_send(jrs))
                 .collect();
-            Ok((KfkReq::send(records?), JrpExtra::None))
+            Ok((id, topic, partition, KfkReq::send(records?), JrpExtra::None))
         }
         JrpMethod::Fetch => {
             let codecs = jrp.params.codecs.ok_or(JrpError::Syntax("codecs are missing"))?;
             let offset = jrp.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;
             let bytes = jrp.params.bytes.ok_or(JrpError::Syntax("bytes is missing"))?;
             let max_wait_ms = jrp.params.max_wait_ms.ok_or(JrpError::Syntax("max_wait_ms is missing"))?;
-            Ok((KfkReq::fetch(j2k_offset(offset), bytes, max_wait_ms), JrpExtra::DataCodecs(codecs)))
+            Ok((id, topic, partition, KfkReq::fetch(j2k_offset(offset), bytes, max_wait_ms), JrpExtra::DataCodecs(codecs)))
         }
         JrpMethod::Offset => {
             let offset = jrp.params.offset.ok_or(JrpError::Syntax("offset is missing"))?;
-            Ok((KfkReq::offset(j2k_offset(offset)), JrpExtra::None))
+            Ok((id, topic, partition, KfkReq::offset(j2k_offset(offset)), JrpExtra::None))
         }
     }
 }
@@ -138,16 +141,13 @@ async fn run_reader_loop(
     while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
-        trace!("reader, ctx: {}, json: {}", addr, from_utf8(bytes.as_ref())?);
+        debug!("reader, ctx: {}, json: {}", addr, from_utf8(bytes.as_ref())?);
         // we are optimistic and expect most requests to be well-formed
         match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
             // if request is well-formed, we proceed
             Ok(jrp_req) => {
                 debug!("reader, ctx: {}, request: {:?}", addr, jrp_req);
-                let id = jrp_req.id;
-                let topic = jrp_req.params.topic.to_owned();
-                let partition = jrp_req.params.partition;
-                let (kfk_req, extra) = j2k_req(jrp_req)?;
+                let (id, topic, partition, kfk_req, extra) = j2k_req(jrp_req)?;
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
                 let kfk_req_ctx_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
@@ -172,18 +172,21 @@ async fn run_reader_loop(
 
 async fn run_writer_loop(
     addr: SocketAddr,
-    mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp>,
+    mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
 ) -> Result<(), ServerError> {
     while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
         info!("writer, ctx: {}, response: {:?}", addr, kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
         let jrp_rsp = match kfk_res_ctx.res {
-            Ok(rsp) => {
-                JrpRsp::ok(ctx.id, k2j_rsp(rsp, ctx.extra)?)
+            Ok(kfk_rsp) => {
+                match k2j_rsp(kfk_rsp, ctx.extra) {
+                    Ok(jrp_rsp) => JrpRsp::ok(ctx.id, jrp_rsp),
+                    Err(err) => JrpRsp::err(ctx.id, err.into())
+                }
             }
             Err(err) => {
-                JrpRsp::err(ctx.id, k2j_err(err))
+                JrpRsp::err(ctx.id, err.into())
             }
         };
         sink.send(jrp_rsp).await?;
