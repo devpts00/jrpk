@@ -8,8 +8,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
+use std::slice::from_raw_parts;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
+use bytes::{Buf, Bytes};
 use clap::parser::RawValues;
 use serde_valid::Validate;
 use thiserror::Error;
@@ -229,6 +231,12 @@ impl JrpCtx {
 pub struct JrpRecSend<'a> {
     pub key: Option<JrpData<'a>>,
     pub value: Option<JrpData<'a>>,
+}
+
+impl<'a> JrpRecSend<'a> {
+    pub fn new(key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
+        Self { key, value }
+    }
 }
 
 /// JSONRPC output record captures Kafka messages as owned raw JSON.
@@ -468,33 +476,26 @@ impl <'a> JrpRsp<'a> {
         JrpRsp::new(id, JrpResult::Error(error))
     }
 }
-/*
-impl Serialize for JrpRsp {
-    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error> where S: Serializer {
-        let mut r = s.serialize_struct("Response", 2)?;
-        r.serialize_field("jsonrpc", "2.0")?;
-        r.serialize_field("id", &self.id)?;
-        match &self.result {
-            Ok(data) => r.serialize_field("result", data)?,
-            Err(error) => r.serialize_field("error", error)?,
-        }
-        r.end()
+
+#[derive(Debug, Serialize)]
+pub struct JrpBytes<J: Serialize> {
+    #[serde(flatten)]
+    json: J,
+    #[serde(skip)]
+    bytes: Vec<Bytes>,
+}
+
+impl <J: Serialize> JrpBytes<J> {
+    pub fn new(json: J, bytes: Vec<Bytes>) -> Self {
+        JrpBytes { bytes, json }
     }
 }
-*/
-/*
-impl<'de> Deserialize<'de> for JrpRsp {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct JrpRspVisitor;
-        impl<'de> Visitor<'de> for JrpRspVisitor {
-            type Value = JrpRsp;
 
-            fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
-                std::write!(f, "jsonrpc response")
-            }
-
-
-        }
+impl <'a, J: Serialize + Deserialize<'a>> JrpBytes<J> {
+    pub unsafe fn from_bytes(bytes: &Bytes) -> Result<J, serde_json::Error> {
+        let p = bytes.as_ptr();
+        let buf = unsafe { from_raw_parts(p, bytes.len()) };
+        let json: J = serde_json::from_slice(buf)?;
+        Ok(json)
     }
 }
-*/

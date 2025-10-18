@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, info, trace, warn};
 
 #[derive(Error, Debug)]
@@ -141,12 +141,12 @@ async fn run_reader_loop(
     while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
-        debug!("reader, ctx: {}, json: {}", addr, from_utf8(bytes.as_ref())?);
+        trace!("reader, ctx: {}, json: {}", addr, from_utf8(bytes.as_ref())?);
         // we are optimistic and expect most requests to be well-formed
         match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
             // if request is well-formed, we proceed
             Ok(jrp_req) => {
-                debug!("reader, ctx: {}, request: {:?}", addr, jrp_req);
+                trace!("reader, ctx: {}, request: {:?}", addr, jrp_req);
                 let (id, topic, partition, kfk_req, extra) = j2k_req(jrp_req)?;
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());

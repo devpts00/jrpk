@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use bytesize::ByteSize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -24,6 +25,17 @@ pub enum Offset {
     Offset(i64)
 }
 
+impl Display for Offset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Offset::Earliest => f.write_str("earliest"),
+            Offset::Latest => f.write_str("latest"),
+            Offset::Timestamp(ts) => ts.fmt(f),
+            Offset::Offset(pos) => pos.fmt(f),
+        }
+    }
+}
+
 impl FromStr for Offset {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -45,7 +57,7 @@ impl FromStr for Offset {
 pub enum Command {
     Produce {
         #[arg(long)]
-        batch_rec_count: usize,
+        batch_length: usize,
     },
     Consume {
         #[arg(long, value_parser = clap::value_parser!(Offset))]

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::PathBuf;
 use base64::DecodeError;
@@ -7,6 +8,7 @@ use thiserror::Error;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{Sink, SinkExt, StreamExt, TryFutureExt};
 use log::warn;
+use serde_json::value::RawValue;
 use tokio::io::AsyncWriteExt;
 use tokio::fs::File;
 use tokio::net::TcpStream;
@@ -14,11 +16,11 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
-use tokio_util::codec::Framed;
-use tracing::{error, info, trace};
+use tokio_util::codec::{Framed, FramedRead};
+use tracing::{debug, error, info, trace};
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpResult, JrpRsp, JrpRspData};
+use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpResult, JrpRsp, JrpRspData};
 use crate::util::handle_future_result;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
@@ -148,9 +150,8 @@ pub async fn consume(
     max_frame_size: ByteSize,
 
 ) -> Result<(), ClientError> {
-
-    info!("consume, address: {}, topic: {}, partition: {}, from: {:?}, until: {:?}, file: {:?}, max_frame_size: {}",
-        address, topic, partition, from, until, path, max_frame_size
+    info!("consume, path: {:?}, address: {}, topic: {}, partition: {}, from: {}, until: {}, max_frame_size: {}",
+        path, address, topic, partition, from, until, max_frame_size
     );
     let stream = TcpStream::connect(address).await?;
     let addr = stream.peer_addr()?;
@@ -182,14 +183,100 @@ pub async fn consume(
     Ok(())
 }
 
-pub async fn producer_writer() -> Result<(), ClientError> {
+pub async fn producer_req_writer(
+    path: PathBuf,
+    topic: String,
+    partition: i32,
+    max_frame_size: usize,
+    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
+) -> Result<(), ClientError> {
+
+    let file = File::open(path).await?;
+    let codec = JsonCodec::new(max_frame_size);
+    let mut stream = FramedRead::with_capacity(file, codec, max_frame_size);
+    let mut id: usize = 0;
+    let mut frames: Vec<Bytes> = Vec::with_capacity(1000);
+    let mut records: Vec<JrpRecSend> = Vec::with_capacity(1000);
+    let mut size: usize = 0;
+
+    while let Some(result) = stream.next().await {
+        let frame = result?;
+        let json: &RawValue = unsafe { JrpBytes::from_bytes(&frame)? };
+        let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
+        let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
+        size += frame.len();
+        frames.push(frame);
+        records.push(jrp_rec);
+        if size > max_frame_size / 2 {
+            let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
+            records = Vec::with_capacity(max_frame_size);
+            let jrp_bytes = JrpBytes::new(jrp_req, frames);
+            frames = Vec::with_capacity(max_frame_size);
+            tcp_sink.send(jrp_bytes).await?;
+            id += 1;
+            size = 0;
+        }
+    }
+
+    if !records.is_empty() && !frames.is_empty() {
+        let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
+        let jrp_bytes = JrpBytes::new(jrp_req, frames);
+        tcp_sink.send(jrp_bytes).await?;
+    }
+
     Ok(())
 }
 
-pub async fn producer_reader() -> Result<(), ClientError> {
+pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>) -> Result<(), ClientError> {
+    while let Some(result) = tcp_stream.next().await {
+        let frame = result?;
+        let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
+        let id = jrp_rsp.id;
+        match jrp_rsp.result {
+            JrpResult::Result(data) => {
+                debug!("success, id: {}, {:?}", id, data);
+            }
+            JrpResult::Error(err) => {
+                error!("error, id: {}, message: {}", id, err);
+            }
+        }
+    }
     Ok(())
 }
 
-pub async fn produce(address: String, topic: String, partition: i32, file: PathBuf, max_frame_size: ByteSize) -> Result<(), ClientError> {
+pub async fn produce(
+    path: PathBuf,
+    address: String,
+    topic: String,
+    partition: i32,
+    max_frame_size: usize
+) -> Result<(), ClientError> {
+    info!("produce, path: {:?}, address: {}, topic: {}, partition: {}, max_frame_size: {}",
+        path, address, topic, partition, max_frame_size);
+    let stream = TcpStream::connect(address).await?;
+    let addr = stream.peer_addr()?;
+    let codec = JsonCodec::new(max_frame_size);
+    let framed = Framed::with_capacity(stream, codec, max_frame_size);
+    let (tcp_sink, tcp_stream) = framed.split();
+
+    let wh = tokio::spawn(
+        handle_future_result(
+            "producer-writer",
+            addr,
+            producer_req_writer(path, topic, partition, max_frame_size, tcp_sink)
+        )
+    );
+
+    let rh = tokio::spawn(
+        handle_future_result(
+            "producer-reader",
+            addr,
+            producer_rsp_reader(tcp_stream)
+        )
+    );
+
+    wh.await?;
+    rh.await?;
+
     Ok(())
 }
