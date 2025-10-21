@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, info, trace, warn};
+use ustr::Ustr;
 
 #[derive(Error, Debug)]
 pub enum ServerError {
@@ -103,9 +104,9 @@ fn j2k_offset(offset: JrpOffset) -> KfkOffset {
     }
 }
 
-fn j2k_req(jrp: JrpReq) -> Result<(usize, String, i32, KfkReq, JrpExtra), ServerError> {
+fn j2k_req(jrp: JrpReq) -> Result<(usize, Ustr, i32, KfkReq, JrpExtra), ServerError> {
     let id = jrp.id;
-    let topic = jrp.params.topic.into_owned();
+    let topic = jrp.params.topic;
     let partition = jrp.params.partition;
     match jrp.method {
         JrpMethod::Send => {
@@ -137,6 +138,8 @@ async fn run_reader_loop(
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCtx>,
     queue_size: usize,
 ) -> Result<(), ServerError> {
+
+    let x = faststr::FastStr::new("test");
 
     while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect

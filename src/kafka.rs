@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, trace};
+use ustr::Ustr;
 use crate::jsonrpc::JrpOffset;
 
 #[derive(Debug)]
@@ -187,21 +188,15 @@ async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkRe
     Ok(())
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy)]
 struct KfkClientKey {
-    pub topic: String,
+    pub topic: Ustr,
     pub partition: i32,
 }
 
 impl KfkClientKey {
-    fn new(topic: String, partition: i32) -> Self {
+    fn new(topic: Ustr, partition: i32) -> Self {
         KfkClientKey { topic, partition }
-    }
-}
-
-impl Clone for KfkClientKey {
-    fn clone(&self) -> Self {
-        KfkClientKey::new(self.topic.clone(), self.partition)
     }
 }
 
@@ -222,19 +217,19 @@ impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
         Self { client, cache: Cache::new(capacity) }
     }
 
-    async fn init_kafka_loop(&self, key: &KfkClientKey, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
+    async fn init_kafka_loop(&self, key: KfkClientKey, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
         info!("kafka, init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
-        tokio::spawn(handle_future_result("kafka", key.clone(), run_kafka_loop(pc, req_id_rcv)));
+        tokio::spawn(handle_future_result("kafka", key, run_kafka_loop(pc, req_id_rcv)));
         Ok(req_id_snd)
     }
 
-    pub async fn lookup_kafka_sender(&self, topic: String, partition: i32, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
+    pub async fn lookup_kafka_sender(&self, topic: Ustr, partition: i32, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
         trace!("kafka, lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
-        let init = self.init_kafka_loop(&key, capacity);
-        let req_id_snd = self.cache.try_get_with_by_ref(&key, init).await?;
+        let init = self.init_kafka_loop(key, capacity);
+        let req_id_snd = self.cache.try_get_with(key, init).await?;
         self.cache.run_pending_tasks().await;
         info!("kafka, cache: {}", self.cache.entry_count());
         Ok(req_id_snd)

@@ -6,6 +6,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use thiserror::Error;
+use ustr::Ustr;
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
@@ -91,9 +92,9 @@ pub enum Mode {
         #[arg(long)]
         path: PathBuf,
         #[arg(long)]
-        address: String,
+        address: Ustr,
         #[arg(long)]
-        topic: String,
+        topic: Ustr,
         #[arg(long, required = false)]
         partition: i32,
         #[arg(long, default_value = "1MiB")]

@@ -25,4 +25,6 @@ anyhow = "1.0.99"
 socket2 = "0.6.0"
 bytesize = "2.0.1"
 base64 = "0.22.1"
+faststr = { version = "0.2.32", features = ["serde"] }
+ustr = { version = "1.1.0", features = ["serde"] }
 log = "0.4.27"

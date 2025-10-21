@@ -12,10 +12,10 @@ use std::slice::from_raw_parts;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 use bytes::{Buf, Bytes};
-use clap::parser::RawValues;
 use serde_valid::Validate;
 use thiserror::Error;
 use tracing::info;
+use ustr::Ustr;
 
 #[derive(Error, Debug)]
 pub enum JrpError {
@@ -29,34 +29,6 @@ pub enum JrpError {
     Base64(#[from] DecodeError),
 }
 
-/*/// Send codec defines how encode JSON to Kafka bytes
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum JrpDataRef<'a> {
-    /// JSON fragment utf-8 slice will be interpreted as bytes
-    Json(&'a RawValue),
-    /// JSON string (without quotes) utf-8 slice will be interpreted as bytes
-    Str(&'a str),
-    /// JSON string (without quotest) utf-8 slice will be base64 decoded to bytes
-    Base64(&'a str),
-}
-
-impl <'a> JrpDataRef<'a> {
-    pub fn to_bytes(self: JrpDataRef<'a>) -> Result<Vec<u8>, DecodeError> {
-        match self {
-            JrpDataRef::Json(fragment) => {
-                Ok(fragment.get().as_bytes().to_vec())
-            },
-            JrpDataRef::Str(text) => {
-                Ok(text.as_bytes().to_vec())
-            },
-            JrpDataRef::Base64(text) => {
-                BASE64_STANDARD.decode(text)
-            }
-        }
-    }
-}
-*/
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JrpData<'a> {
@@ -144,44 +116,6 @@ impl <'a> JrpData<'a> {
 
 }
 
-/*#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum JrpDataOwn {
-    Json(Box<RawValue>),
-    Str(String),
-    Base64(String),
-}
-
-impl JrpDataOwn {
-    fn json(string: String) -> Result<Self, serde_json::Error> {
-        Ok(JrpDataOwn::Json(RawValue::from_string(string)?))
-    }
-    fn str(string: String) -> Self {
-        JrpDataOwn::Str(string)
-    }
-    fn base64(v: Vec<u8>) -> Self {
-        JrpDataOwn::Base64(BASE64_STANDARD.encode(v.as_slice()))
-    }
-    pub fn from_bytes(bytes: Vec<u8>, codec: JrpDataCodec) -> Result<Self, JrpError> {
-        match codec {
-            JrpDataCodec::Json => {
-                let string = String::from_utf8(bytes)?;
-                let data = JrpDataOwn::json(string)?;
-                Ok(data)
-            }
-            JrpDataCodec::Str => {
-                let string = String::from_utf8(bytes)?;
-                let data = JrpDataOwn::str(string);
-                Ok(data)
-            }
-            JrpDataCodec::Base64 => {
-                let base64 = JrpDataOwn::base64(bytes);
-                Ok(base64)
-            }
-        }
-    }
-}
-*/
 /// Fetch codec defines how to decode Kafka bytes to JSON
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -329,7 +263,7 @@ impl <'de> Deserialize<'de> for JrpOffset {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(bound(deserialize = "'de: 'a"))]
 pub struct JrpParams<'a> {
-    pub topic: Cow<'a, str>,
+    pub topic: Ustr,
     pub partition: i32,
     pub offset: Option<JrpOffset>,
     pub codecs: Option<JrpDataCodecs>,
@@ -341,7 +275,7 @@ pub struct JrpParams<'a> {
 impl <'a> JrpParams<'a> {
     #[inline]
     pub fn new(
-        topic: String,
+        topic: Ustr,
         partition: i32,
         offset: Option<JrpOffset>,
         codecs: Option<JrpDataCodecs>,
@@ -349,21 +283,21 @@ impl <'a> JrpParams<'a> {
         bytes: Option<Range<i32>>,
         max_wait_ms: Option<i32>,
     ) -> Self {
-        JrpParams { topic: Cow::from(topic), partition, offset, codecs, records, bytes, max_wait_ms }
+        JrpParams { topic, partition, offset, codecs, records, bytes, max_wait_ms }
     }
 
     #[inline]
-    pub fn send (topic: String, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
+    pub fn send (topic: Ustr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
         JrpParams::new(topic, partition, None, None, Some(records), None, None)
     }
 
     #[inline]
-    pub fn fetch(topic: String, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+    pub fn fetch(topic: Ustr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         JrpParams::new(topic, partition, Some(offset), Some(codecs), None, Some(bytes), Some(max_wait_ms))
     }
 
     #[inline]
-    pub fn offset (topic: String, partition: i32, offset: JrpOffset) -> Self {
+    pub fn offset (topic: Ustr, partition: i32, offset: JrpOffset) -> Self {
         JrpParams::new(topic, partition, Some(offset), None, None, None, None)
     }
 }
@@ -382,13 +316,13 @@ impl <'a> JrpReq<'a> {
     pub fn new(id: usize, method: JrpMethod, params: JrpParams<'a>) -> Self {
         JrpReq { jsonrpc: "2.0", id, method, params }
     }
-    pub fn offset(id: usize, topic: String, partition: i32, offset: JrpOffset) -> Self {
+    pub fn offset(id: usize, topic: Ustr, partition: i32, offset: JrpOffset) -> Self {
         JrpReq::new(id, JrpMethod::Offset, JrpParams::offset(topic, partition, offset))
     }
-    pub fn fetch(id: usize, topic: String, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+    pub fn fetch(id: usize, topic: Ustr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         JrpReq::new(id, JrpMethod::Fetch, JrpParams::fetch(topic, partition, offset, codecs, bytes, max_wait_ms))
     }
-    pub fn send(id: usize, topic: String, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
+    pub fn send(id: usize, topic: Ustr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
         JrpReq::new(id, JrpMethod::Send, JrpParams::send(topic, partition, records))
     }
 }

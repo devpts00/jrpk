@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::future::Future;
 use std::ops::Range;
 use std::path::PathBuf;
 use base64::DecodeError;
@@ -18,6 +19,7 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, info, trace};
+use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpResult, JrpRsp, JrpRspData};
@@ -55,7 +57,7 @@ pub enum ClientError {
 }
 
 async fn consumer_req_writer<'a>(
-    topic: String,
+    topic: Ustr,
     partition: i32,
     batch_size: ByteSize,
     max_wait_ms: i32,
@@ -67,7 +69,7 @@ async fn consumer_req_writer<'a>(
         // TODO: support all codecs
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
         let bytes = 1..batch_size.as_u64() as i32;
-        let jrp_req_fetch = JrpReq::fetch(id, topic.clone(), partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
+        let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
         tcp_sink.send(jrp_req_fetch).await?;
         id = id + 1;
     }
@@ -140,8 +142,8 @@ async fn consumer_rsp_reader(
 
 pub async fn consume(
     path: PathBuf,
-    address: String,
-    topic: String,
+    address: Ustr,
+    topic: Ustr,
     partition: i32,
     from: Offset,
     until: Offset,
@@ -153,7 +155,7 @@ pub async fn consume(
     info!("consume, path: {:?}, address: {}, topic: {}, partition: {}, from: {}, until: {}, max_frame_size: {}",
         path, address, topic, partition, from, until, max_frame_size
     );
-    let stream = TcpStream::connect(address).await?;
+    let stream = TcpStream::connect(address.as_str()).await?;
     let addr = stream.peer_addr()?;
     info!("connected: {}", addr);
     let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
@@ -183,9 +185,20 @@ pub async fn consume(
     Ok(())
 }
 
+struct VecMgr<T> {
+    capacity: usize,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl <T: Send> VecMgr<T> {
+    fn new(capacity: usize) -> Self {
+        VecMgr { capacity, _marker: Default::default() }
+    }
+}
+
 pub async fn producer_req_writer(
     path: PathBuf,
-    topic: String,
+    topic: Ustr,
     partition: i32,
     max_frame_size: usize,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
@@ -195,8 +208,10 @@ pub async fn producer_req_writer(
     let codec = JsonCodec::new(max_frame_size);
     let mut stream = FramedRead::with_capacity(file, codec, max_frame_size);
     let mut id: usize = 0;
-    let mut frames: Vec<Bytes> = Vec::with_capacity(1000);
-    let mut records: Vec<JrpRecSend> = Vec::with_capacity(1000);
+
+    let vec_size = 1024;
+    let mut frames: Vec<Bytes> = Vec::with_capacity(vec_size);
+    let mut records: Vec<JrpRecSend> = Vec::with_capacity(vec_size);
     let mut size: usize = 0;
 
     while let Some(result) = stream.next().await {
@@ -208,10 +223,10 @@ pub async fn producer_req_writer(
         frames.push(frame);
         records.push(jrp_rec);
         if size > max_frame_size / 2 {
-            let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
-            records = Vec::with_capacity(max_frame_size);
+            let jrp_req = JrpReq::send(id, topic, partition, records);
+            records = Vec::with_capacity(vec_size);
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
-            frames = Vec::with_capacity(max_frame_size);
+            frames = Vec::with_capacity(vec_size);
             tcp_sink.send(jrp_bytes).await?;
             id += 1;
             size = 0;
@@ -246,14 +261,14 @@ pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, J
 
 pub async fn produce(
     path: PathBuf,
-    address: String,
-    topic: String,
+    address: Ustr,
+    topic: Ustr,
     partition: i32,
     max_frame_size: usize
 ) -> Result<(), ClientError> {
     info!("produce, path: {:?}, address: {}, topic: {}, partition: {}, max_frame_size: {}",
         path, address, topic, partition, max_frame_size);
-    let stream = TcpStream::connect(address).await?;
+    let stream = TcpStream::connect(address.as_str()).await?;
     let addr = stream.peer_addr()?;
     let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::with_capacity(stream, codec, max_frame_size);
