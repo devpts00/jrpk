@@ -201,20 +201,22 @@ pub async fn producer_req_writer(
     topic: Ustr,
     partition: i32,
     max_frame_size: usize,
+    max_batch_rec_count: usize,
+    max_batch_byte_size: usize,
+    max_rec_byte_size: usize,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
 ) -> Result<(), ClientError> {
 
     let file = File::open(path).await?;
     let codec = JsonCodec::new(max_frame_size);
-    let mut stream = FramedRead::with_capacity(file, codec, max_frame_size);
+    let mut file_stream = FramedRead::with_capacity(file, codec, max_frame_size);
     let mut id: usize = 0;
 
-    let vec_size = 1024;
-    let mut frames: Vec<Bytes> = Vec::with_capacity(vec_size);
-    let mut records: Vec<JrpRecSend> = Vec::with_capacity(vec_size);
+    let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
+    let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
     let mut size: usize = 0;
 
-    while let Some(result) = stream.next().await {
+    while let Some(result) = file_stream.next().await {
         let frame = result?;
         let json: &RawValue = unsafe { JrpBytes::from_bytes(&frame)? };
         let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
@@ -222,11 +224,11 @@ pub async fn producer_req_writer(
         size += frame.len();
         frames.push(frame);
         records.push(jrp_rec);
-        if size > max_frame_size / 2 {
+        if size > max_batch_byte_size - max_rec_byte_size || records.len() >= max_batch_rec_count {
             let jrp_req = JrpReq::send(id, topic, partition, records);
-            records = Vec::with_capacity(vec_size);
+            records = Vec::with_capacity(max_batch_rec_count);
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
-            frames = Vec::with_capacity(vec_size);
+            frames = Vec::with_capacity(max_batch_rec_count);
             tcp_sink.send(jrp_bytes).await?;
             id += 1;
             size = 0;
@@ -238,6 +240,9 @@ pub async fn producer_req_writer(
         let jrp_bytes = JrpBytes::new(jrp_req, frames);
         tcp_sink.send(jrp_bytes).await?;
     }
+
+    tcp_sink.flush().await?;
+    tcp_sink.close().await?;
 
     Ok(())
 }
@@ -264,10 +269,15 @@ pub async fn produce(
     address: Ustr,
     topic: Ustr,
     partition: i32,
-    max_frame_size: usize
+    max_frame_size: usize,
+    max_batch_rec_count: usize,
+    max_batch_byte_size: usize,
+    max_rec_byte_size: usize,
 ) -> Result<(), ClientError> {
-    info!("produce, path: {:?}, address: {}, topic: {}, partition: {}, max_frame_size: {}",
-        path, address, topic, partition, max_frame_size);
+
+    info!("produce, path: {:?}, address: {}, topic: {}, partition: {}, max_frame_size: {}, max_batch_rec_count: {}, max_batch_byte_size: {}, max_rec_byte_size: {}",
+        path, address, topic, partition, max_frame_size, max_batch_rec_count, max_batch_byte_size, max_rec_byte_size);
+
     let stream = TcpStream::connect(address.as_str()).await?;
     let addr = stream.peer_addr()?;
     let codec = JsonCodec::new(max_frame_size);
@@ -276,15 +286,24 @@ pub async fn produce(
 
     let wh = tokio::spawn(
         handle_future_result(
-            "producer-writer",
+            "producer-requests",
             addr,
-            producer_req_writer(path, topic, partition, max_frame_size, tcp_sink)
+            producer_req_writer(
+                path,
+                topic,
+                partition,
+                max_frame_size,
+                max_batch_rec_count,
+                max_batch_byte_size,
+                max_rec_byte_size,
+                tcp_sink
+            )
         )
     );
 
     let rh = tokio::spawn(
         handle_future_result(
-            "producer-reader",
+            "producer-responses",
             addr,
             producer_rsp_reader(tcp_stream)
         )

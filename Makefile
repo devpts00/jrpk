@@ -29,7 +29,7 @@ client-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk client --path=test.json --address=jrpk:1133 --topic=posts --partition=0 --max-frame-size=1m consume --from=earliest --until=latest --batch-size=1MiB --max-wait-ms=100
 
 client-debug-produce: build-debug
-	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk client --path=employees_1MB.json --address=jrpk:1133 --topic=posts --partition=0 --max-frame-size=1m produce --batch-length=1000
+	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk client --path=json/people_40mb.json --address=jrpk:1133 --topic=posts --partition=0 --max-frame-size=1m produce
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/release/jrpk --brokers kfk:9092 --bind 0.0.0.0:1133 --queue-size 8

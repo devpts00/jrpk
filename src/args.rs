@@ -57,8 +57,12 @@ impl FromStr for Offset {
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     Produce {
-        #[arg(long)]
-        batch_length: usize,
+        #[arg(long, default_value = "1024")]
+        max_batch_rec_count: u16,
+        #[arg(long, default_value = "64k")]
+        max_batch_byte_size: ByteSize,
+        #[arg(long, default_value = "4k")]
+        max_rec_byte_size: ByteSize,
     },
     Consume {
         #[arg(long, value_parser = clap::value_parser!(Offset))]

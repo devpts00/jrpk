@@ -33,7 +33,7 @@ async fn run(args: args::Args) {
         Mode::Client { address, topic, partition, path, max_frame_size, command } => {
             info!("client, address: {}, topic: {}, partition: {:?}, path: {:?}, command: {:?}", address, topic, partition, path, command);
             match command {
-                Command::Produce { batch_length: batch_rec_count } => {
+                Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size } => {
                     join_with_signal(
                         "produce",
                         address.clone(),
@@ -41,7 +41,16 @@ async fn run(args: args::Args) {
                             handle_future_result(
                                 "produce",
                                 address.clone(),
-                                produce(path, address, topic, partition, max_frame_size.as_u64() as usize)
+                                produce(
+                                    path,
+                                    address,
+                                    topic,
+                                    partition,
+                                    max_frame_size.as_u64() as usize,
+                                    max_batch_rec_count as usize,
+                                    max_batch_byte_size.as_u64() as usize,
+                                    max_rec_byte_size.as_u64() as usize,
+                                )
                             )
                         )
                     ).await
