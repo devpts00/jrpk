@@ -1,5 +1,7 @@
 use std::borrow::Cow;
+use std::fs::File;
 use std::future::Future;
+use std::io::{BufWriter, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::str::from_utf8;
@@ -7,12 +9,11 @@ use base64::DecodeError;
 use bytes::Bytes;
 use bytesize::ByteSize;
 use thiserror::Error;
-use futures::stream::{SplitSink, SplitStream};
+use futures::stream::{IntoAsyncRead, SplitSink, SplitStream};
 use futures::{Sink, SinkExt, StreamExt, TryFutureExt};
 use log::warn;
 use serde_json::value::RawValue;
 use tokio::io::AsyncWriteExt;
-use tokio::fs::File;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -95,7 +96,12 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), ClientError> {
-    let mut file = File::create(path).await?;
+
+    let file = tokio::fs::File::create(path).await?;
+    let mut writer = tokio::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
+
+    //let file = File::create(path)?;
+    //let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
@@ -104,17 +110,16 @@ async fn consumer_rsp_reader(
         match jrp_rsp.take_result() {
             Ok(jrp_rsp_data) => {
                 match jrp_rsp_data {
-                    JrpRspData::Fetch { high_watermark, records } => {
+                    JrpRspData::Fetch { high_watermark, mut records } => {
+                        records.sort_by_key(|r| r.offset);
+                        let mut done = true;
                         // if more data is available
                         if let Some(last) = records.last() {
                             // if the last item is not out of bounds
                             if less_record_offset(last, until) && last.offset < high_watermark {
+                                done = false;
                                 offset_snd.send(Offset::Offset(last.offset + 1)).await?;
-                            } else {
-                                break;
                             }
-                        } else {
-                            break;
                         }
                         for record in records {
                             if less_record_offset(&record, until) {
@@ -123,14 +128,18 @@ async fn consumer_rsp_reader(
                                         trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
                                         // TODO: differentiate between binary and text data
                                         let buf = data.as_bytes()?;
-                                        file.write(&buf).await?;
-                                        file.write(b"\n").await?;
+                                        writer.write_all(&buf).await?;
+                                        writer.write_all(b"\n").await?;
                                     }
                                     None => {
                                         warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
                                     }
                                 }
                             }
+                        }
+
+                        if done {
+                            break;
                         }
                     }
                     JrpRspData::Send { .. } => {
@@ -149,7 +158,7 @@ async fn consumer_rsp_reader(
             }
         }
     }
-    file.flush().await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -174,7 +183,7 @@ pub async fn consume(
     let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
     let framed = Framed::new(stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
-    let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(32);
+    let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
 
     let wh = tokio::spawn(
         handle_future_result(
@@ -209,7 +218,7 @@ pub async fn producer_req_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
 ) -> Result<(), ClientError> {
 
-    let file = File::open(path).await?;
+    let file = tokio::fs::File::open(path).await?;
     let codec = JsonCodec::new(max_frame_size);
     let mut file_stream = FramedRead::with_capacity(file, codec, max_frame_size);
     let mut id: usize = 0;

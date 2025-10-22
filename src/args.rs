@@ -61,7 +61,7 @@ pub enum Command {
         max_batch_rec_count: u16,
         #[arg(long, default_value = "64KiB")]
         max_batch_byte_size: ByteSize,
-        #[arg(long, default_value = "4KiB")]
+        #[arg(long, default_value = "16KiB")]
         max_rec_byte_size: ByteSize,
     },
     Consume {
