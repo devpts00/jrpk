@@ -110,7 +110,11 @@ async fn consumer_rsp_reader(
                             // if the last item is not out of bounds
                             if less_record_offset(last, until) && last.offset < high_watermark {
                                 offset_snd.send(Offset::Offset(last.offset + 1)).await?;
+                            } else {
+                                break;
                             }
+                        } else {
+                            break;
                         }
                         for record in records {
                             if less_record_offset(&record, until) {
@@ -174,7 +178,7 @@ pub async fn consume(
 
     let wh = tokio::spawn(
         handle_future_result(
-            "consumer-writer",
+            "consume-writer",
             addr,
             consumer_req_writer(topic, partition, batch_size, max_wait_ms, offset_rcv, tcp_sink)
         )
@@ -182,7 +186,7 @@ pub async fn consume(
 
     let rh = tokio::spawn(
         handle_future_result(
-            "consumer-reader",
+            "consume-reader",
             addr,
             consumer_rsp_reader(path, from, until, offset_snd, tcp_stream)
         )

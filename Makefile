@@ -26,7 +26,10 @@ server-debug: build-debug
 	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk server --brokers kfk:9092 --bind 0.0.0.0:1133
 
 client-debug-consume: build-debug
-	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk client --path=result.json --address=jrpk:1133 --topic=posts --partition=0 consume --from=earliest --until=latest --max-batch-byte-size=1KiB --max-wait-ms=100
+	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk client --path=result.json --address=jrpk:1133 --topic=posts --partition=0 consume --from=earliest --until=latest --max-batch-byte-size=64KiB --max-wait-ms=100
+
+client-release-consume: build-release
+	docker compose run --rm -it --remove-orphans rst ./target/release/jrpk client --path=result.json --address=jrpk:1133 --topic=posts --partition=0 consume --from=earliest --until=latest --max-batch-byte-size=64KiB --max-wait-ms=100
 
 client-debug-produce: build-debug
 	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk client --path=json/people_40mb.json --address=jrpk:1133 --topic=posts --partition=0 --max-frame-size=1m produce
@@ -39,12 +42,6 @@ trace:
 
 test:
 	docker compose run --rm rst cargo test -- --nocapture
-
-produce:
-	docker compose run --rm rst cargo test test_produce -- --nocapture
-
-consume:
-	docker compose run --rm rst cargo test test_consume -- --nocapture
 
 version:
 	docker compose run --rm rst rustc --version
