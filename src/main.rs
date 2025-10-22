@@ -17,7 +17,7 @@ use crate::client::{consume, produce};
 
 async fn run(args: args::Args) {
     match args.mode {
-        Mode::Server { brokers, bind, max_frame_size, send_buffer_size, recv_buffer_size, queue_size } => {
+        Mode::Server { brokers, bind, max_frame_byte_size: max_frame_size, send_buffer_byte_size: send_buffer_size, recv_buffer_byte_size: recv_buffer_size, queue_len: queue_size } => {
             join_with_signal(
                 "main",
                 bind,
@@ -30,7 +30,7 @@ async fn run(args: args::Args) {
                 )
             ).await
         }
-        Mode::Client { address, topic, partition, path, max_frame_size, command } => {
+        Mode::Client { address, topic, partition, path, max_frame_byte_size: max_frame_size, command } => {
             info!("client, address: {}, topic: {}, partition: {:?}, path: {:?}, command: {:?}", address, topic, partition, path, command);
             match command {
                 Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size } => {
@@ -55,7 +55,7 @@ async fn run(args: args::Args) {
                         )
                     ).await
                 }
-                Command::Consume { from, until, batch_size, max_wait_ms } => {
+                Command::Consume { from, until, max_batch_byte_size: batch_size, max_wait_ms } => {
                     join_with_signal(
                         "consume",
                         address.clone(),

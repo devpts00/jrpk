@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, info, trace, warn};
+use tracing_subscriber::fmt::time;
 use ustr::Ustr;
 
 #[derive(Error, Debug)]
@@ -64,9 +65,10 @@ fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
 fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, codecs: &JrpDataCodecs) -> Result<JrpRecFetch<'static>, JrpError> {
     let offset = rec_and_offset.offset;
     let record = rec_and_offset.record;
+    let timestamp = record.timestamp;
     let key = record.key.map(|k|JrpData::from_bytes(k, codecs.key)).transpose()?;
     let value = record.value.map(|v|JrpData::from_bytes(v, codecs.value)).transpose()?;
-    Ok(JrpRecFetch::new(offset, key, value))
+    Ok(JrpRecFetch::new(offset, timestamp, key, value))
 }
 
 fn k2j_rsp(rsp: KfkRsp, extra: JrpExtra) -> Result<JrpRspData<'static>, ServerError> {
@@ -139,8 +141,6 @@ async fn run_reader_loop(
     queue_size: usize,
 ) -> Result<(), ServerError> {
 
-    let x = faststr::FastStr::new("test");
-
     while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
@@ -179,12 +179,12 @@ async fn run_writer_loop(
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
 ) -> Result<(), ServerError> {
     while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
-        info!("writer, ctx: {}, response: {:?}", addr, kfk_res_ctx);
+        trace!("writer, ctx: {}, response: {:?}", addr, kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
         let jrp_rsp = match kfk_res_ctx.res {
             Ok(kfk_rsp) => {
                 match k2j_rsp(kfk_rsp, ctx.extra) {
-                    Ok(jrp_rsp) => JrpRsp::ok(ctx.id, jrp_rsp),
+                    Ok(jrp_rst_data) => JrpRsp::result(ctx.id, jrp_rst_data),
                     Err(err) => JrpRsp::err(ctx.id, err.into())
                 }
             }

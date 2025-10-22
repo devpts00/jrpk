@@ -3,7 +3,6 @@ use base64::prelude::BASE64_STANDARD;
 use base64::{DecodeError, Engine};
 use rskafka::chrono::{DateTime, Utc};
 use serde::de::{Error, Visitor};
-use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use std::fmt::{Debug, Display, Formatter};
@@ -178,14 +177,17 @@ impl<'a> JrpRecSend<'a> {
 #[serde(bound(deserialize = "'de: 'a"))]
 pub struct JrpRecFetch<'a> {
     pub offset: i64,
+    //pub timestamp: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<JrpData<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<JrpData<'a>>,
 }
 
 /// JSONRPC output record can fail to be created from Kafka record.
 /// Kafka bytes might not be UTF-8 or JSON.
 impl <'a> JrpRecFetch<'a> {
-    pub fn new (offset: i64, key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
+    pub fn new (offset: i64, timestamp: DateTime<Utc>, key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
         JrpRecFetch { offset, key, value }
     }
 }
@@ -363,8 +365,6 @@ pub enum JrpRspData<'a> {
         offsets: Vec<i64>,
     },
     Fetch {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        next_offset: Option<i64>,
         high_watermark: i64,
         records: Vec<JrpRecFetch<'a>>,
     },
@@ -376,38 +376,43 @@ impl <'a> JrpRspData<'a> {
         JrpRspData::Send { offsets }
     }
     pub fn fetch(records: Vec<JrpRecFetch<'a>>, high_watermark: i64) -> Self {
-        let next_offset = records.iter()
-            .map(|r|r.offset)
-            .max()
-            .map(|o| o + 1);
-        JrpRspData::Fetch { records, next_offset, high_watermark }
+        JrpRspData::Fetch { records, high_watermark }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", bound(deserialize = "'de: 'a"))]
-pub enum JrpResult<'a> {
-    Result(JrpRspData<'a>),
-    Error(JrpErrorMsg)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound(deserialize = "'de: 'a"))]
 pub struct JrpRsp<'a> {
     pub id: usize,
-    #[serde(flatten)]
-    pub result: JrpResult<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<JrpRspData<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<JrpErrorMsg>,
 }
 
 impl <'a> JrpRsp<'a> {
-    pub fn new(id: usize, result: JrpResult<'a>) -> Self {
-        JrpRsp { id, result }
+    fn new(id: usize, result: Option<JrpRspData<'a>>, error: Option<JrpErrorMsg>) -> Self {
+        JrpRsp { id, result, error  }
     }
-    pub fn ok(id: usize, data: JrpRspData<'a>) -> Self {
-        JrpRsp::new(id, JrpResult::Result(data))
+    pub fn result(id: usize, data: JrpRspData<'a>) -> Self {
+        JrpRsp::new(id, Some(data), None)
     }
     pub fn err(id: usize, error: JrpErrorMsg) -> Self {
-        JrpRsp::new(id, JrpResult::Error(error))
+        JrpRsp::new(id, None, Some(error))
+    }
+    pub fn get_result(&self) -> Result<&JrpRspData<'a>, &JrpErrorMsg> {
+        match (&self.result, &self.error) {
+            (Some(data), _) => Ok(data),
+            (_, Some(err)) => Err(err),
+            _ => unreachable!()
+        }
+    }
+    pub fn take_result(self) -> Result<JrpRspData<'a>, JrpErrorMsg> {
+        match (self.result, self.error) {
+            (Some(data), _) => Ok(data),
+            (_, Some(err)) => Err(err),
+            _ => unreachable!()
+        }
     }
 }
 

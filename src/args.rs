@@ -18,7 +18,7 @@ pub struct Args {
 #[error("{0}")]
 pub struct ParseError(String);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Offset {
     Earliest,
     Latest,
@@ -59,19 +59,19 @@ pub enum Command {
     Produce {
         #[arg(long, default_value = "1024")]
         max_batch_rec_count: u16,
-        #[arg(long, default_value = "64k")]
+        #[arg(long, default_value = "64KiB")]
         max_batch_byte_size: ByteSize,
-        #[arg(long, default_value = "4k")]
+        #[arg(long, default_value = "4KiB")]
         max_rec_byte_size: ByteSize,
     },
     Consume {
-        #[arg(long, value_parser = clap::value_parser!(Offset))]
+        #[arg(long, default_value = "earliest", value_parser = clap::value_parser!(Offset))]
         from: Offset,
-        #[arg(long, value_parser = clap::value_parser!(Offset))]
+        #[arg(long, default_value = "latest", value_parser = clap::value_parser!(Offset))]
         until: Offset,
-        #[arg(long)]
-        batch_size: ByteSize,
-        #[arg(long)]
+        #[arg(long, default_value = "64KiB")]
+        max_batch_byte_size: ByteSize,
+        #[arg(long, default_value = "100")]
         max_wait_ms: i32,
     }
 }
@@ -84,13 +84,13 @@ pub enum Mode {
         #[arg(long)]
         bind: SocketAddr,
         #[arg(long, default_value = "1MiB")]
-        max_frame_size: ByteSize,
+        max_frame_byte_size: ByteSize,
         #[arg(long, default_value = "32KiB")]
-        send_buffer_size: ByteSize,
+        send_buffer_byte_size: ByteSize,
         #[arg(long, default_value = "32KiB")]
-        recv_buffer_size: ByteSize,
+        recv_buffer_byte_size: ByteSize,
         #[arg(long, default_value_t = 32)]
-        queue_size: usize
+        queue_len: usize
     },
     Client {
         #[arg(long)]
@@ -102,7 +102,7 @@ pub enum Mode {
         #[arg(long, required = false)]
         partition: i32,
         #[arg(long, default_value = "1MiB")]
-        max_frame_size: ByteSize,
+        max_frame_byte_size: ByteSize,
         #[command(subcommand)]
         command: Command,
     }

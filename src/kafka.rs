@@ -231,7 +231,7 @@ impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
         let init = self.init_kafka_loop(key, capacity);
         let req_id_snd = self.cache.try_get_with(key, init).await?;
         self.cache.run_pending_tasks().await;
-        info!("kafka, cache: {}", self.cache.entry_count());
+        trace!("kafka, cache: {}", self.cache.entry_count());
         Ok(req_id_snd)
     }
 }

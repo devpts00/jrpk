@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::cmp::min;
-use std::str::{from_utf8, from_utf8_unchecked};
+use std::str::{from_utf8, from_utf8_unchecked, Utf8Error};
 use serde::Serialize;
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
@@ -46,6 +46,8 @@ pub enum BytesFrameDecoderError {
     Io(#[from] std::io::Error),
     #[error("frame too big: {0}")]
     FrameTooBig(usize),
+    #[error("utf8: {0}")]
+    Utf8(#[from] Utf8Error),
 }
 
 impl Decoder for JsonCodec {
@@ -97,8 +99,7 @@ impl Decoder for JsonCodec {
                     self.position += 1;
                     if self.level == 0 {
                         let frame = src.split_to(self.position).freeze();
-                        debug!("frame, length: {}", frame.len());
-                        trace!("decode, frm : {}", from_utf8(&frame).unwrap());
+                        trace!("decode, frame : {}", from_utf8(&frame)?);
                         self.reset();
                         return Ok(Some(frame))
                     }
@@ -127,25 +128,6 @@ pub enum JsonEncoderError {
     #[error("json: {0}")]
     Json(#[from] serde_json::error::Error),
 }
-
-/*
-impl Encoder<JrpRsp> for JsonCodec {
-    type Error = JsonEncoderError;
-    fn encode(&mut self, response: JrpRsp, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        serde_json::to_writer(dst.writer(), &response)?;
-        dst.put_u8(b'\n');
-        Ok(())
-    }
-}
-
-impl Encoder<&[u8]> for JsonCodec {
-    type Error = std::io::Error;
-    fn encode(&mut self, response: &[u8], dst: &mut BytesMut) -> Result<(), Self::Error> {
-        dst.put_slice(response);
-        Ok(())
-    }
-}
- */
 
 impl <T: Serialize> Encoder<T> for JsonCodec {
     type Error = JsonEncoderError;
