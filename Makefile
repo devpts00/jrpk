@@ -2,10 +2,10 @@ docker-clean:
 	docker compose down -v --rmi all --remove-orphans
 
 docker-pull:
-	docker compose pull
+	docker compose pull kfk kfk-init kwl
 
 docker-build:
-	docker compose build
+	docker compose build rst trc
 
 docker-kafka:
 	docker compose --profile kafka up
@@ -17,7 +17,7 @@ clean:
 	docker compose run --rm rst cargo clean
 
 build-debug:
-	docker compose run --rm rst cargo build
+	docker compose run --rm --remove-orphans rst cargo build
 
 build-release:
 	docker compose run --rm rst cargo build --release
@@ -35,22 +35,22 @@ server-release: build-release
 		--bind=0.0.0.0:1133
 
 client-debug-consume: build-debug
-	docker compose run --rm -it --remove-orphans rst heaptrack ./target/debug/jrpk \
+	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk \
  		client \
- 		--path=result.json \
+ 		--path=./json/result.json \
  		--address=jrpk:1133 \
  		--topic=posts \
  		--partition=0 \
  		consume \
  		--from=earliest \
  		--until=latest \
- 		--max-batch-byte-size=64KiB \
+ 		--max-batch-byte-size=128KiB \
  		--max-wait-ms=100
 
 client-release-consume: build-release
 	docker compose run --rm -it --remove-orphans rst ./target/release/jrpk \
 		client \
-		--path=result.json \
+		--path=./json/result.json \
 		--address=jrpk:1133 \
 		--topic=posts \
 		--partition=0 \

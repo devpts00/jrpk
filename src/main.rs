@@ -74,6 +74,7 @@ async fn run(args: args::Args) {
 }
 
 fn main() {
+    //let (flame_layer, flame_guard) = tracing_flame::FlameLayer::with_file("jrpk.flame").unwrap();
     init_tracing();
     let args = args::Args::parse();
     info!("args: {:?}", args);

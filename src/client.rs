@@ -13,7 +13,7 @@ use futures::stream::{IntoAsyncRead, SplitSink, SplitStream};
 use futures::{Sink, SinkExt, StreamExt, TryFutureExt};
 use log::warn;
 use serde_json::value::RawValue;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -58,6 +58,7 @@ pub enum ClientError {
     Join(#[from] JoinError),
 }
 
+#[tracing::instrument(level = "info", skip(offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     topic: Ustr,
     partition: i32,
@@ -89,6 +90,7 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
     }
 }
 
+#[tracing::instrument(level="info", skip(offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     path: PathBuf,
     from: Offset,
@@ -98,7 +100,7 @@ async fn consumer_rsp_reader(
 ) -> Result<(), ClientError> {
 
     let file = tokio::fs::File::create(path).await?;
-    let mut writer = tokio::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
+    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024 * 1024, file);
 
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
@@ -160,6 +162,7 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
+#[tracing::instrument(level = "info")]
 pub async fn consume(
     path: PathBuf,
     address: Ustr,
@@ -170,11 +173,7 @@ pub async fn consume(
     batch_size: ByteSize,
     max_wait_ms: i32,
     max_frame_size: ByteSize,
-
 ) -> Result<(), ClientError> {
-    info!("consume, path: {:?}, address: {}, topic: {}, partition: {}, from: {}, until: {}, max_frame_size: {}",
-        path, address, topic, partition, from, until, max_frame_size
-    );
     let stream = TcpStream::connect(address.as_str()).await?;
     let addr = stream.peer_addr()?;
     info!("connected: {}", addr);
@@ -217,8 +216,9 @@ pub async fn producer_req_writer(
 ) -> Result<(), ClientError> {
 
     let file = tokio::fs::File::open(path).await?;
+    let reader = BufReader::with_capacity(32 * 1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
-    let mut file_stream = FramedRead::with_capacity(file, codec, max_frame_size);
+    let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
     let mut id: usize = 0;
 
     let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);

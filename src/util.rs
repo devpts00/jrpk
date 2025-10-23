@@ -21,13 +21,14 @@ static TRACING: Once = Once::new();
 pub fn init_tracing() {
     TRACING.call_once(|| {
         tracing_subscriber::registry()
+            //.with(tracing_flame::FlameLayer::with_file("jrpk.flame"))
             .with(tracing_subscriber::fmt::layer()
                 .pretty()
                 .with_file(false)
                 .with_line_number(false)
                 .with_thread_ids(true)
                 .with_thread_names(true)
-                .with_span_events(FmtSpan::NONE)
+                .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
             )
             .with(EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())

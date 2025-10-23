@@ -1,6 +1,7 @@
 volumes:
-  cargo:
   kafka:
+  cargo:
+  target:
 
 services:
 
@@ -53,10 +54,13 @@ services:
     environment:
       #- RUST_BACKTRACE=full
       #- TOKIO_CONSOLE_BIND=0.0.0.0:6669
-      - RUST_LOG=warn,jrpk=info,tokio::task=info
+      - RUST_LOG=debug,jrpk=info,tokio::task=info
     volumes:
-      - .:/jrpk
       - cargo:/usr/local/cargo
+      - target:/jrpk/target
+      - ./json:/jrpk/json
+      - ./src:/jrpk/src
+      - ./Cargo.toml:/jrpk/Cargo.toml
     working_dir: /jrpk
 
   trc:
