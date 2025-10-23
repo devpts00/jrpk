@@ -100,8 +100,6 @@ async fn consumer_rsp_reader(
     let file = tokio::fs::File::create(path).await?;
     let mut writer = tokio::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
 
-    //let file = File::create(path)?;
-    //let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;

@@ -35,7 +35,7 @@ server-release: build-release
 		--bind=0.0.0.0:1133
 
 client-debug-consume: build-debug
-	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk \
+	docker compose run --rm -it --remove-orphans rst heaptrack ./target/debug/jrpk \
  		client \
  		--path=result.json \
  		--address=jrpk:1133 \
