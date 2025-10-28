@@ -2,13 +2,13 @@ docker-clean:
 	docker compose down -v --rmi all --remove-orphans
 
 docker-pull:
-	docker compose pull kfk kfk-init kwl
+	docker compose pull kfk kfk-init kwl upt
 
 docker-build:
 	docker compose build rst trc
 
-docker-kafka:
-	docker compose --profile kafka up
+docker-env:
+	docker compose --profile env up
 
 tree:
 	docker compose run --rm rst cargo tree

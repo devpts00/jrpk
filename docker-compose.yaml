@@ -9,7 +9,7 @@ services:
     image: apache/kafka
     user: 0:0
     profiles:
-      - kafka
+      - env
     environment:
       - KAFKA_NODE_ID=1
       - KAFKA_PROCESS_ROLES=broker,controller
@@ -28,7 +28,7 @@ services:
   kfk-init:
     image: apache/kafka
     profiles:
-      - kafka
+      - env
     command: ["./kafka-topics.sh", "--bootstrap-server", "kfk:9092", "--create", "--if-not-exists", "--topic", "posts", "--partitions", "120"]
     working_dir: "/opt/kafka/bin"
     depends_on:
@@ -38,7 +38,7 @@ services:
   kwl:
     image: rsmnarts/kowl
     profiles:
-      - kafka
+      - env
     ports:
       - "127.0.0.1:8181:8080"
     environment:
@@ -46,6 +46,15 @@ services:
     depends_on:
       kfk-init:
         condition: service_completed_successfully
+
+  jgr:
+    profiles:
+      - env
+    image: jaegertracing/jaeger
+    ports:
+      - "127.0.0.1:16686:16686"
+    environment:
+      - LOG_LEVEL=debug
 
   rst:
     profiles:
@@ -59,8 +68,10 @@ services:
       - cargo:/usr/local/cargo
       - target:/jrpk/target
       - ./json:/jrpk/json
+      - ./out:/jrpk/out
       - ./src:/jrpk/src
       - ./Cargo.toml:/jrpk/Cargo.toml
+      - ./Cargo.lock:/jrpk/Cargo.lock
     working_dir: /jrpk
 
   trc:
@@ -68,3 +79,4 @@ services:
       - jrpk
     build: .
     command: ['tokio-console', 'http://jrpk:6669']
+

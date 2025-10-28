@@ -2,43 +2,63 @@ use rskafka::record::Record;
 use socket2::SockRef;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
+use std::fs::File;
 use std::future::Future;
+use std::io::BufWriter;
 use std::str::from_utf8;
 use std::sync::Once;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_otlp::Protocol::HttpBinary;
+use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, Dispatch};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, Layer};
 use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::layer::{Filter, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
 static TRACING: Once = Once::new();
 
 pub fn init_tracing() {
-    TRACING.call_once(|| {
-        tracing_subscriber::registry()
-            //.with(tracing_flame::FlameLayer::with_file("jrpk.flame"))
-            .with(tracing_subscriber::fmt::layer()
-                .pretty()
-                .with_file(false)
-                .with_line_number(false)
-                .with_thread_ids(true)
-                .with_thread_names(true)
-                .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-            )
-            .with(EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env()
-                .unwrap()
-            )
-            .init();
-    })
-}
 
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_protocol(Protocol::HttpJson)
+        .with_endpoint("http://jgr:4318")
+        .build()
+        .unwrap();
+
+    let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .build()
+        .tracer("jrpk");
+
+    let layer = tracing_opentelemetry::layer()
+        .with_tracer(tracer);
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer()
+            .pretty()
+            .with_file(false)
+            .with_line_number(false)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+            .with_filter(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
+                    .from_env()
+                    .unwrap()
+            )
+        )
+        .with(layer)
+        .init();
+}
 #[derive(Debug)]
 pub struct ResCtx<RSP, CTX, ERR: Error> {
     pub ctx: CTX,

@@ -13,14 +13,14 @@ use futures::stream::{IntoAsyncRead, SplitSink, SplitStream};
 use futures::{Sink, SinkExt, StreamExt, TryFutureExt};
 use log::warn;
 use serde_json::value::RawValue;
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, debug_span, error, info, info_span, span, trace, Instrument, Level};
 use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
@@ -73,7 +73,7 @@ async fn consumer_req_writer<'a>(
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
         let bytes = 1..max_batch_byte_size.as_u64() as i32;
         let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
-        tcp_sink.send(jrp_req_fetch).await?;
+        tcp_sink.send(jrp_req_fetch).instrument(debug_span!("tcp.write")).await?;
         id = id + 1;
     }
     tcp_sink.flush().await?;
@@ -98,10 +98,8 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), ClientError> {
-
     let file = tokio::fs::File::create(path).await?;
     let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024 * 1024, file);
-
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
@@ -128,8 +126,10 @@ async fn consumer_rsp_reader(
                                         trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
                                         // TODO: differentiate between binary and text data
                                         let buf = data.as_bytes()?;
-                                        writer.write_all(&buf).await?;
-                                        writer.write_all(b"\n").await?;
+                                        async {
+                                            writer.write_all(&buf).await?;
+                                            writer.write_all(b"\n").await
+                                        }.instrument(debug_span!("file.write")).await?;
                                     }
                                     None => {
                                         warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
@@ -158,7 +158,7 @@ async fn consumer_rsp_reader(
             }
         }
     }
-    writer.flush().await?;
+    writer.flush().instrument(debug_span!("file.write")).await?;
     Ok(())
 }
 
