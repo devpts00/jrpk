@@ -19,7 +19,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, debug_span, error, info, span, trace, warn, warn_span, Instrument};
 use tracing_subscriber::fmt::time;
 use ustr::Ustr;
 
@@ -133,6 +133,7 @@ fn j2k_req(jrp: JrpReq) -> Result<(usize, Ustr, i32, KfkReq, JrpExtra), ServerEr
     }
 }
 
+#[tracing::instrument(level="info", skip(stream, cache, kfk_res_ctx_snd))]
 async fn run_reader_loop(
     addr: SocketAddr,
     mut stream: SplitStream<Framed<TcpStream, JsonCodec>>,
@@ -141,7 +142,7 @@ async fn run_reader_loop(
     queue_size: usize,
 ) -> Result<(), ServerError> {
 
-    while let Some(result) = stream.next().await {
+    while let Some(result) = stream.next().instrument(debug_span!("tcp.read")).await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
         trace!("reader, ctx: {}, json: {}", addr, from_utf8(bytes.as_ref())?);
@@ -154,7 +155,7 @@ async fn run_reader_loop(
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
                 let kfk_req_ctx_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
-                kfk_req_ctx_snd.send(kfk_req_ctx).await?;
+                kfk_req_ctx_snd.send(kfk_req_ctx).instrument(debug_span!("request.send")).await?;
             }
             // if request is not well-formed we attempt to get at least and id to respond
             // and send decode error directly to the result channel, without round-trip to kafka client
@@ -165,7 +166,7 @@ async fn run_reader_loop(
                 let jrp_ctx = JrpCtx::new(jrp_id.id, JrpExtra::None);
                 let kfk_err = KfkError::General(format!("jsonrpc decode error: {}", err));
                 let kfk_res = KfkResCtx::err(jrp_ctx, kfk_err);
-                kfk_res_ctx_snd.send(kfk_res).await?;
+                kfk_res_ctx_snd.send(kfk_res).instrument(warn_span!("request.send")).await?;
             }
         }
     }
@@ -173,12 +174,13 @@ async fn run_reader_loop(
 
 }
 
+#[tracing::instrument(level="info", skip(sink, kfk_res_ctx_rcv))]
 async fn run_writer_loop(
     addr: SocketAddr,
     mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
 ) -> Result<(), ServerError> {
-    while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
+    while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().instrument(debug_span!("response.receive")).await {
         trace!("writer, ctx: {}, response: {:?}", addr, kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
         let jrp_rsp = match kfk_res_ctx.res {
@@ -192,12 +194,14 @@ async fn run_writer_loop(
                 JrpRsp::err(ctx.id, err.into())
             }
         };
-        sink.send(jrp_rsp).await?;
+        sink.send(jrp_rsp)
+            .instrument(debug_span!("tcp.write")).await?;
     }
     sink.flush().await?;
     Ok(())
 }
 
+#[tracing::instrument(level="info")]
 pub async fn listen(
     brokers: Vec<String>,
     bind: SocketAddr,
@@ -215,7 +219,7 @@ pub async fn listen(
     let listener = TcpListener::bind(bind).await?;
 
     loop {
-        let (tcp, addr) = listener.accept().await?;
+        let (tcp, addr) = listener.accept().instrument(debug_span!("tcp.accept")).await?;
         info!("listen, accepted: {:?}", addr);
         set_buf_sizes(&tcp, recv_buf_size.as_u64() as usize, send_buf_size.as_u64() as usize)?;
         let codec = JsonCodec::new(max_frame_size.as_u64() as usize);

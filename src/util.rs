@@ -26,7 +26,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 static TRACING: Once = Once::new();
 
-pub fn init_tracing() {
+pub fn init_tracing() -> SdkTracerProvider {
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
@@ -39,11 +39,12 @@ pub fn init_tracing() {
         .with_attribute(KeyValue::new("service.name", "jrpk"))
         .build();
 
-    let tracer = SdkTracerProvider::builder()
+    let trace_provider = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
         .with_resource(resource)
-        .build()
-        .tracer("jrpk");
+        .build();
+    
+    let tracer = trace_provider.tracer("jrpk");    
 
     let layer = tracing_opentelemetry::layer()
         .with_tracer(tracer);
@@ -65,6 +66,8 @@ pub fn init_tracing() {
         )
         .with(layer)
         .init();
+    
+    trace_provider
 }
 #[derive(Debug)]
 pub struct ResCtx<RSP, CTX, ERR: Error> {

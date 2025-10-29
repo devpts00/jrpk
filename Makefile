@@ -2,7 +2,7 @@ docker-clean:
 	docker compose down -v --rmi all --remove-orphans
 
 docker-pull:
-	docker compose pull kfk kfk-init kwl upt
+	docker compose pull kfk kfk-init kwl jgr
 
 docker-build:
 	docker compose build rst trc
