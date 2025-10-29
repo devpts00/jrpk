@@ -7,9 +7,11 @@ use std::future::Future;
 use std::io::BufWriter;
 use std::str::from_utf8;
 use std::sync::Once;
+use opentelemetry::KeyValue;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::Protocol::HttpBinary;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::net::TcpStream;
 use tokio::select;
@@ -32,9 +34,14 @@ pub fn init_tracing() {
         .with_endpoint("http://jgr:4318/v1/traces")
         .build()
         .unwrap();
+    
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new("service.name", "jrpk"))
+        .build();
 
-    let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+    let tracer = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
+        .with_resource(resource)
         .build()
         .tracer("jrpk");
 
