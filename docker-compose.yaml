@@ -50,11 +50,12 @@ services:
   jgr:
     profiles:
       - env
-    image: jaegertracing/jaeger
+    image: jaegertracing/all-in-one
     ports:
       - "127.0.0.1:16686:16686"
     environment:
       - LOG_LEVEL=debug
+      - COLLECTOR_OTLP_ENABLED=true
 
   rst:
     profiles:

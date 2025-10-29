@@ -29,7 +29,7 @@ pub fn init_tracing() {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         .with_protocol(Protocol::HttpJson)
-        .with_endpoint("http://jgr:4318")
+        .with_endpoint("http://jgr:4318/v1/traces")
         .build()
         .unwrap();
 
