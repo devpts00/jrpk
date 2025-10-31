@@ -20,7 +20,7 @@ use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::util::handle_future_result;
+use crate::util::{handle_future_result, spawn_and_log};
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -198,19 +198,18 @@ pub async fn consume(
     let framed = Framed::new(stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
-    let wh = tokio::spawn(
-        handle_future_result(
-            "request-writer",
-            addr,
-            consumer_req_writer(
-                ConsumerCtx::new("request-writer", path, address, topic, partition),
-                batch_size,
-                max_wait_ms,
-                offset_rcv,
-                tcp_sink
-            )
+
+    let wh = spawn_and_log(
+        "consumer_req_writer",
+        consumer_req_writer(
+            ConsumerCtx::new("request-writer", path, address, topic, partition),
+            batch_size,
+            max_wait_ms,
+            offset_rcv,
+            tcp_sink
         )
     );
+
     let rh = tokio::spawn(
         handle_future_result(
             "consume-reader",

@@ -107,15 +107,14 @@ where T: Debug + Default, E: Display, C: Display, F: Future<Output = Result<T, E
     handle_result(name, ctx, future.await)
 }
 
-pub fn spawn_and_handle<T, E, F>(name: &'static str, future: F) -> JoinHandle<()>
-where E: Display + Send + 'static,
-      T: Display + Send + 'static,
+pub fn spawn_and_log<T, E, F>(name: &'static str, future: F) -> JoinHandle<()>
+where E: Error + Send + 'static,
+      T: Debug + Send + 'static,
       F: Future<Output=Result<T, E>> + Send + 'static {
     spawn(async move {
-        info!("{}", name);
         match future.await {
             Ok(value) => {
-                info!("{}, result: {}", name, value);
+                info!("{}, result: {:#?}", name, value);
             }
             Err(error) => {
                 error!("{}, error: {}", name, error);
