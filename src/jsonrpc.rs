@@ -241,7 +241,6 @@ impl <'de> Deserialize<'de> for JrpOffset {
             }
 
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-                info!("offset: {}", v);
                 if v == "earliest" {
                     Ok(JrpOffset::Earliest)
                 } else if v == "latest" {

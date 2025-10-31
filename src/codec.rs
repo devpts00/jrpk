@@ -4,7 +4,7 @@ use std::str::{from_utf8, from_utf8_unchecked, Utf8Error};
 use serde::Serialize;
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, enabled, trace, Level};
+use tracing::{debug, enabled, instrument, trace, Level};
 
 #[derive(Debug)]
 pub struct JsonCodec {
@@ -55,6 +55,7 @@ impl Decoder for JsonCodec {
     type Item = Bytes;
     type Error = BytesFrameDecoderError;
 
+    #[instrument]
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
 
         if enabled!(Level::TRACE) {

@@ -151,31 +151,27 @@ impl <T> From<SendError<T>> for KfkError {
 #[tracing::instrument(level="info", skip(req_ctx_rcv))]
 async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkReqCtxRcv<CTX>) -> Result<(), KfkError> {
     while let Some(req_ctx) = req_ctx_rcv.recv().await {
-        trace!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_ctx);
+        trace!("client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_ctx);
         let ctx = req_ctx.ctx;
         let req = req_ctx.req;
         let res_ctx_snd = req_ctx.rsp_snd;
         let res_rsp = match req {
             KfkReq::Send { records } => {
-                cli.produce(records, Compression::Snappy)
-                    .instrument(debug_span!("kafka.send")).await
+                cli.produce(records, Compression::Snappy).await
                     .map(|offsets| KfkRsp::send(offsets))
             }
-
             KfkReq::Fetch { offset, bytes, max_wait_ms } => {
                 let offset_explicit = match offset {
-                    KfkOffset::Implicit(at) => cli.get_offset(at).instrument(debug_span!("kafka.offset")).await?,
+                    KfkOffset::Implicit(at) => cli.get_offset(at).await?,
                     KfkOffset::Explicit(n) => n
                 };
-                cli.fetch_records(offset_explicit, bytes, max_wait_ms)
-                    .instrument(debug_span!("kafka.fetch")).await
+                cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark))
             }
             KfkReq::Offset { offset } => {
                 match offset {
                     KfkOffset::Implicit(at) => {
-                        cli.get_offset(at)
-                            .instrument(debug_span!("kafka.offset")).await
+                        cli.get_offset(at).await
                             .map(|offset| KfkRsp::offset(offset))
                     }
                     KfkOffset::Explicit(pos) => {
@@ -188,7 +184,7 @@ async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkRe
             Ok(rsp) => KfkResCtx::ok(ctx, rsp),
             Err(err) => KfkResCtx::err(ctx, err.into())
         };
-        trace!("kafka, client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_ctx);
+        trace!("client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_ctx);
         res_ctx_snd.send(res_ctx).await?;
     }
     Ok(())
@@ -225,9 +221,8 @@ impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
 
     #[tracing::instrument(level="info", skip(self))]
     async fn init_kafka_loop(&self, key: KfkClientKey, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
-        info!("kafka, init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
-        let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error)
-            .instrument(info_span!("kafka.client")).await?;
+        info!("init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
+        let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
         tokio::spawn(handle_future_result("kafka", key, run_kafka_loop(pc, req_id_rcv)));
         Ok(req_id_snd)
@@ -235,12 +230,12 @@ impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
 
     #[tracing::instrument(level="debug", skip(self))]
     pub async fn lookup_kafka_sender(&self, topic: Ustr, partition: i32, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
-        trace!("kafka, lookup: {}:{}", topic, partition);
+        trace!("lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(key, capacity);
         let req_id_snd = self.cache.try_get_with(key, init).await?;
         self.cache.run_pending_tasks().await;
-        trace!("kafka, cache: {}", self.cache.entry_count());
+        trace!("cached: {}", self.cache.entry_count());
         Ok(req_id_snd)
     }
 }

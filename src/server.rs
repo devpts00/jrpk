@@ -136,16 +136,16 @@ async fn run_reader_loop(
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCtx>,
     queue_size: usize,
 ) -> Result<(), ServerError> {
-
-    while let Some(result) = stream.next().instrument(debug_span!("tcp.read")).await {
+    info!("start");
+    while let Some(result) = stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
-        trace!("reader, ctx: {}, json: {}", addr, from_utf8(bytes.as_ref())?);
+        trace!("json: {}", from_utf8(bytes.as_ref())?);
         // we are optimistic and expect most requests to be well-formed
         match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
             // if request is well-formed, we proceed
             Ok(jrp_req) => {
-                trace!("reader, ctx: {}, request: {:?}", addr, jrp_req);
+                trace!("request: {:?}", jrp_req);
                 let (id, topic, partition, kfk_req, extra) = j2k_req(jrp_req)?;
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
@@ -165,6 +165,7 @@ async fn run_reader_loop(
             }
         }
     }
+    info!("end");
     Ok(())
 
 }
@@ -175,8 +176,9 @@ async fn run_writer_loop(
     mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
 ) -> Result<(), ServerError> {
+    info!("start");
     while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
-        trace!("writer, ctx: {}, response: {:?}", addr, kfk_res_ctx);
+        trace!("response: {:?}", kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
         let jrp_rsp = match kfk_res_ctx.res {
             Ok(kfk_rsp) => {
@@ -189,11 +191,10 @@ async fn run_writer_loop(
                 JrpRsp::err(ctx.id, err.into())
             }
         };
-        sink.send(jrp_rsp)
-            .instrument(debug_span!("tcp.write")).await?;
+        sink.send(jrp_rsp).await?;
     }
-    sink.flush()
-        .instrument(debug_span!("tcp.flush")).await?;
+    sink.flush().await?;
+    info!("end");
     Ok(())
 }
 
@@ -207,16 +208,18 @@ pub async fn listen(
     queue_size: usize
 ) -> Result<(), ServerError> {
 
-    info!("listen, kafka: {:?}", brokers);
+    info!("start");
+
+    info!("connect: {}", brokers.join(","));
     let client = ClientBuilder::new(brokers).build().await?;
     let cache: Arc<KfkClientCache<JrpCtx>> = Arc::new(KfkClientCache::new(client, 1024));
 
-    info!("listen, bind: {:?}", bind);
+    info!("bind: {:?}", bind);
     let listener = TcpListener::bind(bind).await?;
 
     loop {
-        let (tcp, addr) = listener.accept().instrument(debug_span!("tcp.accept")).await?;
-        info!("listen, accepted: {:?}", addr);
+        let (tcp, addr) = listener.accept().await?;
+        info!("accepted: {:?}", addr);
         set_buf_sizes(&tcp, recv_buf_size.as_u64() as usize, send_buf_size.as_u64() as usize)?;
         let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
         let framed = Framed::new(tcp, codec);

@@ -2,73 +2,21 @@ use rskafka::record::Record;
 use socket2::SockRef;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
-use std::fs::File;
 use std::future::Future;
-use std::io::BufWriter;
 use std::str::from_utf8;
 use std::sync::Once;
-use opentelemetry::KeyValue;
-use opentelemetry::trace::TracerProvider;
-use opentelemetry_otlp::Protocol::HttpBinary;
-use opentelemetry_otlp::{Protocol, WithExportConfig};
-use opentelemetry_sdk::error::OTelSdkResult;
-use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use tracing::{error, info, Dispatch};
+use tracing::{error, info};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, Layer};
 use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::layer::{Filter, SubscriberExt};
+use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-static TRACING: Once = Once::new();
-
-struct SdkTraceProviderGuard {
-    provider: SdkTracerProvider
-}
-
-impl SdkTraceProviderGuard {
-    fn new(provider: SdkTracerProvider) -> Self {
-        Self { provider }
-    }
-}
-
-impl Drop for SdkTraceProviderGuard {
-    fn drop(&mut self) {
-        match self.provider.shutdown() {
-            Ok(_) => info!("sdk trace provider shutdown successfully"),
-            Err(err) => error!("sdk trace provider shutdown failed: {}", err),
-        }
-    }
-}
-
-pub fn init_tracing() -> impl Drop {
-
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .with_protocol(Protocol::HttpJson)
-        .with_endpoint("http://jgr:4318/v1/traces")
-        .build()
-        .unwrap();
-    
-    let resource = Resource::builder()
-        .with_attribute(KeyValue::new("service.name", "jrpk"))
-        .build();
-
-    let trace_provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(resource)
-        .build();
-    
-    let tracer = trace_provider.tracer("jrpk");    
-
-    let layer = tracing_opentelemetry::layer()
-        .with_tracer(tracer);
-
+pub fn init_tracing() {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer()
             .pretty()
@@ -84,11 +32,9 @@ pub fn init_tracing() -> impl Drop {
                     .unwrap()
             )
         )
-        .with(layer)
         .init();
-
-    SdkTraceProviderGuard::new(trace_provider)
 }
+
 #[derive(Debug)]
 pub struct ResCtx<RSP, CTX, ERR: Error> {
     pub ctx: CTX,
@@ -140,12 +86,6 @@ impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, 
         write!(f, "tag: {}, req: {}", self.ctx, self.req)
     }
 }
-
-// pub fn unwrap_err(ae: Arc<anyhow::Error>) -> anyhow::Error {
-//     Arc::try_unwrap(ae).unwrap_or_else(|ae| {
-//         anyhow!(ae.clone())
-//     })
-// }
 
 pub fn handle_result<T, C, E> (name: &str, ctx: C, r: Result<T, E>) -> T
 where T: Default + Debug, C: Display, E: Display {
