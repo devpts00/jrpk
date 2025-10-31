@@ -6,7 +6,7 @@ use std::future::Future;
 use std::str::from_utf8;
 use std::sync::Once;
 use tokio::net::TcpStream;
-use tokio::select;
+use tokio::{select, spawn};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
@@ -105,6 +105,23 @@ pub async fn handle_future_result<T, E, C, F>(name: &str, ctx: C, future: F) -> 
 where T: Debug + Default, E: Display, C: Display, F: Future<Output = Result<T, E>> {
     info!("{}, ctx: {} - START", name, ctx);
     handle_result(name, ctx, future.await)
+}
+
+pub fn spawn_and_handle<T, E, F>(name: &'static str, future: F) -> JoinHandle<()>
+where E: Display + Send + 'static,
+      T: Display + Send + 'static,
+      F: Future<Output=Result<T, E>> + Send + 'static {
+    spawn(async move {
+        info!("{}", name);
+        match future.await {
+            Ok(value) => {
+                info!("{}, result: {}", name, value);
+            }
+            Err(error) => {
+                error!("{}, error: {}", name, error);
+            }
+        }
+    })
 }
 
 pub async fn join_with_signal<T, C>(name: &str, ctx: C, jh: JoinHandle<T>) -> ()
