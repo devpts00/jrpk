@@ -74,7 +74,7 @@ async fn run(args: args::Args) {
 }
 
 fn main() {
-    let tp = init_tracing();
+    let _guard = init_tracing();
     let args = args::Args::parse();
     info!("args: {:?}", args);
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -83,5 +83,4 @@ fn main() {
         .unwrap();
     rt.block_on(run(args));
     rt.shutdown_timeout(Duration::from_secs(1));
-    tp.shutdown().unwrap();
 }

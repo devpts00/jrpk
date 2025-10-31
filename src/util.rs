@@ -11,6 +11,7 @@ use opentelemetry::KeyValue;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::Protocol::HttpBinary;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::net::TcpStream;
@@ -26,7 +27,26 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 static TRACING: Once = Once::new();
 
-pub fn init_tracing() -> SdkTracerProvider {
+struct SdkTraceProviderGuard {
+    provider: SdkTracerProvider
+}
+
+impl SdkTraceProviderGuard {
+    fn new(provider: SdkTracerProvider) -> Self {
+        Self { provider }
+    }
+}
+
+impl Drop for SdkTraceProviderGuard {
+    fn drop(&mut self) {
+        match self.provider.shutdown() {
+            Ok(_) => info!("sdk trace provider shutdown successfully"),
+            Err(err) => error!("sdk trace provider shutdown failed: {}", err),
+        }
+    }
+}
+
+pub fn init_tracing() -> impl Drop {
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
@@ -66,8 +86,8 @@ pub fn init_tracing() -> SdkTracerProvider {
         )
         .with(layer)
         .init();
-    
-    trace_provider
+
+    SdkTraceProviderGuard::new(trace_provider)
 }
 #[derive(Debug)]
 pub struct ResCtx<RSP, CTX, ERR: Error> {

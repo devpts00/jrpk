@@ -150,7 +150,7 @@ impl <T> From<SendError<T>> for KfkError {
 
 #[tracing::instrument(level="info", skip(req_ctx_rcv))]
 async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkReqCtxRcv<CTX>) -> Result<(), KfkError> {
-    while let Some(req_ctx) = req_ctx_rcv.recv().instrument(debug_span!("request.receive")).await {
+    while let Some(req_ctx) = req_ctx_rcv.recv().await {
         trace!("kafka, client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_ctx);
         let ctx = req_ctx.ctx;
         let req = req_ctx.req;
@@ -161,6 +161,7 @@ async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkRe
                     .instrument(debug_span!("kafka.send")).await
                     .map(|offsets| KfkRsp::send(offsets))
             }
+
             KfkReq::Fetch { offset, bytes, max_wait_ms } => {
                 let offset_explicit = match offset {
                     KfkOffset::Implicit(at) => cli.get_offset(at).instrument(debug_span!("kafka.offset")).await?,
@@ -173,7 +174,9 @@ async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkRe
             KfkReq::Offset { offset } => {
                 match offset {
                     KfkOffset::Implicit(at) => {
-                        cli.get_offset(at).await.map(|offset| KfkRsp::offset(offset))
+                        cli.get_offset(at)
+                            .instrument(debug_span!("kafka.offset")).await
+                            .map(|offset| KfkRsp::offset(offset))
                     }
                     KfkOffset::Explicit(pos) => {
                         Ok(KfkRsp::offset(pos))
@@ -186,8 +189,7 @@ async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkRe
             Err(err) => KfkResCtx::err(ctx, err.into())
         };
         trace!("kafka, client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_ctx);
-        res_ctx_snd.send(res_ctx)
-            .instrument(debug_span!("response.send")).await?;
+        res_ctx_snd.send(res_ctx).await?;
     }
     Ok(())
 }

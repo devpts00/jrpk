@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::future::Future;
 use std::io::{BufWriter, Write};
@@ -20,7 +21,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, debug_span, error, info, info_span, span, trace, Instrument, Level};
+use tracing::{debug, debug_span, error, info, info_span, instrument, span, trace, Instrument, Level, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
@@ -58,25 +60,57 @@ pub enum ClientError {
     Join(#[from] JoinError),
 }
 
-#[tracing::instrument(level = "info", skip(offset_rcv, tcp_sink))]
-async fn consumer_req_writer<'a>(
+#[derive(Clone, Copy, Debug)]
+struct ConsumerCtx {
+    name: &'static str,
+    path: Ustr,
+    address: Ustr,
     topic: Ustr,
     partition: i32,
+}
+
+impl ConsumerCtx {
+    fn new(name: &'static str, path: Ustr, address: Ustr, topic: Ustr, partition: i32) -> Self {
+        Self { name, path, address, topic, partition }
+    }
+}
+
+impl Display for ConsumerCtx {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "name: {}, path: {}, address: {}, topic: {}, partition: {}",
+            self.name, self.path, self.address, self.topic, self.partition
+        )
+    }
+}
+
+async fn consumer_req_writer<'a>(
+    ctx: ConsumerCtx,
     max_batch_byte_size: ByteSize,
     max_wait_ms: i32,
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpReq<'a>>,
 ) -> Result<(), ClientError> {
+    info!("{}, max_batch_byte_size: {}, max_wait_ms: {}", ctx, max_batch_byte_size, max_wait_ms);
+    let tcp_write_span = debug_span!(
+        "tcp.write",
+        path = ctx.path.as_str(),
+        address = ctx.address.as_str(),
+        topic = ctx.topic.as_str(),
+        partition = ctx.partition
+    );
     let mut id = 0;
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
         let bytes = 1..max_batch_byte_size.as_u64() as i32;
-        let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
-        tcp_sink.send(jrp_req_fetch).instrument(debug_span!("tcp.write")).await?;
+        let jrp_req_fetch = JrpReq::fetch(id, ctx.topic, ctx.partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
+        tcp_sink.send(jrp_req_fetch)
+            .instrument(tcp_write_span.clone()).await?;
         id = id + 1;
     }
-    tcp_sink.flush().await?;
+    tcp_sink.flush()
+        .instrument(tcp_write_span)
+        .await?;
     Ok(())
 }
 
@@ -90,72 +124,86 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
     }
 }
 
-#[tracing::instrument(level="info", skip(offset_snd, tcp_stream))]
+#[instrument(level = "info", skip(offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
-    path: PathBuf,
+    ctx: ConsumerCtx,
     from: Offset,
     until: Offset,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), ClientError> {
-    let file = tokio::fs::File::create(path).await?;
+    info!("{}, from={}, until={}", ctx, from, until);
+    let file = tokio::fs::File::create(ctx.path).await?;
     let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024 * 1024, file);
     offset_snd.send(from).await?;
-    while let Some(result) = tcp_stream.next().await {
-        let frame = result?;
-        let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
-        let id = jrp_rsp.id;
-        match jrp_rsp.take_result() {
-            Ok(jrp_rsp_data) => {
-                match jrp_rsp_data {
-                    JrpRspData::Fetch { high_watermark, mut records } => {
-                        records.sort_by_key(|r| r.offset);
-                        let mut done = true;
-                        // if more data is available
-                        if let Some(last) = records.last() {
-                            // if the last item is not out of bounds
-                            if less_record_offset(last, until) && last.offset < high_watermark {
-                                done = false;
-                                offset_snd.send(Offset::Offset(last.offset + 1)).await?;
-                            }
-                        }
-                        for record in records {
-                            if less_record_offset(&record, until) {
-                                match record.value {
-                                    Some(data) => {
-                                        trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
-                                        // TODO: differentiate between binary and text data
-                                        let buf = data.as_bytes()?;
-                                        async {
-                                            writer.write_all(&buf).await?;
-                                            writer.write_all(b"\n").await
-                                        }.instrument(debug_span!("file.write")).await?;
-                                    }
-                                    None => {
-                                        warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
-                                    }
+    loop {
+        let tcp_read_span = debug_span!("tcp.read",
+            path = ctx.path.as_str(), address = ctx.address.as_str(), topic = ctx.topic.as_str(), partition = ctx.partition
+        );
+        let file_write_span = debug_span!("file.write",
+            path = ctx.path.as_str(), address = ctx.address.as_str(), topic = ctx.topic.as_str(), partition = ctx.partition
+        );
+        file_write_span.follows_from(tcp_read_span.id());
+        if let Some(result) = tcp_stream.next().instrument(tcp_read_span).await {
+            let frame = result?;
+            let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
+            let id = jrp_rsp.id;
+            match jrp_rsp.take_result() {
+                Ok(jrp_rsp_data) => {
+                    match jrp_rsp_data {
+                        JrpRspData::Fetch { high_watermark, mut records } => {
+                            records.sort_by_key(|r| r.offset);
+                            let mut done = true;
+                            // if more data is available
+                            if let Some(last) = records.last() {
+                                // if the last item is not out of bounds
+                                if less_record_offset(last, until) && last.offset < high_watermark {
+                                    done = false;
+                                    offset_snd.send(Offset::Offset(last.offset + 1)).await?;
                                 }
                             }
-                        }
 
-                        if done {
-                            break;
+                            async {
+                                for record in records {
+                                    if less_record_offset(&record, until) {
+                                        match record.value {
+                                            Some(data) => {
+                                                trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
+                                                // TODO: differentiate between binary and text data
+                                                let buf = data.as_bytes()?;
+                                                writer.write_all(&buf).await?;
+                                                writer.write_all(b"\n").await?;
+                                            }
+                                            None => {
+                                                warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
+                                            }
+                                        }
+                                    }
+                                }
+                                Result::<(), ClientError>::Ok(())
+                            }.instrument(file_write_span.clone()).await?;
+
+                            if done {
+                                break;
+                            }
                         }
-                    }
-                    JrpRspData::Send { .. } => {
-                        error!("error, id: {}, response: send", id);
-                        return Err(ClientError::UnexpectedResponse("send".to_owned()));
-                    }
-                    JrpRspData::Offset(_) => {
-                        error!("error, id: {}, response: offset", id);
-                        return Err(ClientError::UnexpectedResponse("offset".to_owned()));
+                        JrpRspData::Send { .. } => {
+                            error!("error, id: {}, response: send", id);
+                            return Err(ClientError::UnexpectedResponse("send".to_owned()));
+                        }
+                        JrpRspData::Offset(_) => {
+                            error!("error, id: {}, response: offset", id);
+                            return Err(ClientError::UnexpectedResponse("offset".to_owned()));
+                        }
                     }
                 }
+                Err(err) => {
+                    error!("error, id: {}, message: {}", id, err.message);
+                    return Err(ClientError::Jrp(err))
+                }
             }
-            Err(err) => {
-                error!("error, id: {}, message: {}", id, err.message);
-                return Err(ClientError::Jrp(err))
-            }
+        } else {
+            break;
         }
     }
     writer.flush().instrument(debug_span!("file.write")).await?;
@@ -164,7 +212,7 @@ async fn consumer_rsp_reader(
 
 #[tracing::instrument(level = "info")]
 pub async fn consume(
-    path: PathBuf,
+    path: Ustr,
     address: Ustr,
     topic: Ustr,
     partition: i32,
@@ -184,9 +232,15 @@ pub async fn consume(
 
     let wh = tokio::spawn(
         handle_future_result(
-            "consume-writer",
+            "request-writer",
             addr,
-            consumer_req_writer(topic, partition, batch_size, max_wait_ms, offset_rcv, tcp_sink)
+            consumer_req_writer(
+                ConsumerCtx::new("request-writer", path, address, topic, partition),
+                batch_size,
+                max_wait_ms,
+                offset_rcv,
+                tcp_sink
+            )
         )
     );
 
@@ -194,7 +248,13 @@ pub async fn consume(
         handle_future_result(
             "consume-reader",
             addr,
-            consumer_rsp_reader(path, from, until, offset_snd, tcp_stream)
+            consumer_rsp_reader(
+                ConsumerCtx::new("request-writer", path, address, topic, partition),
+                from,
+                until,
+                offset_snd,
+                tcp_stream
+            )
         )
     );
 
@@ -205,7 +265,7 @@ pub async fn consume(
 }
 
 pub async fn producer_req_writer(
-    path: PathBuf,
+    path: Ustr,
     topic: Ustr,
     partition: i32,
     max_frame_size: usize,
@@ -274,7 +334,7 @@ pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, J
 }
 
 pub async fn produce(
-    path: PathBuf,
+    path: Ustr,
     address: Ustr,
     topic: Ustr,
     partition: i32,

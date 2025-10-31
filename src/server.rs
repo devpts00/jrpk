@@ -92,11 +92,6 @@ fn k2j_rsp(rsp: KfkRsp, extra: JrpExtra) -> Result<JrpRspData<'static>, ServerEr
     }
 }
 
-/*#[inline]
-fn x2j_err<E: Error>(err: E) -> JrpErrorMsg {
-    JrpErrorMsg::new(err.to_string())
-}
-*/
 fn j2k_offset(offset: JrpOffset) -> KfkOffset {
     match offset {
         JrpOffset::Earliest => KfkOffset::Implicit(OffsetAt::Earliest),
@@ -155,7 +150,7 @@ async fn run_reader_loop(
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
                 let kfk_req_ctx_snd = cache.lookup_kafka_sender(topic, partition, queue_size).await?;
-                kfk_req_ctx_snd.send(kfk_req_ctx).instrument(debug_span!("request.send")).await?;
+                kfk_req_ctx_snd.send(kfk_req_ctx).await?;
             }
             // if request is not well-formed we attempt to get at least and id to respond
             // and send decode error directly to the result channel, without round-trip to kafka client
@@ -166,7 +161,7 @@ async fn run_reader_loop(
                 let jrp_ctx = JrpCtx::new(jrp_id.id, JrpExtra::None);
                 let kfk_err = KfkError::General(format!("jsonrpc decode error: {}", err));
                 let kfk_res = KfkResCtx::err(jrp_ctx, kfk_err);
-                kfk_res_ctx_snd.send(kfk_res).instrument(warn_span!("request.send")).await?;
+                kfk_res_ctx_snd.send(kfk_res).await?;
             }
         }
     }
@@ -180,7 +175,7 @@ async fn run_writer_loop(
     mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
 ) -> Result<(), ServerError> {
-    while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().instrument(debug_span!("response.receive")).await {
+    while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
         trace!("writer, ctx: {}, response: {:?}", addr, kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
         let jrp_rsp = match kfk_res_ctx.res {
@@ -197,7 +192,8 @@ async fn run_writer_loop(
         sink.send(jrp_rsp)
             .instrument(debug_span!("tcp.write")).await?;
     }
-    sink.flush().await?;
+    sink.flush()
+        .instrument(debug_span!("tcp.flush")).await?;
     Ok(())
 }
 

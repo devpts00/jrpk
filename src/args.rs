@@ -94,7 +94,7 @@ pub enum Mode {
     },
     Client {
         #[arg(long)]
-        path: PathBuf,
+        path: Ustr,
         #[arg(long)]
         address: Ustr,
         #[arg(long)]
