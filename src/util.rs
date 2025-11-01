@@ -87,30 +87,42 @@ impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, 
     }
 }
 
-pub fn handle_result<T, C, E> (name: &str, ctx: C, r: Result<T, E>) -> T
-where T: Default + Debug, C: Display, E: Display {
+pub fn log_result<T, E> (name: &str, r: Result<T, E>) -> T
+where T: Default + Debug, E: Display {
     match r {
         Ok(value) => {
-            info!("{}, ctx: {}, res: {:?} - END", name, ctx, value);
+            info!("{}, res: {:?} - END", name, value);
             value
         }
         Err(error) => {
-            error!("{}, ctx: {}, err: '{}' - END", name, ctx, error);
+            error!("{}, err: '{}' - END", name, error);
             T::default()
         }
     }
 }
 
-pub async fn handle_future_result<T, E, C, F>(name: &str, ctx: C, future: F) -> T
-where T: Debug + Default, E: Display, C: Display, F: Future<Output = Result<T, E>> {
-    info!("{}, ctx: {} - START", name, ctx);
-    handle_result(name, ctx, future.await)
+pub async fn log_handle_result<T: Debug, E: Display>(name: &'static str, handle: JoinHandle<Result<T, E>>) {
+    match handle.await {
+        Ok(res) => {
+            match res {
+                Ok(val) => {
+                    info!("{}, res: {:?}", name, val);
+                }
+                Err(err) => {
+                    error!("{}, err: '{}'", name, err);
+                }
+            }
+        }
+        Err(err) => {
+            error!("{}, err: '{}'", name, err);
+        }
+    }
 }
 
-pub fn spawn_and_log<T, E, F>(name: &'static str, future: F) -> JoinHandle<()>
-where E: Error + Send + 'static,
-      T: Debug + Send + 'static,
-      F: Future<Output=Result<T, E>> + Send + 'static {
+pub fn spawn_and_log<T, E, F>(name: &'static str, future: F)
+where T: Debug + Default + Send + 'static,
+      E: Display + Send + 'static,
+      F: Future<Output = Result<T, E>> + Send + 'static {
     spawn(async move {
         match future.await {
             Ok(value) => {
@@ -120,17 +132,40 @@ where E: Error + Send + 'static,
                 error!("{}, error: {}", name, error);
             }
         }
-    })
+    });
 }
 
-pub async fn join_with_signal<T, C>(name: &str, ctx: C, jh: JoinHandle<T>) -> ()
-where T: Default + Debug, C: Display {
+//
+// pub async fn handle_future_result<T, E, C, F>(name: &str, ctx: C, future: F) -> T
+// where T: Debug + Default, E: Display, C: Display, F: Future<Output = Result<T, E>> {
+//     info!("{}, ctx: {} - START", name, ctx);
+//     handle_result(name, ctx, future.await)
+// }
+//
+// pub fn spawn_and_log<T, E, F>(name: &'static str, future: F) -> JoinHandle<()>
+// where E: Error + Send + 'static,
+//       T: Debug + Send + 'static,
+//       F: Future<Output=Result<T, E>> + Send + 'static {
+//     spawn(async move {
+//         match future.await {
+//             Ok(value) => {
+//                 info!("{}, result: {:#?}", name, value);
+//             }
+//             Err(error) => {
+//                 error!("{}, error: {}", name, error);
+//             }
+//         }
+//     })
+// }
+
+pub async fn join_with_signal<T>(name: &str, jh: JoinHandle<T>) -> ()
+where T: Default + Debug {
     select! {
         res = jh => {
-            handle_result(name, ctx, res);
+            log_result(name, res);
         },
         _ = tokio::signal::ctrl_c() => {
-            info!("{}, ctx: {} - signal, exiting...", name, ctx);
+            info!("{} - signal, exiting...", name);
         }
     }
 }

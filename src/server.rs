@@ -1,11 +1,11 @@
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpData, JrpError, JrpErrorMsg, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpData, JrpError, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
-use crate::util::{handle_future_result, set_buf_sizes, ReqCtx};
+use crate::util::{set_buf_sizes, ReqCtx};
 use base64::DecodeError;
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt, StreamExt, Sink};
+use futures::{SinkExt, StreamExt};
 use rskafka::client::ClientBuilder;
 use rskafka::record::{Record, RecordAndOffset};
 use std::collections::BTreeMap;
@@ -18,9 +18,8 @@ use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
-use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, debug_span, error, info, span, trace, warn, warn_span, Instrument};
-use tracing_subscriber::fmt::time;
+use tokio_util::codec::{Framed};
+use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
 
 #[derive(Error, Debug)]
@@ -128,7 +127,7 @@ fn j2k_req(jrp: JrpReq) -> Result<(usize, Ustr, i32, KfkReq, JrpExtra), ServerEr
     }
 }
 
-#[tracing::instrument(level="info", skip(stream, cache, kfk_res_ctx_snd))]
+#[tracing::instrument(ret, skip(stream, cache, kfk_res_ctx_snd))]
 async fn run_reader_loop(
     addr: SocketAddr,
     mut stream: SplitStream<Framed<TcpStream, JsonCodec>>,
@@ -167,10 +166,9 @@ async fn run_reader_loop(
     }
     info!("end");
     Ok(())
-
 }
 
-#[tracing::instrument(level="info", skip(sink, kfk_res_ctx_rcv))]
+#[instrument(ret, skip(sink, kfk_res_ctx_rcv))]
 async fn run_writer_loop(
     addr: SocketAddr,
     mut sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
@@ -198,7 +196,7 @@ async fn run_writer_loop(
     Ok(())
 }
 
-#[tracing::instrument(level="info")]
+#[instrument(ret)]
 pub async fn listen(
     brokers: Vec<String>,
     bind: SocketAddr,
@@ -207,8 +205,6 @@ pub async fn listen(
     recv_buf_size: ByteSize,
     queue_size: usize
 ) -> Result<(), ServerError> {
-
-    info!("start");
 
     info!("connect: {}", brokers.join(","));
     let client = ClientBuilder::new(brokers).build().await?;
@@ -226,18 +222,10 @@ pub async fn listen(
         let (sink, stream) = framed.split();
         let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(queue_size);
         tokio::spawn(
-            handle_future_result(
-                "reader",
-                addr,
-                run_reader_loop(addr, stream, cache.clone(), kfk_res_snd, queue_size)
-            )
+            run_reader_loop(addr, stream, cache.clone(), kfk_res_snd, queue_size)
         );
         tokio::spawn(
-            handle_future_result(
-                "writer",
-                addr,
-                run_writer_loop(addr, sink, kfk_res_rcv)
-            )
+            run_writer_loop(addr, sink, kfk_res_rcv)
         );
     }
 }

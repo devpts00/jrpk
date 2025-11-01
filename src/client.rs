@@ -10,6 +10,7 @@ use log::warn;
 use serde_json::value::RawValue;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
@@ -20,7 +21,7 @@ use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::util::{handle_future_result, spawn_and_log};
+use crate::util::log_handle_result;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -76,7 +77,7 @@ impl Display for ConsumerCtx {
     }
 }
 
-#[instrument(skip(offset_rcv, tcp_sink))]
+#[instrument(ret, skip(offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     ctx: ConsumerCtx,
     max_batch_byte_size: ByteSize,
@@ -107,7 +108,7 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
     }
 }
 
-#[instrument(skip(offset_snd, tcp_stream))]
+#[instrument(ret, skip(offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     ctx: ConsumerCtx,
     from: Offset,
@@ -180,7 +181,7 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
-#[instrument]
+#[instrument(ret)]
 pub async fn consume(
     path: Ustr,
     address: Ustr,
@@ -199,8 +200,7 @@ pub async fn consume(
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
 
-    let wh = spawn_and_log(
-        "consumer_req_writer",
+    let wh = spawn(
         consumer_req_writer(
             ConsumerCtx::new("request-writer", path, address, topic, partition),
             batch_size,
@@ -211,20 +211,18 @@ pub async fn consume(
     );
 
     let rh = tokio::spawn(
-        handle_future_result(
-            "consume-reader",
-            addr,
-            consumer_rsp_reader(
-                ConsumerCtx::new("request-writer", path, address, topic, partition),
-                from,
-                until,
-                offset_snd,
-                tcp_stream
-            )
+        consumer_rsp_reader(
+            ConsumerCtx::new("request-writer", path, address, topic, partition),
+            from,
+            until,
+            offset_snd,
+            tcp_stream
         )
     );
-    wh.await?;
-    rh.await?;
+
+    log_handle_result("consumer_req_writer", wh).await;
+    log_handle_result("consumer_rsp_reader", rh).await;
+
     Ok(())
 }
 
@@ -312,30 +310,25 @@ pub async fn produce(
     let codec = JsonCodec::new(max_frame_byte_size);
     let framed = Framed::with_capacity(stream, codec, max_frame_byte_size);
     let (tcp_sink, tcp_stream) = framed.split();
+
     let wh = tokio::spawn(
-        handle_future_result(
-            "producer-requests",
-            addr,
-            producer_req_writer(
-                path,
-                topic,
-                partition,
-                max_frame_byte_size,
-                max_batch_rec_count,
-                max_batch_byte_size,
-                max_rec_byte_size,
-                tcp_sink
-            )
+        producer_req_writer(
+            path,
+            topic,
+            partition,
+            max_frame_byte_size,
+            max_batch_rec_count,
+            max_batch_byte_size,
+            max_rec_byte_size,
+            tcp_sink
         )
     );
     let rh = tokio::spawn(
-        handle_future_result(
-            "producer-responses",
-            addr,
-            producer_rsp_reader(tcp_stream)
-        )
+        producer_rsp_reader(tcp_stream)
     );
-    wh.await?;
-    rh.await?;
+
+    log_handle_result("producer_req_writer", wh).await;
+    log_handle_result("producer_rsp_reader", rh).await;
+
     Ok(())
 }
