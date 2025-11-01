@@ -87,6 +87,7 @@ impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, 
     }
 }
 
+/// single check: just the result
 pub fn log_result<T, E> (name: &str, r: Result<T, E>) -> T
 where T: Default + Debug, E: Display {
     match r {
@@ -101,7 +102,8 @@ where T: Default + Debug, E: Display {
     }
 }
 
-pub async fn log_handle_result<T: Debug, E: Display>(name: &'static str, handle: JoinHandle<Result<T, E>>) {
+/// double check: 1st result of joining the handle, 2nd result of the routine represented by the handle
+pub async fn log_result_handle<T: Debug, E: Display>(name: &'static str, handle: JoinHandle<Result<T, E>>) {
     match handle.await {
         Ok(res) => {
             match res {
@@ -119,19 +121,13 @@ pub async fn log_handle_result<T: Debug, E: Display>(name: &'static str, handle:
     }
 }
 
+/// spawn the task to poll the future and log the result
 pub fn spawn_and_log<T, E, F>(name: &'static str, future: F)
 where T: Debug + Default + Send + 'static,
       E: Display + Send + 'static,
       F: Future<Output = Result<T, E>> + Send + 'static {
     spawn(async move {
-        match future.await {
-            Ok(value) => {
-                info!("{}, result: {:#?}", name, value);
-            }
-            Err(error) => {
-                error!("{}, error: {}", name, error);
-            }
-        }
+        log_result(name, future.await);
     });
 }
 

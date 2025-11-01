@@ -1,4 +1,4 @@
-use crate::util::{debug_record_and_offset, debug_vec_fn, handle_future_result, ReqCtx, ResCtx};
+use crate::util::{debug_record_and_offset, debug_vec_fn, spawn_and_log, ReqCtx, ResCtx};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
@@ -6,14 +6,12 @@ use rskafka::record::{Record, RecordAndOffset};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
-use chrono::Utc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{debug_span, info, info_span, trace, Instrument};
+use tracing::{info, info_span, trace, Instrument};
 use ustr::Ustr;
-use crate::jsonrpc::JrpOffset;
 
 #[derive(Debug)]
 pub enum KfkOffset {
@@ -224,7 +222,7 @@ impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
         info!("init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
-        tokio::spawn(handle_future_result("kafka", key, run_kafka_loop(pc, req_id_rcv)));
+        spawn_and_log("run_kafka_loop", run_kafka_loop(pc, req_id_rcv));
         Ok(req_id_snd)
     }
 

@@ -21,7 +21,7 @@ use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::util::log_handle_result;
+use crate::util::log_result_handle;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -220,8 +220,8 @@ pub async fn consume(
         )
     );
 
-    log_handle_result("consumer_req_writer", wh).await;
-    log_handle_result("consumer_rsp_reader", rh).await;
+    log_result_handle("consumer_req_writer", wh).await;
+    log_result_handle("consumer_rsp_reader", rh).await;
 
     Ok(())
 }
@@ -327,8 +327,8 @@ pub async fn produce(
         producer_rsp_reader(tcp_stream)
     );
 
-    log_handle_result("producer_req_writer", wh).await;
-    log_handle_result("producer_rsp_reader", rh).await;
+    log_result_handle("producer_req_writer", wh).await;
+    log_result_handle("producer_rsp_reader", rh).await;
 
     Ok(())
 }
