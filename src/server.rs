@@ -127,7 +127,7 @@ fn j2k_req(jrp: JrpReq) -> Result<(usize, Ustr, i32, KfkReq, JrpExtra), ServerEr
     }
 }
 
-#[tracing::instrument(ret, skip(tcp_stream, client_cache, kfk_res_ctx_snd))]
+#[instrument(ret, skip(tcp_stream, client_cache, kfk_res_ctx_snd))]
 async fn server_req_reader(
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
     client_cache: Arc<KfkClientCache<JrpCtx>>,

@@ -88,16 +88,14 @@ impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, 
 }
 
 /// single check: just the result
-pub fn log_result<T, E> (name: &str, r: Result<T, E>) -> T
-where T: Default + Debug, E: Display {
+pub fn log_result<T, E> (name: &str, r: Result<T, E>)
+where T: Debug, E: Display {
     match r {
         Ok(value) => {
             info!("{}, res: {:?} - END", name, value);
-            value
         }
         Err(error) => {
             error!("{}, err: '{}' - END", name, error);
-            T::default()
         }
     }
 }
@@ -154,8 +152,7 @@ where T: Debug + Default + Send + 'static,
 //     })
 // }
 
-pub async fn join_with_signal<T>(name: &str, jh: JoinHandle<T>) -> ()
-where T: Default + Debug {
+pub async fn join_with_signal<T: Debug>(name: &str, jh: JoinHandle<T>) {
     select! {
         res = jh => {
             log_result(name, res);

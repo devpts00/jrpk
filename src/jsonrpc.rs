@@ -10,10 +10,9 @@ use std::ops::Range;
 use std::slice::from_raw_parts;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use serde_valid::Validate;
 use thiserror::Error;
-use tracing::info;
 use ustr::Ustr;
 
 #[derive(Error, Debug)]
@@ -177,7 +176,7 @@ impl<'a> JrpRecSend<'a> {
 #[serde(bound(deserialize = "'de: 'a"))]
 pub struct JrpRecFetch<'a> {
     pub offset: i64,
-    //pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<JrpData<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,7 +187,7 @@ pub struct JrpRecFetch<'a> {
 /// Kafka bytes might not be UTF-8 or JSON.
 impl <'a> JrpRecFetch<'a> {
     pub fn new (offset: i64, timestamp: DateTime<Utc>, key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
-        JrpRecFetch { offset, key, value }
+        JrpRecFetch { offset, timestamp, key, value }
     }
 }
 

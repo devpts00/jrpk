@@ -55,7 +55,7 @@ impl Decoder for JsonCodec {
     type Item = Bytes;
     type Error = BytesFrameDecoderError;
 
-    #[instrument]
+    #[instrument(level="trace", skip(self))]
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
 
         if enabled!(Level::TRACE) {

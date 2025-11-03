@@ -54,32 +54,10 @@ pub enum ClientError {
     Join(#[from] JoinError),
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ConsumerCtx {
-    name: &'static str,
-    path: Ustr,
-    address: Ustr,
-    topic: Ustr,
-    partition: i32,
-}
-
-impl ConsumerCtx {
-    fn new(name: &'static str, path: Ustr, address: Ustr, topic: Ustr, partition: i32) -> Self {
-        Self { name, path, address, topic, partition }
-    }
-}
-
-impl Display for ConsumerCtx {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "name: {}, path: {}, address: {}, topic: {}, partition: {}",
-            self.name, self.path, self.address, self.topic, self.partition
-        )
-    }
-}
-
 #[instrument(ret, skip(offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
-    ctx: ConsumerCtx,
+    topic: Ustr,
+    partition: i32,
     max_batch_byte_size: ByteSize,
     max_wait_ms: i32,
     mut offset_rcv: Receiver<Offset>,
@@ -90,7 +68,7 @@ async fn consumer_req_writer<'a>(
         // TODO: support all codecs
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
         let bytes = 1..max_batch_byte_size.as_u64() as i32;
-        let jrp_req_fetch = JrpReq::fetch(id, ctx.topic, ctx.partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
+        let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
         tcp_sink.send(jrp_req_fetch).await?;
         id = id + 1;
     }
@@ -103,20 +81,20 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
     match offset {
         Offset::Earliest => false,
         Offset::Latest => true,
-        Offset::Timestamp(timestamp) => true, //record.timestamp < timestamp,
+        Offset::Timestamp(timestamp) => record.timestamp < timestamp,
         Offset::Offset(pos) => record.offset < pos,
     }
 }
 
 #[instrument(ret, skip(offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
-    ctx: ConsumerCtx,
+    path: Ustr,
     from: Offset,
     until: Offset,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), ClientError> {
-    let file = tokio::fs::File::create(ctx.path).await?;
+    let file = tokio::fs::File::create(path).await?;
     let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
@@ -193,8 +171,8 @@ pub async fn consume(
     max_wait_ms: i32,
     max_frame_size: ByteSize,
 ) -> Result<(), ClientError> {
+
     let stream = TcpStream::connect(address.as_str()).await?;
-    let addr = stream.peer_addr()?;
     let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
     let framed = Framed::new(stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
@@ -202,7 +180,8 @@ pub async fn consume(
 
     let wh = spawn(
         consumer_req_writer(
-            ConsumerCtx::new("request-writer", path, address, topic, partition),
+            topic,
+            partition,
             batch_size,
             max_wait_ms,
             offset_rcv,
@@ -212,7 +191,7 @@ pub async fn consume(
 
     let rh = tokio::spawn(
         consumer_rsp_reader(
-            ConsumerCtx::new("request-writer", path, address, topic, partition),
+            path,
             from,
             until,
             offset_snd,
@@ -305,8 +284,8 @@ pub async fn produce(
     max_batch_byte_size: usize,
     max_rec_byte_size: usize,
 ) -> Result<(), ClientError> {
+
     let stream = TcpStream::connect(address.as_str()).await?;
-    let addr = stream.peer_addr()?;
     let codec = JsonCodec::new(max_frame_byte_size);
     let framed = Framed::with_capacity(stream, codec, max_frame_byte_size);
     let (tcp_sink, tcp_stream) = framed.split();

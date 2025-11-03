@@ -7,7 +7,7 @@ mod codec;
 mod client;
 
 use crate::server::listen;
-use crate::util::{handle_future_result, init_tracing, join_with_signal};
+use crate::util::{init_tracing, join_with_signal};
 use clap::Parser;
 use std::time::Duration;
 use tokio;
@@ -19,15 +19,8 @@ async fn run(args: args::Args) {
     match args.mode {
         Mode::Server { brokers, bind, max_frame_byte_size: max_frame_size, send_buffer_byte_size: send_buffer_size, recv_buffer_byte_size: recv_buffer_size, queue_len: queue_size } => {
             join_with_signal(
-                "main",
-                bind,
-                tokio::spawn(
-                    handle_future_result(
-                        "listen",
-                        bind,
-                        listen(brokers, bind, max_frame_size, send_buffer_size, recv_buffer_size, queue_size)
-                    )
-                )
+                "listen",
+                tokio::spawn(listen(brokers, bind, max_frame_size, send_buffer_size, recv_buffer_size, queue_size))
             ).await
         }
         Mode::Client { address, topic, partition, path, max_frame_byte_size: max_frame_size, command } => {
@@ -36,21 +29,16 @@ async fn run(args: args::Args) {
                 Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size } => {
                     join_with_signal(
                         "produce",
-                        address.clone(),
                         tokio::spawn(
-                            handle_future_result(
-                                "produce",
-                                address.clone(),
-                                produce(
-                                    path,
-                                    address,
-                                    topic,
-                                    partition,
-                                    max_frame_size.as_u64() as usize,
-                                    max_batch_rec_count as usize,
-                                    max_batch_byte_size.as_u64() as usize,
-                                    max_rec_byte_size.as_u64() as usize,
-                                )
+                            produce(
+                                path,
+                                address,
+                                topic,
+                                partition,
+                                max_frame_size.as_u64() as usize,
+                                max_batch_rec_count as usize,
+                                max_batch_byte_size.as_u64() as usize,
+                                max_rec_byte_size.as_u64() as usize,
                             )
                         )
                     ).await
@@ -58,12 +46,17 @@ async fn run(args: args::Args) {
                 Command::Consume { from, until, max_batch_byte_size: batch_size, max_wait_ms } => {
                     join_with_signal(
                         "consume",
-                        address.clone(),
                         tokio::spawn(
-                            handle_future_result(
-                                "consume",
-                                address.clone(),
-                                consume(path, address, topic, partition, from, until, batch_size, max_wait_ms, max_frame_size)
+                            consume(
+                                path,
+                                address,
+                                topic,
+                                partition,
+                                from,
+                                until,
+                                batch_size,
+                                max_wait_ms,
+                                max_frame_size
                             )
                         )
                     ).await
