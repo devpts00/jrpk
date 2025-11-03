@@ -1,5 +1,6 @@
 use std::borrow::Cow;
-use std::fmt::{Display, Formatter};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use base64::DecodeError;
 use bytes::Bytes;
 use bytesize::ByteSize;
@@ -8,7 +9,6 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use log::warn;
 use serde_json::value::RawValue;
-use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -16,11 +16,11 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, error, info, instrument, span, trace, Instrument, Level, Span};
+use tracing::{debug, error, instrument, trace, Instrument, Level, Span};
 use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::util::log_result_handle;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
@@ -86,6 +86,32 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
     }
 }
 
+#[instrument(ret, skip(writer, records))]
+fn write_records(
+    id: usize,
+    records: Vec<JrpRecFetch>,
+    until: Offset,
+    writer: &mut BufWriter<File>,
+) -> Result<(), ClientError> {
+    for record in records {
+        if less_record_offset(&record, until) {
+            match record.value {
+                Some(data) => {
+                    trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
+                    // TODO: differentiate between binary and text data
+                    let buf = data.as_bytes()?;
+                    writer.write_all(buf.as_ref())?;
+                    writer.write_all(b"\n")?;
+                }
+                None => {
+                    warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[instrument(ret, skip(offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     path: Ustr,
@@ -94,8 +120,8 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), ClientError> {
-    let file = tokio::fs::File::create(path).await?;
-    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024 * 1024, file);
+    let file = File::create(path)?;
+    let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
@@ -115,26 +141,7 @@ async fn consumer_rsp_reader(
                                 offset_snd.send(Offset::Offset(last.offset + 1)).await?;
                             }
                         }
-                        async {
-                            for record in records {
-                                if less_record_offset(&record, until) {
-                                    match record.value {
-                                        Some(data) => {
-                                            trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
-                                            // TODO: differentiate between binary and text data
-                                            let buf = data.as_bytes()?;
-                                            writer.write_all(&buf).await?;
-                                            writer.write_all(b"\n").await?;
-                                        }
-                                        None => {
-                                            warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
-                                        }
-                                    }
-                                }
-                            }
-                            Result::<(), ClientError>::Ok(())
-                        }.await?;
-
+                        write_records(id, records, until, &mut writer)?;
                         if done {
                             break;
                         }
@@ -155,7 +162,7 @@ async fn consumer_rsp_reader(
             }
         }
     }
-    writer.flush().await?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -205,7 +212,7 @@ pub async fn consume(
     Ok(())
 }
 
-#[instrument]
+#[instrument(ret, skip(tcp_sink))]
 pub async fn producer_req_writer(
     path: Ustr,
     topic: Ustr,
@@ -216,46 +223,51 @@ pub async fn producer_req_writer(
     max_rec_byte_size: usize,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
 ) -> Result<(), ClientError> {
-    let file = tokio::fs::File::open(path).await?;
-    let reader = BufReader::with_capacity(32 * 1024 * 1024, file);
-    let codec = JsonCodec::new(max_frame_size);
-    let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
-    let mut id: usize = 0;
-    let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
-    let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
-    let mut size: usize = 0;
-    while let Some(result) = file_stream.next().await {
-        let frame = result?;
-        let json: &RawValue = unsafe { JrpBytes::from_bytes(&frame)? };
-        let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
-        let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
-        size += frame.len();
-        frames.push(frame);
-        records.push(jrp_rec);
-        if size > max_batch_byte_size - max_rec_byte_size || records.len() >= max_batch_rec_count {
-            let jrp_req = JrpReq::send(id, topic, partition, records);
-            records = Vec::with_capacity(max_batch_rec_count);
-            let jrp_bytes = JrpBytes::new(jrp_req, frames);
-            frames = Vec::with_capacity(max_batch_rec_count);
-            tcp_sink.send(jrp_bytes).await?;
-            id += 1;
-            size = 0;
+
+    let x = async {
+        let file = tokio::fs::File::open(path).await?;
+        let reader = tokio::io::BufReader::with_capacity(32 * 1024 * 1024, file);
+        let codec = JsonCodec::new(max_frame_size);
+        let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
+        let mut id: usize = 0;
+        let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
+        let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
+        let mut size: usize = 0;
+        while let Some(result) = file_stream.next().await {
+            let frame = result?;
+            let json: &RawValue = unsafe { JrpBytes::from_bytes(&frame)? };
+            let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
+            let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
+            size += frame.len();
+            frames.push(frame);
+            records.push(jrp_rec);
+            if size > max_batch_byte_size - max_rec_byte_size || records.len() >= max_batch_rec_count {
+                let jrp_req = JrpReq::send(id, topic, partition, records);
+                records = Vec::with_capacity(max_batch_rec_count);
+                let jrp_bytes = JrpBytes::new(jrp_req, frames);
+                frames = Vec::with_capacity(max_batch_rec_count);
+                tcp_sink.send(jrp_bytes).await?;
+                id += 1;
+                size = 0;
+            }
         }
-    }
 
-    if !records.is_empty() && !frames.is_empty() {
-        let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
-        let jrp_bytes = JrpBytes::new(jrp_req, frames);
-        tcp_sink.send(jrp_bytes).await?;
-    }
+        if !records.is_empty() && !frames.is_empty() {
+            let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
+            let jrp_bytes = JrpBytes::new(jrp_req, frames);
+            tcp_sink.send(jrp_bytes).await?;
+        }
 
-    tcp_sink.flush().await?;
+        tcp_sink.flush().await
+        //tcp_sink.close().await
+
+    }.await;
+
     tcp_sink.close().await?;
-
     Ok(())
 }
 
-#[instrument]
+#[instrument(ret, skip(tcp_stream))]
 pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>) -> Result<(), ClientError> {
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
@@ -273,7 +285,7 @@ pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, J
     Ok(())
 }
 
-#[instrument]
+#[instrument(ret)]
 pub async fn produce(
     path: Ustr,
     address: Ustr,

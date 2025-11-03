@@ -63,7 +63,7 @@ client-release-consume: build-release
 client-debug-produce: build-debug
 	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk \
 		client \
- 		--path=json/people_40mb.json \
+ 		--path=json/employees.json \
  		--address=jrpk:1133 \
  		--topic=posts \
  		--partition=0 \
