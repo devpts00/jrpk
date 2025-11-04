@@ -6,7 +6,7 @@ use bytes::Bytes;
 use bytesize::ByteSize;
 use thiserror::Error;
 use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, TryStreamExt};
 use log::warn;
 use serde_json::value::RawValue;
 use tokio::net::TcpStream;
@@ -19,6 +19,7 @@ use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, instrument, trace, Instrument, Level, Span};
 use ustr::Ustr;
 use crate::args::Offset;
+use crate::async_clean_return;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::util::log_result_handle;
@@ -86,10 +87,11 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
     }
 }
 
-#[instrument(ret, skip(writer, records))]
-fn write_records(
+#[allow(clippy::needless_lifetimes)]
+#[instrument(ret, level="trace", skip(writer, records))]
+fn write_records<'a>(
     id: usize,
-    records: Vec<JrpRecFetch>,
+    records: Vec<JrpRecFetch<'a>>,
     until: Offset,
     writer: &mut BufWriter<File>,
 ) -> Result<(), ClientError> {
@@ -223,46 +225,40 @@ pub async fn producer_req_writer(
     max_rec_byte_size: usize,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
 ) -> Result<(), ClientError> {
-
-    let x = async {
-        let file = tokio::fs::File::open(path).await?;
-        let reader = tokio::io::BufReader::with_capacity(32 * 1024 * 1024, file);
-        let codec = JsonCodec::new(max_frame_size);
-        let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
-        let mut id: usize = 0;
-        let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
-        let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
-        let mut size: usize = 0;
-        while let Some(result) = file_stream.next().await {
-            let frame = result?;
-            let json: &RawValue = unsafe { JrpBytes::from_bytes(&frame)? };
-            let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
-            let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
-            size += frame.len();
-            frames.push(frame);
-            records.push(jrp_rec);
-            if size > max_batch_byte_size - max_rec_byte_size || records.len() >= max_batch_rec_count {
-                let jrp_req = JrpReq::send(id, topic, partition, records);
-                records = Vec::with_capacity(max_batch_rec_count);
-                let jrp_bytes = JrpBytes::new(jrp_req, frames);
-                frames = Vec::with_capacity(max_batch_rec_count);
-                tcp_sink.send(jrp_bytes).await?;
-                id += 1;
-                size = 0;
-            }
-        }
-
-        if !records.is_empty() && !frames.is_empty() {
-            let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
+    let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
+    let reader = tokio::io::BufReader::with_capacity(32 * 1024 * 1024, file);
+    let codec = JsonCodec::new(max_frame_size);
+    let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
+    let mut id: usize = 0;
+    let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
+    let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
+    let mut size: usize = 0;
+    while let Some(result) = file_stream.next().await {
+        let frame = result?;
+        let json: &RawValue = unsafe { async_clean_return!( JrpBytes::from_bytes(&frame), tcp_sink.close().await) };
+        let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
+        let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
+        size += frame.len();
+        frames.push(frame);
+        records.push(jrp_rec);
+        if size > max_batch_byte_size - max_rec_byte_size || records.len() >= max_batch_rec_count {
+            let jrp_req = JrpReq::send(id, topic, partition, records);
+            records = Vec::with_capacity(max_batch_rec_count);
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
-            tcp_sink.send(jrp_bytes).await?;
+            frames = Vec::with_capacity(max_batch_rec_count);
+            async_clean_return!(tcp_sink.send(jrp_bytes).await, tcp_sink.close().await);
+            id += 1;
+            size = 0;
         }
+    }
 
-        tcp_sink.flush().await
-        //tcp_sink.close().await
+    if !records.is_empty() && !frames.is_empty() {
+        let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
+        let jrp_bytes = JrpBytes::new(jrp_req, frames);
+        async_clean_return!(tcp_sink.send(jrp_bytes).await, tcp_sink.close().await);
+    }
 
-    }.await;
-
+    async_clean_return!(tcp_sink.flush().await, tcp_sink.close().await);
     tcp_sink.close().await?;
     Ok(())
 }

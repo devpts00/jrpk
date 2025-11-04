@@ -16,6 +16,28 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+
+#[macro_export]
+macro_rules! async_clean_return {
+    ($res:expr, $cleanup:expr) => {{
+        match $res {
+            Ok(x) => {
+                x
+            },
+            Err(e1) => {
+                return match $cleanup {
+                    Ok(_) => {
+                        Err(e1.into())
+                    },
+                    Err(e2) => {
+                        Err(e2.into())
+                    }
+                }
+            }
+        }
+    }};
+}
+
 pub fn init_tracing() {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer()
