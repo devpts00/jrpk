@@ -2,6 +2,7 @@ volumes:
   kafka:
   cargo:
   target:
+  grafana:
 
 services:
 
@@ -47,15 +48,26 @@ services:
       kfk-init:
         condition: service_completed_successfully
 
-  jgr:
+  pms:
     profiles:
       - env
-    image: jaegertracing/all-in-one
+    image: prom/prometheus
     ports:
-      - "127.0.0.1:16686:16686"
-    environment:
-      - LOG_LEVEL=debug
-      - COLLECTOR_OTLP_ENABLED=true
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+
+  grf:
+    profiles:
+      - env
+    image: grafana/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana:/var/lib/grafana
+      - ./datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
 
   rst:
     profiles:
