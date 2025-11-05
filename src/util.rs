@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use rskafka::record::Record;
 use socket2::SockRef;
 use std::error::Error;
@@ -16,7 +17,6 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-
 #[macro_export]
 macro_rules! async_clean_return {
     ($res:expr, $cleanup:expr) => {{
@@ -25,14 +25,8 @@ macro_rules! async_clean_return {
                 x
             },
             Err(e1) => {
-                return match $cleanup {
-                    Ok(_) => {
-                        Err(e1.into())
-                    },
-                    Err(e2) => {
-                        Err(e2.into())
-                    }
-                }
+                $cleanup.unwrap();
+                return Err(e1.into())
             }
         }
     }};
