@@ -59,6 +59,11 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yaml
 
+  pmg:
+    profiles:
+      - env
+    image: prom/pushgateway
+
   grf:
     profiles:
       - env

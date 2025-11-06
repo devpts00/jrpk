@@ -3,3 +3,7 @@ scrape_configs:
     static_configs:
       - targets:
           - 'jrpk:9090'
+  - job_name: 'jrpk-client'
+    static_configs:
+      - targets:
+          - 'pmg:9091'
