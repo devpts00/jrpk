@@ -6,6 +6,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::from_utf8;
 use std::sync::Once;
+use metrics::{with_recorder, Counter, Key, Label, Metadata};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpStream;
 use tokio::{select, spawn};
@@ -31,6 +32,11 @@ macro_rules! async_clean_return {
             }
         }
     }};
+}
+
+pub fn mk_counter(name: &'static str, labels: &'static [Label], meta: &Metadata<'static>) -> Counter {
+    let key = Key::from_static_parts(name, labels);
+    with_recorder(|r| r.register_counter(&key, meta))
 }
 
 pub fn init_tracing() {
