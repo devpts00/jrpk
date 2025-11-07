@@ -11,6 +11,8 @@ use futures::{SinkExt, StreamExt, TryStreamExt};
 use log::warn;
 use metrics::{counter, metadata_var, with_recorder, Counter, IntoLabels, Key, KeyHasher, Label, Metadata, Recorder};
 use metrics_exporter_prometheus::{BuildError, PrometheusBuilder};
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus::register_int_counter;
 use serde_json::value::RawValue;
 use tokio::net::TcpStream;
 use tokio::spawn;
@@ -147,6 +149,23 @@ static PRODUCE_LABELS: [Label; 2] = [
     Label::from_static_parts("mode", "client"),
     Label::from_static_parts("command", "produce")
 ];
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct Labels2 {
+    mode: String,
+    command: String,
+}
+
+async fn test_prom() {
+    let l = Labels2 { mode: "client".to_string(), command: "produce".to_string() };
+    let mut r = prometheus_client::registry::Registry::default();
+    let c = prometheus_client::metrics::counter::Counter::<u64>::default();
+    let f = prometheus_client::metrics::family::Family::<Labels2, prometheus_client::metrics::counter::Counter>::default();
+    r.register("writes", "writes", f.clone());
+    let c = f.get_or_create(&l);
+    c.inc();
+}
+
 
 #[instrument(ret, skip(offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(

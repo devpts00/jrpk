@@ -8,6 +8,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 metrics = "0.24.2"
 metrics-exporter-prometheus = "0.17.2"
+prometheus-client = "0.24.0"
 clap = { version = "4.5.26", features = ["derive"] }
 bytes = "1.10.1"
 futures = "0.3.31"
