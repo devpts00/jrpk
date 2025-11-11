@@ -8,11 +8,12 @@ use bytesize::ByteSize;
 use thiserror::Error;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt, TryStreamExt};
-use log::warn;
-use metrics::{counter, metadata_var, with_recorder, Counter, IntoLabels, Key, KeyHasher, Label, Metadata, Recorder};
-use metrics_exporter_prometheus::{BuildError, PrometheusBuilder};
-use prometheus_client::encoding::EncodeLabelSet;
-use prometheus::register_int_counter;
+use log::{info, warn};
+use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue};
+use prometheus_client::encoding::text::encode;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::registry::Registry;
 use serde_json::value::RawValue;
 use tokio::net::TcpStream;
 use tokio::spawn;
@@ -27,7 +28,8 @@ use crate::args::Offset;
 use crate::async_clean_return;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::util::{log_result_handle, mk_counter};
+use crate::metrics::{prometheus_pushgateway, Metrics};
+use crate::util::log_result_handle;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -58,30 +60,27 @@ pub enum ClientError {
     Base64(#[from] DecodeError),
     #[error("join: {0}")]
     Join(#[from] JoinError),
-    #[error("pushgateway: {0}")]
-    Pushgateway(#[from] BuildError)
 }
 
-#[instrument(ret, skip(offset_rcv, tcp_sink))]
+#[instrument(ret, skip(metrics, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     topic: Ustr,
     partition: i32,
     max_batch_byte_size: ByteSize,
     max_wait_ms: i32,
+    metrics: Metrics,
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpReq<'a>>,
 ) -> Result<(), ClientError> {
-
-    let tcp_write_count = mk_counter("tcp_write_count", &CONSUME_LABELS, &METRICS_META);
-
+    let tcp_write_count = metrics.count("client", "consume", "tcp", "write");
     let mut id = 0;
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
         let bytes = 1..max_batch_byte_size.as_u64() as i32;
         let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
-        tcp_write_count.increment(1);
         tcp_sink.send(jrp_req_fetch).await?;
+        tcp_write_count.inc();
         id = id + 1;
     }
     tcp_sink.flush().await?;
@@ -104,9 +103,9 @@ async fn write_records<'a>(
     id: usize,
     records: Vec<JrpRecFetch<'a>>,
     until: Offset,
+    file_write_count: &Counter,
+    file_write_bytes: &Counter,
     writer: &mut BufWriter<File>,
-    counter: &Counter,
-    bytes: &Counter,
 ) -> Result<(), ClientError> {
     for record in records {
         if less_record_offset(&record, until) {
@@ -115,18 +114,14 @@ async fn write_records<'a>(
                     trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
                     // TODO: differentiate between binary and text data
                     let buf = data.as_bytes()?;
-                    counter.increment(1);
-                    bytes.increment(buf.len() as u64 + 1);
-
-                    // writer.write_all(buf.as_ref())?;
-                    // writer.write_all(b"\n")?;
-
                     block_in_place(|| {
                          writer.write_all(buf.as_ref())
                              .and_then(|_|
                                  writer.write_all(b"\n")
                              )
                     })?;
+                    file_write_count.inc();
+                    file_write_bytes.inc_by(buf.len() as u64);
                 }
                 None => {
                     warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
@@ -137,57 +132,27 @@ async fn write_records<'a>(
     Ok(())
 }
 
-const METRICS_PATH: &'static str = module_path!();
-const METRICS_META: Metadata<'static> = Metadata::new(METRICS_PATH, metrics::Level::INFO, Some(METRICS_PATH));
 
-static CONSUME_LABELS: [Label; 2] = [
-    Label::from_static_parts("mode", "client"),
-    Label::from_static_parts("command", "consume")
-];
-
-static PRODUCE_LABELS: [Label; 2] = [
-    Label::from_static_parts("mode", "client"),
-    Label::from_static_parts("command", "produce")
-];
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct Labels2 {
-    mode: String,
-    command: String,
-}
-
-async fn test_prom() {
-    let l = Labels2 { mode: "client".to_string(), command: "produce".to_string() };
-    let mut r = prometheus_client::registry::Registry::default();
-    let c = prometheus_client::metrics::counter::Counter::<u64>::default();
-    let f = prometheus_client::metrics::family::Family::<Labels2, prometheus_client::metrics::counter::Counter>::default();
-    r.register("writes", "writes", f.clone());
-    let c = f.get_or_create(&l);
-    c.inc();
-}
-
-
-#[instrument(ret, skip(offset_snd, tcp_stream))]
+#[instrument(ret, skip(metrics, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     path: Ustr,
     from: Offset,
     until: Offset,
+    metrics: Metrics,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), ClientError> {
-
-    let tcp_read_count = mk_counter("tcp_read_count", &CONSUME_LABELS, &METRICS_META);
-    let tcp_read_bytes = mk_counter("tcp_read_bytes", &CONSUME_LABELS, &METRICS_META);
-    let file_write_count = mk_counter("file_write_count", &CONSUME_LABELS, &METRICS_META);
-    let file_write_bytes = mk_counter("file_write_bytes", &CONSUME_LABELS, &METRICS_META);
-
+    let tcp_read_count = metrics.count("client", "consume", "tcp", "read");
+    let tcp_read_bytes = metrics.bytes("client", "consume", "tcp", "read");
+    let file_write_count = metrics.count("client", "consume", "file", "write");
+    let file_write_bytes = metrics.bytes("client", "consume", "file", "write");
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
-        tcp_read_count.increment(1);
-        tcp_read_bytes.increment(frame.len() as u64);
+        tcp_read_count.inc();
+        tcp_read_bytes.inc_by(frame.len() as u64);
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
         match jrp_rsp.take_result() {
@@ -204,7 +169,7 @@ async fn consumer_rsp_reader(
                                 offset_snd.send(Offset::Offset(last.offset + 1)).await?;
                             }
                         }
-                        write_records(id, records, until, &mut writer, &file_write_count, &file_write_bytes).await?;
+                        write_records(id, records, until, &file_write_count, &file_write_bytes,  &mut writer).await?;
                         if done {
                             break;
                         }
@@ -229,18 +194,6 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
-fn init_push_gateway() -> Result<(), BuildError> {
-    let builder = PrometheusBuilder::new()
-        .with_push_gateway(
-            "http://pmg:9091/metrics/job/jrpk",
-            Duration::from_secs(1),
-            None,
-            None,
-            true
-        )?;
-    builder.install()
-}
-
 #[instrument(ret)]
 pub async fn consume(
     path: Ustr,
@@ -254,7 +207,8 @@ pub async fn consume(
     max_frame_size: ByteSize,
 ) -> Result<(), ClientError> {
 
-    init_push_gateway()?;
+    let mut registry = Registry::default();
+    let metrics = Metrics::new(&mut registry);
 
     let stream = TcpStream::connect(address.as_str()).await?;
     let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
@@ -262,30 +216,44 @@ pub async fn consume(
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
 
+    let mut registry = Registry::default();
+    let metrics = Metrics::new(&mut registry);
+    let c = metrics.count("client", "consume", "tcp", "read");
+    c.inc();
+
     let wh = spawn(
         consumer_req_writer(
             topic,
             partition,
             batch_size,
             max_wait_ms,
+            metrics.clone(),
             offset_rcv,
             tcp_sink
         )
     );
 
-    let rh = tokio::spawn(
+    let rh = spawn(
         consumer_rsp_reader(
             path,
             from,
             until,
+            metrics,
             offset_snd,
             tcp_stream
         )
     );
 
-    log_result_handle("consumer_req_writer", wh).await;
-    log_result_handle("consumer_rsp_reader", rh).await;
+    let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
+    let ph = spawn(
+        prometheus_pushgateway(registry, done_rcv)
+    );
 
+    // log_result_handle("consumer_req_writer", wh).await;
+    // log_result_handle("consumer_rsp_reader", rh).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    let _ = done_snd.send(());
+    log_result_handle("consumer_prometheus_gateway", ph).await;
     Ok(())
 }
 

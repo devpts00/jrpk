@@ -5,6 +5,7 @@ mod jsonrpc;
 mod kafka;
 mod codec;
 mod client;
+mod metrics;
 
 use crate::server::listen;
 use crate::util::{init_tracing, join_with_signal};
@@ -56,7 +57,7 @@ async fn run(args: args::Args) {
                                 until,
                                 batch_size,
                                 max_wait_ms,
-                                max_frame_size
+                                max_frame_size,
                             )
                         )
                     ).await

@@ -1,18 +1,15 @@
-use std::convert::Infallible;
 use rskafka::record::Record;
 use socket2::SockRef;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::from_utf8;
-use std::sync::Once;
-use metrics::{with_recorder, Counter, Key, Label, Metadata};
-use metrics_exporter_prometheus::PrometheusBuilder;
+use log::log;
 use tokio::net::TcpStream;
 use tokio::{select, spawn};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{debug, error, event, info, Level};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, Layer};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -34,11 +31,6 @@ macro_rules! async_clean_return {
     }};
 }
 
-pub fn mk_counter(name: &'static str, labels: &'static [Label], meta: &Metadata<'static>) -> Counter {
-    let key = Key::from_static_parts(name, labels);
-    with_recorder(|r| r.register_counter(&key, meta))
-}
-
 pub fn init_tracing() {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer()
@@ -56,10 +48,6 @@ pub fn init_tracing() {
             )
         )
         .init();
-}
-
-pub fn init_metrics() {
-    let x = PrometheusBuilder::default();
 }
 
 #[derive(Debug)]
@@ -143,6 +131,13 @@ pub async fn log_result_handle<T: Debug, E: Display>(name: &'static str, handle:
         Err(err) => {
             error!("{}, err: '{}'", name, err);
         }
+    }
+}
+
+pub async fn logf<T: Debug, E: Error, F: Future<Output=Result<T, E>>>(f: F) {
+    match f.await {
+        Ok(val) => debug!("result: {:?}", val),
+        Err(err) => error!("error: {}", err),
     }
 }
 
