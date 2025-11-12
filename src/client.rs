@@ -16,7 +16,7 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::registry::Registry;
 use serde_json::value::RawValue;
 use tokio::net::TcpStream;
-use tokio::spawn;
+use tokio::{spawn, try_join};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
@@ -62,7 +62,7 @@ pub enum ClientError {
     Join(#[from] JoinError),
 }
 
-#[instrument(ret, skip(metrics, offset_rcv, tcp_sink))]
+#[instrument(ret, err, skip(metrics, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     topic: Ustr,
     partition: i32,
@@ -98,7 +98,7 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
 }
 
 #[allow(clippy::needless_lifetimes)]
-#[instrument(ret, level="trace", skip(writer, records))]
+#[instrument(ret, err, level="trace", skip(writer, records))]
 async fn write_records<'a>(
     id: usize,
     records: Vec<JrpRecFetch<'a>>,
@@ -133,7 +133,7 @@ async fn write_records<'a>(
 }
 
 
-#[instrument(ret, skip(metrics, offset_snd, tcp_stream))]
+#[instrument(ret, err, skip(metrics, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     path: Ustr,
     from: Offset,
@@ -194,7 +194,7 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
-#[instrument(ret)]
+#[instrument(ret, err)]
 pub async fn consume(
     path: Ustr,
     address: Ustr,
@@ -209,17 +209,21 @@ pub async fn consume(
 
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
+    let c = metrics.count("client", "consume", "tcp", "read");
+    c.inc();
+
+    let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
+    let ph = spawn(async move{
+        let address = "pmg:9091".to_string();
+        let period = Duration::from_secs(1);
+        prometheus_pushgateway(address, period, registry, done_rcv)
+    }.await);
 
     let stream = TcpStream::connect(address.as_str()).await?;
     let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
     let framed = Framed::new(stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
-
-    let mut registry = Registry::default();
-    let metrics = Metrics::new(&mut registry);
-    let c = metrics.count("client", "consume", "tcp", "read");
-    c.inc();
 
     let wh = spawn(
         consumer_req_writer(
@@ -244,18 +248,9 @@ pub async fn consume(
         )
     );
 
-    let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
-    let ph = spawn(async move{
-        let address = "pmg:9091".to_string();
-        let period = Duration::from_secs(1);
-        prometheus_pushgateway(address, period, registry, done_rcv)
-    }.await);
-
-    logh("consumer_req_writer", wh).await;
-    logh("consumer_rsp_reader", rh).await;
-
+    let _ = try_join!(wh, rh);
     let _ = done_snd.send(());
-    logh("consumer_prometheus_gateway", ph).await;
+    let _ = ph.await?;
 
     Ok(())
 }

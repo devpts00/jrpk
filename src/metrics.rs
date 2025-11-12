@@ -1,9 +1,8 @@
-use std::io::{Read, Write};
 use std::convert::Infallible;
 use std::time::Duration;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, StreamBody};
-use hyper::client::conn::http1::{handshake, SendRequest};
+use http_body_util::{BodyExt, Full};
+use hyper::client::conn::http1::{handshake, Connection, SendRequest};
 use hyper::{http, Method, Uri};
 use hyper::http::uri::{Authority, InvalidUri};
 use hyper_util::rt::TokioIo;
@@ -15,11 +14,11 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::registry::{Registry, Unit};
 use thiserror::Error;
 use tokio::net::TcpStream;
-use tokio::{spawn, task_local};
+use tokio::{spawn, try_join};
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::oneshot::Receiver;
-use tracing::{debug, info, instrument, warn};
-use crate::util::logh;
+use tokio::task::JoinError;
+use tracing::{debug, instrument, warn};
 
 #[derive(Error, Debug)]
 pub enum MetricsError {
@@ -32,7 +31,9 @@ pub enum MetricsError {
     #[error("http: {0}")]
     Http(#[from] http::Error),
     #[error("uri: {0}")]
-    Uri(#[from] InvalidUri)
+    Uri(#[from] InvalidUri),
+    #[error("join: {0}")]
+    Join(#[from] JoinError)
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -97,14 +98,14 @@ impl Metrics {
     }
 }
 
-#[instrument(level="debug", ret, skip(registry, snd_req))]
+#[instrument(level="debug", ret, err, skip(registry, snd_req))]
 async fn push(
     registry: &Registry,
     uri: &Uri,
     auth: &Authority,
     snd_req: &mut SendRequest<Full<Bytes>>
 ) -> Result<(), MetricsError> {
-    let mut buf = String::with_capacity(1024);
+    let mut buf = String::with_capacity(16 * 1024);
     encode(&mut buf, registry)?;
     let req = hyper::Request::builder()
         .method(Method::POST)
@@ -126,7 +127,7 @@ async fn push(
     Ok(())
 }
 
-#[instrument(ret, skip(registry, done_rcv, snd_req))]
+#[instrument(ret, err, skip(registry, done_rcv, snd_req))]
 async fn push_loop(
     registry: Registry,
     period: Duration,
@@ -143,14 +144,21 @@ async fn push_loop(
     Ok(())
 }
 
-#[instrument(ret, skip(registry, done_rcv))]
+#[instrument(ret, err, skip(conn))]
+async fn conn_loop(conn: Connection<TokioIo<TcpStream>, Full<Bytes>>) -> Result<(), Infallible> {
+    if let Err(err) = conn.await {
+        error!("connection error: {}", err);
+    }
+    Ok(())
+}
+
+#[instrument(ret, err, skip(registry, done_rcv))]
 pub async fn prometheus_pushgateway(
     address: String,
     period: Duration,
     registry: Registry,
     done_rcv: Receiver<()>
 ) -> Result<(), MetricsError> {
-    // open tcp stream and convert it to hyper facade
     let auth: Authority = address.parse()?;
     let uri = Uri::builder()
         .scheme("http")
@@ -160,20 +168,8 @@ pub async fn prometheus_pushgateway(
     let tcp = TcpStream::connect(address).await?;
     let io = TokioIo::new(tcp);
     let (snd_req, conn) = handshake(io).await?;
-    // let tokio pump the bytes
-    let ch = spawn(async move {
-        if let Err(err) = conn.await {
-            error!("connection error: {}", err);
-        }
-        Result::<(), Infallible>::Ok(())
-    });
-    // pass the requests to the sender entry point
-    let ph = spawn(
-        push_loop(registry, period, uri, auth, done_rcv, snd_req)
-    );
-
-    logh("prometheus-pushgateway, connection", ch).await;
-    logh("prometheus-pushgateway, pusher", ph).await;
-
+    let ch = spawn(conn_loop(conn));
+    let ph = spawn(push_loop(registry, period, uri, auth, done_rcv, snd_req));
+    let _ = try_join!(ch, ph)?;
     Ok(())
 }

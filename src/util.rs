@@ -136,26 +136,6 @@ pub async fn logh<T: Debug, E: Display>(name: &'static str, handle: JoinHandle<R
     }
 }
 
-macro_rules! logh_m {
-    ($name:ident($($args:tt)*)) => {
-        match $name($($args)*).await {
-            Ok(res) => {
-                match res {
-                    Ok(val) => {
-                        info!("{}, res: {:?}", name, val);
-                    }
-                    Err(err) => {
-                        error!("{}, err: '{}'", name, err);
-                    }
-                }
-            }
-            Err(err) => {
-                error!("{}, err: '{}'", name, err);
-            }
-        }
-    };
-}
-
 pub async fn logf<T: Debug, E: Error, F: Future<Output=Result<T, E>>>(f: F) {
     match f.await {
         Ok(val) => debug!("result: {:?}", val),
@@ -169,7 +149,7 @@ macro_rules! logf_m {
             Ok(val) => debug!("result: {:?}", val),
             Err(err) => error!("error: {}", err),
         }
-    };
+    }
 }
 
 /// spawn the task to poll the future and log the result
