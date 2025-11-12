@@ -6,7 +6,7 @@ use std::future::Future;
 use std::str::from_utf8;
 use log::log;
 use tokio::net::TcpStream;
-use tokio::{select, spawn};
+use tokio::{select, spawn, task_local};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, event, info, Level};
@@ -102,8 +102,10 @@ impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, 
     }
 }
 
+
+
 /// single check: just the result
-pub fn log_result<T, E> (name: &str, r: Result<T, E>)
+pub fn logr<T, E> (name: &'static str, r: Result<T, E>)
 where T: Debug, E: Display {
     match r {
         Ok(value) => {
@@ -116,7 +118,7 @@ where T: Debug, E: Display {
 }
 
 /// double check: 1st result of joining the handle, 2nd result of the routine represented by the handle
-pub async fn log_result_handle<T: Debug, E: Display>(name: &'static str, handle: JoinHandle<Result<T, E>>) {
+pub async fn logh<T: Debug, E: Display>(name: &'static str, handle: JoinHandle<Result<T, E>>) {
     match handle.await {
         Ok(res) => {
             match res {
@@ -134,11 +136,40 @@ pub async fn log_result_handle<T: Debug, E: Display>(name: &'static str, handle:
     }
 }
 
+macro_rules! logh_m {
+    ($name:ident($($args:tt)*)) => {
+        match $name($($args)*).await {
+            Ok(res) => {
+                match res {
+                    Ok(val) => {
+                        info!("{}, res: {:?}", name, val);
+                    }
+                    Err(err) => {
+                        error!("{}, err: '{}'", name, err);
+                    }
+                }
+            }
+            Err(err) => {
+                error!("{}, err: '{}'", name, err);
+            }
+        }
+    };
+}
+
 pub async fn logf<T: Debug, E: Error, F: Future<Output=Result<T, E>>>(f: F) {
     match f.await {
         Ok(val) => debug!("result: {:?}", val),
         Err(err) => error!("error: {}", err),
     }
+}
+
+macro_rules! logf_m {
+    ($name:ident($($args:tt)*)) => {
+        match $name($($args)*).await {
+            Ok(val) => debug!("result: {:?}", val),
+            Err(err) => error!("error: {}", err),
+        }
+    };
 }
 
 /// spawn the task to poll the future and log the result
@@ -147,14 +178,14 @@ where T: Debug + Default + Send + 'static,
       E: Display + Send + 'static,
       F: Future<Output = Result<T, E>> + Send + 'static {
     spawn(async move {
-        log_result(name, future.await);
+        logr(name, future.await);
     });
 }
 
-pub async fn join_with_signal<T: Debug>(name: &str, jh: JoinHandle<T>) {
+pub async fn join_with_signal<T: Debug>(name: &'static str, jh: JoinHandle<T>) {
     select! {
         res = jh => {
-            log_result(name, res);
+            logr(name, res);
         },
         _ = tokio::signal::ctrl_c() => {
             info!("{} - signal, exiting...", name);

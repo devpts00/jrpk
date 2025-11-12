@@ -29,7 +29,7 @@ use crate::async_clean_return;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::metrics::{prometheus_pushgateway, Metrics};
-use crate::util::log_result_handle;
+use crate::util::logh;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -245,15 +245,18 @@ pub async fn consume(
     );
 
     let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
-    let ph = spawn(
-        prometheus_pushgateway(registry, done_rcv)
-    );
+    let ph = spawn(async move{
+        let address = "pmg:9091".to_string();
+        let period = Duration::from_secs(1);
+        prometheus_pushgateway(address, period, registry, done_rcv)
+    }.await);
 
-    // log_result_handle("consumer_req_writer", wh).await;
-    // log_result_handle("consumer_rsp_reader", rh).await;
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    logh("consumer_req_writer", wh).await;
+    logh("consumer_rsp_reader", rh).await;
+
     let _ = done_snd.send(());
-    log_result_handle("consumer_prometheus_gateway", ph).await;
+    logh("consumer_prometheus_gateway", ph).await;
+
     Ok(())
 }
 
@@ -357,8 +360,8 @@ pub async fn produce(
         producer_rsp_reader(tcp_stream)
     );
 
-    log_result_handle("producer_req_writer", wh).await;
-    log_result_handle("producer_rsp_reader", rh).await;
+    logh("producer_req_writer", wh).await;
+    logh("producer_rsp_reader", rh).await;
 
     Ok(())
 }
