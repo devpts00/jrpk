@@ -3,8 +3,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::{handshake, Connection, SendRequest};
-use hyper::{http, Method, Uri};
-use hyper::http::uri::{Authority, InvalidUri};
+use hyper::{Method, Uri};
+use hyper::http::uri::Authority;
 use hyper_util::rt::TokioIo;
 use log::error;
 use prometheus_client::encoding::EncodeLabelSet;
@@ -12,29 +12,12 @@ use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::registry::{Registry, Unit};
-use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::oneshot::Receiver;
-use tokio::task::JoinError;
 use tracing::{debug, instrument, warn};
-
-#[derive(Error, Debug)]
-pub enum MetricsError {
-    #[error("io: {0}")]
-    IO(#[from] std::io::Error),
-    #[error("hyper: {0}")]
-    Hyper(#[from] hyper::Error),
-    #[error("format: {0}")]
-    Format(#[from] std::fmt::Error),
-    #[error("http: {0}")]
-    Http(#[from] http::Error),
-    #[error("uri: {0}")]
-    Uri(#[from] InvalidUri),
-    #[error("join: {0}")]
-    Join(#[from] JoinError)
-}
+use crate::error::JrpkError;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct Labels {
@@ -104,7 +87,7 @@ async fn push(
     uri: &Uri,
     auth: &Authority,
     snd_req: &mut SendRequest<Full<Bytes>>
-) -> Result<(), MetricsError> {
+) -> Result<(), JrpkError> {
     let mut buf = String::with_capacity(16 * 1024);
     encode(&mut buf, registry)?;
     let req = hyper::Request::builder()
@@ -135,7 +118,7 @@ async fn push_loop(
     auth: Authority,
     mut done_rcv: Receiver<()>,
     mut snd_req: SendRequest<Full<Bytes>>
-) -> Result<(), MetricsError> {
+) -> Result<(), JrpkError> {
     while let Err(TryRecvError::Empty) = done_rcv.try_recv() {
         push(&registry, &uri, &auth, &mut snd_req).await?;
         tokio::time::sleep(period).await;
@@ -158,7 +141,7 @@ pub async fn prometheus_pushgateway(
     period: Duration,
     registry: Registry,
     done_rcv: Receiver<()>
-) -> Result<(), MetricsError> {
+) -> Result<(), JrpkError> {
     let auth: Authority = address.parse()?;
     let uri = Uri::builder()
         .scheme("http")

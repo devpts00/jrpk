@@ -1,10 +1,11 @@
+use crate::error::JrpkError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::cmp::min;
-use std::str::{from_utf8, from_utf8_unchecked, Utf8Error};
 use serde::Serialize;
+use std::cmp::min;
+use std::str::{from_utf8, from_utf8_unchecked};
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, enabled, instrument, trace, Level};
+use tracing::{enabled, instrument, trace, Level};
 
 #[derive(Debug)]
 pub struct JsonCodec {
@@ -40,20 +41,10 @@ impl JsonCodec {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum BytesFrameDecoderError {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("frame too big: {0}")]
-    FrameTooBig(usize),
-    #[error("utf8: {0}")]
-    Utf8(#[from] Utf8Error),
-}
-
 impl Decoder for JsonCodec {
 
     type Item = Bytes;
-    type Error = BytesFrameDecoderError;
+    type Error = JrpkError;
 
     #[instrument(level="trace", skip(self))]
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -67,7 +58,7 @@ impl Decoder for JsonCodec {
         while self.position < src.len() {
 
             if self.position > self.max_frame_size {
-                return Err(BytesFrameDecoderError::FrameTooBig(self.position));
+                return Err(JrpkError::FrameTooBig(self.position));
             }
 
             let b = src[self.position];

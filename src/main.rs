@@ -6,6 +6,7 @@ mod kafka;
 mod codec;
 mod client;
 mod metrics;
+mod error;
 
 use crate::server::listen;
 use crate::util::{init_tracing, join_with_signal};

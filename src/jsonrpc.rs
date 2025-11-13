@@ -1,31 +1,18 @@
-use std::borrow::Cow;
+use crate::error::JrpkError;
 use base64::prelude::BASE64_STANDARD;
 use base64::{DecodeError, Engine};
+use bytes::Bytes;
 use rskafka::chrono::{DateTime, Utc};
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
+use serde_valid::Validate;
+use std::borrow::Cow;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::slice::from_raw_parts;
 use std::str::FromStr;
-use std::string::FromUtf8Error;
-use bytes::Bytes;
-use serde_valid::Validate;
-use thiserror::Error;
 use ustr::Ustr;
-
-#[derive(Error, Debug)]
-pub enum JrpError {
-    #[error("syntax: {0}")]
-    Syntax(&'static str),
-    #[error("utf8: {0}")]
-    Utf8(#[from] FromUtf8Error),
-    #[error("json: {0}")]
-    Json(#[from] serde_json::error::Error),
-    #[error("base64: {0}")]
-    Base64(#[from] DecodeError),
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -91,7 +78,7 @@ impl <'a> JrpData<'a> {
         }
     }
 
-    pub fn from_bytes(bytes: Vec<u8>, codec: JrpDataCodec) -> Result<Self, JrpError> {
+    pub fn from_bytes(bytes: Vec<u8>, codec: JrpDataCodec) -> Result<Self, JrpkError> {
         match codec {
             JrpDataCodec::Json => {
                 let string = String::from_utf8(bytes)?;

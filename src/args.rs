@@ -1,22 +1,17 @@
 use std::fmt::Display;
 use bytesize::ByteSize;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use thiserror::Error;
 use ustr::Ustr;
+use crate::error::JrpkError;
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
     #[command(subcommand)]
     pub mode: Mode
 }
-
-#[derive(Debug, Error)]
-#[error("{0}")]
-pub struct ParseError(String);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Offset {
@@ -38,7 +33,7 @@ impl Display for Offset {
 }
 
 impl FromStr for Offset {
-    type Err = ParseError;
+    type Err = JrpkError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.eq_ignore_ascii_case("earliest") {
             Ok(Offset::Earliest)
@@ -49,7 +44,7 @@ impl FromStr for Offset {
         } else if let Ok(offset) = i64::from_str(s) {
             Ok(Offset::Offset(offset))
         } else {
-            Err(ParseError(format!("invalid offset: {}", s)))
+            Err(JrpkError::Parse(format!("invalid offset: {}", s)))
         }
     }
 }

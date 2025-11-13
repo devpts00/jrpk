@@ -1,34 +1,29 @@
+use crate::args::Offset;
+use crate::async_clean_return;
+use crate::codec::JsonCodec;
+use crate::error::JrpkError;
+use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::metrics::{prometheus_pushgateway, Metrics};
+use bytes::Bytes;
+use bytesize::ByteSize;
+use futures::stream::{SplitSink, SplitStream};
+use futures::{SinkExt, StreamExt};
+use log::warn;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::registry::Registry;
+use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::Duration;
-use base64::DecodeError;
-use bytes::Bytes;
-use bytesize::ByteSize;
-use thiserror::Error;
-use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt, StreamExt, TryStreamExt};
-use log::{info, warn};
-use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue};
-use prometheus_client::encoding::text::encode;
-use prometheus_client::metrics::counter::Counter;
-use prometheus_client::metrics::family::Family;
-use prometheus_client::registry::Registry;
-use serde_json::value::RawValue;
 use tokio::net::TcpStream;
-use tokio::{spawn, try_join};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::mpsc::error::SendError;
-use tokio::task::{block_in_place, JoinError};
+use tokio::task::block_in_place;
+use tokio::{spawn, try_join};
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, error, instrument, trace, Instrument, Level, Span};
+use tracing::{debug, error, instrument, trace};
 use ustr::Ustr;
-use crate::args::Offset;
-use crate::async_clean_return;
-use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
-use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{prometheus_pushgateway, Metrics};
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -37,28 +32,6 @@ fn a2j_offset(ao: Offset) -> JrpOffset {
         Offset::Timestamp(ts) => JrpOffset::Timestamp(ts),
         Offset::Offset(pos) => JrpOffset::Offset(pos),
     }
-}
-
-#[derive(Error, Debug)]
-pub enum ClientError {
-    #[error("decoder: {0}")]
-    Frame(#[from] BytesFrameDecoderError),
-    #[error("io: {0}")]
-    IO(#[from] std::io::Error),
-    #[error("encoder: {0}")]
-    Encoder(#[from] JsonEncoderError),
-    #[error("send: {0}")]
-    Send(#[from] SendError<Offset>),
-    #[error("json: {0}")]
-    Json(#[from] serde_json::error::Error),
-    #[error("jsonrpc: {0}")]
-    Jrp(JrpErrorMsg),
-    #[error("unexpected: {0}")]
-    UnexpectedResponse(String),
-    #[error("base64: {0}")]
-    Base64(#[from] DecodeError),
-    #[error("join: {0}")]
-    Join(#[from] JoinError),
 }
 
 #[instrument(ret, err, skip(metrics, offset_rcv, tcp_sink))]
@@ -70,7 +43,7 @@ async fn consumer_req_writer<'a>(
     metrics: Metrics,
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpReq<'a>>,
-) -> Result<(), ClientError> {
+) -> Result<(), JrpkError> {
     let tcp_write_count = metrics.count("client", "consume", "tcp", "write");
     let mut id = 0;
     while let Some(offset) = offset_rcv.recv().await {
@@ -105,7 +78,7 @@ async fn write_records<'a>(
     file_write_count: &Counter,
     file_write_bytes: &Counter,
     writer: &mut BufWriter<File>,
-) -> Result<(), ClientError> {
+) -> Result<(), JrpkError> {
     for record in records {
         if less_record_offset(&record, until) {
             match record.value {
@@ -140,7 +113,7 @@ async fn consumer_rsp_reader(
     metrics: Metrics,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
-) -> Result<(), ClientError> {
+) -> Result<(), JrpkError> {
     let tcp_read_count = metrics.count("client", "consume", "tcp", "read");
     let tcp_read_bytes = metrics.bytes("client", "consume", "tcp", "read");
     let file_write_count = metrics.count("client", "consume", "file", "write");
@@ -175,17 +148,17 @@ async fn consumer_rsp_reader(
                     }
                     JrpRspData::Send { .. } => {
                         error!("error, id: {}, response: send", id);
-                        return Err(ClientError::UnexpectedResponse("send".to_owned()));
+                        return Err(JrpkError::Unexpected("send"));
                     }
                     JrpRspData::Offset(_) => {
                         error!("error, id: {}, response: offset", id);
-                        return Err(ClientError::UnexpectedResponse("offset".to_owned()));
+                        return Err(JrpkError::Unexpected("offset"));
                     }
                 }
             }
             Err(err) => {
                 error!("error, id: {}, message: {}", id, err.message);
-                return Err(ClientError::Jrp(err))
+                return Err(JrpkError::Internal(err.message))
             }
         }
     }
@@ -204,7 +177,7 @@ pub async fn consume(
     batch_size: ByteSize,
     max_wait_ms: i32,
     max_frame_size: ByteSize,
-) -> Result<(), ClientError> {
+) -> Result<(), JrpkError> {
 
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
@@ -264,7 +237,7 @@ pub async fn producer_req_writer(
     max_batch_byte_size: usize,
     max_rec_byte_size: usize,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
-) -> Result<(), ClientError> {
+) -> Result<(), JrpkError> {
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(32 * 1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
@@ -304,7 +277,7 @@ pub async fn producer_req_writer(
 }
 
 #[instrument(ret, skip(tcp_stream))]
-pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>) -> Result<(), ClientError> {
+pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>) -> Result<(), JrpkError> {
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
@@ -331,7 +304,7 @@ pub async fn produce(
     max_batch_rec_count: usize,
     max_batch_byte_size: usize,
     max_rec_byte_size: usize,
-) -> Result<(), ClientError> {
+) -> Result<(), JrpkError> {
     let stream = TcpStream::connect(address.as_str()).await?;
     let codec = JsonCodec::new(max_frame_byte_size);
     let framed = Framed::with_capacity(stream, codec, max_frame_byte_size);

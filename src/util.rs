@@ -2,19 +2,17 @@ use rskafka::record::Record;
 use socket2::SockRef;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
-use std::future::Future;
 use std::str::from_utf8;
-use log::log;
 use tokio::net::TcpStream;
-use tokio::{select, spawn, task_local};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, event, info, Level};
+use tokio::select;
+use tracing::info;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, Layer};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer};
 
 #[macro_export]
 macro_rules! async_clean_return {
