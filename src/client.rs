@@ -29,7 +29,6 @@ use crate::async_clean_return;
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpErrorMsg, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::metrics::{prometheus_pushgateway, Metrics};
-use crate::util::logh;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -322,7 +321,7 @@ pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, J
     Ok(())
 }
 
-#[instrument(ret)]
+#[instrument(ret, err)]
 pub async fn produce(
     path: Ustr,
     address: Ustr,
@@ -333,30 +332,14 @@ pub async fn produce(
     max_batch_byte_size: usize,
     max_rec_byte_size: usize,
 ) -> Result<(), ClientError> {
-
     let stream = TcpStream::connect(address.as_str()).await?;
     let codec = JsonCodec::new(max_frame_byte_size);
     let framed = Framed::with_capacity(stream, codec, max_frame_byte_size);
     let (tcp_sink, tcp_stream) = framed.split();
-
-    let wh = tokio::spawn(
-        producer_req_writer(
-            path,
-            topic,
-            partition,
-            max_frame_byte_size,
-            max_batch_rec_count,
-            max_batch_byte_size,
-            max_rec_byte_size,
-            tcp_sink
-        )
-    );
-    let rh = tokio::spawn(
-        producer_rsp_reader(tcp_stream)
-    );
-
-    logh("producer_req_writer", wh).await;
-    logh("producer_rsp_reader", rh).await;
-
+    let wh = tokio::spawn(producer_req_writer(
+        path, topic, partition, max_frame_byte_size, max_batch_rec_count, max_batch_byte_size, max_rec_byte_size, tcp_sink
+    ));
+    let rh = tokio::spawn(producer_rsp_reader(tcp_stream));
+    let _ = try_join!(wh, rh);
     Ok(())
 }

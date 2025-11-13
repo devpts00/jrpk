@@ -1,7 +1,7 @@
 use crate::codec::{BytesFrameDecoderError, JsonCodec, JsonEncoderError};
 use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpData, JrpError, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp, RsKafkaError};
-use crate::util::{set_buf_sizes, spawn_and_log, ReqCtx};
+use crate::util::{set_buf_sizes, ReqCtx};
 use base64::DecodeError;
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
@@ -16,8 +16,10 @@ use bytesize::ByteSize;
 use rskafka::client::partition::OffsetAt;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::{spawn, try_join};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
+use tokio::task::JoinError;
 use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
@@ -46,6 +48,8 @@ pub enum ServerError {
     Base64(#[from] DecodeError),
     #[error("unexpected: {0}")]
     Unexpected(&'static str),
+    #[error("join: {0}")]
+    Join(#[from] JoinError)
 }
 
 /// deliberately drop payload
@@ -127,7 +131,7 @@ fn j2k_req(jrp: JrpReq) -> Result<(usize, Ustr, i32, KfkReq, JrpExtra), ServerEr
     }
 }
 
-#[instrument(ret, skip(tcp_stream, client_cache, kfk_res_ctx_snd))]
+#[instrument(ret, err, skip(tcp_stream, client_cache, kfk_res_ctx_snd))]
 async fn server_req_reader(
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
     client_cache: Arc<KfkClientCache<JrpCtx>>,
@@ -165,7 +169,7 @@ async fn server_req_reader(
     Ok(())
 }
 
-#[instrument(ret, skip(tcp_sink, kfk_res_ctx_rcv))]
+#[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv))]
 async fn server_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
@@ -190,7 +194,7 @@ async fn server_rsp_writer(
     Ok(())
 }
 
-#[instrument(ret, skip(client_cache, tcp_stream))]
+#[instrument(ret, err, skip(client_cache, tcp_stream))]
 async fn server(
     tcp_stream: TcpStream,
     client_cache: Arc<KfkClientCache<JrpCtx>>,
@@ -206,18 +210,13 @@ async fn server(
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(queue_size);
-    spawn_and_log(
-        "server_req_reader",
-        server_req_reader(tcp_stream, client_cache, kfk_res_snd, queue_size)
-    );
-    spawn_and_log(
-        "server_rsp_writer",
-        server_rsp_writer(tcp_sink, kfk_res_rcv)
-    );
+    let rh = spawn(server_req_reader(tcp_stream, client_cache, kfk_res_snd, queue_size));
+    let wh = spawn(server_rsp_writer(tcp_sink, kfk_res_rcv));
+    let _ = try_join!(rh, wh)?;
     Ok(())
 }
 
-#[instrument(ret)]
+#[instrument(ret, err)]
 pub async fn listen(
     brokers: Vec<String>,
     bind: SocketAddr,

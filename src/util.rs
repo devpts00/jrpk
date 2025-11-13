@@ -102,73 +102,12 @@ impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, 
     }
 }
 
-
-
-/// single check: just the result
-pub fn logr<T, E> (name: &'static str, r: Result<T, E>)
-where T: Debug, E: Display {
-    match r {
-        Ok(value) => {
-            info!("{}, res: {:?} - END", name, value);
-        }
-        Err(error) => {
-            error!("{}, err: '{}' - END", name, error);
-        }
-    }
-}
-
-/// double check: 1st result of joining the handle, 2nd result of the routine represented by the handle
-pub async fn logh<T: Debug, E: Display>(name: &'static str, handle: JoinHandle<Result<T, E>>) {
-    match handle.await {
-        Ok(res) => {
-            match res {
-                Ok(val) => {
-                    info!("{}, res: {:?}", name, val);
-                }
-                Err(err) => {
-                    error!("{}, err: '{}'", name, err);
-                }
-            }
-        }
-        Err(err) => {
-            error!("{}, err: '{}'", name, err);
-        }
-    }
-}
-
-pub async fn logf<T: Debug, E: Error, F: Future<Output=Result<T, E>>>(f: F) {
-    match f.await {
-        Ok(val) => debug!("result: {:?}", val),
-        Err(err) => error!("error: {}", err),
-    }
-}
-
-macro_rules! logf_m {
-    ($name:ident($($args:tt)*)) => {
-        match $name($($args)*).await {
-            Ok(val) => debug!("result: {:?}", val),
-            Err(err) => error!("error: {}", err),
-        }
-    }
-}
-
-/// spawn the task to poll the future and log the result
-pub fn spawn_and_log<T, E, F>(name: &'static str, future: F)
-where T: Debug + Default + Send + 'static,
-      E: Display + Send + 'static,
-      F: Future<Output = Result<T, E>> + Send + 'static {
-    spawn(async move {
-        logr(name, future.await);
-    });
-}
-
-pub async fn join_with_signal<T: Debug>(name: &'static str, jh: JoinHandle<T>) {
+pub async fn join_with_signal<T: Debug>(jh: JoinHandle<T>) {
     select! {
-        res = jh => {
-            logr(name, res);
+        _ = jh => {
         },
         _ = tokio::signal::ctrl_c() => {
-            info!("{} - signal, exiting...", name);
+            info!("signal, exiting...");
         }
     }
 }

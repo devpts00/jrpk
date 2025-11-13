@@ -1,4 +1,4 @@
-use crate::util::{debug_record_and_offset, debug_vec_fn, spawn_and_log, ReqCtx, ResCtx};
+use crate::util::{debug_record_and_offset, debug_vec_fn, ReqCtx, ResCtx};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
@@ -7,10 +7,11 @@ use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{info, info_span, trace, Instrument};
+use tracing::{info, info_span, instrument, trace, Instrument};
 use ustr::Ustr;
 
 #[derive(Debug)]
@@ -146,7 +147,7 @@ impl <T> From<SendError<T>> for KfkError {
     }
 }
 
-#[tracing::instrument(level="info", skip(req_ctx_rcv))]
+#[instrument(ret, err, skip(req_ctx_rcv))]
 async fn run_kafka_loop<CTX: Debug>(cli: PartitionClient, mut req_ctx_rcv: KfkReqCtxRcv<CTX>) -> Result<(), KfkError> {
     while let Some(req_ctx) = req_ctx_rcv.recv().await {
         trace!("client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_ctx);
@@ -217,23 +218,23 @@ impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
         Self { client, cache: Cache::new(capacity) }
     }
 
-    #[tracing::instrument(level="info", skip(self))]
+    #[instrument(err, skip(self))]
     async fn init_kafka_loop(&self, key: KfkClientKey, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
         info!("init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
-        spawn_and_log("run_kafka_loop", run_kafka_loop(pc, req_id_rcv));
+        spawn(run_kafka_loop(pc, req_id_rcv));
         Ok(req_id_snd)
     }
 
-    #[tracing::instrument(level="debug", skip(self))]
+    #[instrument(level="debug", err, skip(self))]
     pub async fn lookup_kafka_sender(&self, topic: Ustr, partition: i32, capacity: usize) -> Result<KfkReqCtxSnd<CTX>, KfkError> {
         trace!("lookup: {}:{}", topic, partition);
         let key = KfkClientKey::new(topic, partition);
         let init = self.init_kafka_loop(key, capacity);
         let req_id_snd = self.cache.try_get_with(key, init).await?;
-        self.cache.run_pending_tasks().await;
-        trace!("cached: {}", self.cache.entry_count());
+        //self.cache.run_pending_tasks().await;
+        //trace!("cached: {}", self.cache.entry_count());
         Ok(req_id_snd)
     }
 }
