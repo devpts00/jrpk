@@ -7,7 +7,6 @@ use hyper::http::uri::InvalidUri;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
-use crate::codec::JsonEncoderError;
 use crate::kafka::RsKafkaError;
 
 #[derive(Error, Debug)]
@@ -26,9 +25,6 @@ pub enum JrpkError {
 
     #[error("frame too big: {0}")]
     FrameTooBig(usize),
-
-    #[error("encoder: {0}")]
-    Encoder(#[from] JsonEncoderError),
 
     #[error("utf8: {0}")]
     Utf8(#[from] Utf8Error),

@@ -45,6 +45,7 @@ async fn consumer_req_writer<'a>(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpReq<'a>>,
 ) -> Result<(), JrpkError> {
     let tcp_write_count = metrics.count("client", "consume", "tcp", "write");
+    let tcp_write_bytes = metrics.bytes("client", "consume", "tcp", "write");
     let mut id = 0;
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
@@ -93,7 +94,7 @@ async fn write_records<'a>(
                              )
                     })?;
                     file_write_count.inc();
-                    file_write_bytes.inc_by(buf.len() as u64);
+                    file_write_bytes.inc_by(buf.len() as u64 + 1);
                 }
                 None => {
                     warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
@@ -103,7 +104,6 @@ async fn write_records<'a>(
     }
     Ok(())
 }
-
 
 #[instrument(ret, err, skip(metrics, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
@@ -119,7 +119,7 @@ async fn consumer_rsp_reader(
     let file_write_count = metrics.count("client", "consume", "file", "write");
     let file_write_bytes = metrics.bytes("client", "consume", "file", "write");
     let file = File::create(path)?;
-    let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
+    let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
@@ -181,8 +181,6 @@ pub async fn consume(
 
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
-    let c = metrics.count("client", "consume", "tcp", "read");
-    c.inc();
 
     let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
     let ph = spawn(async move{
@@ -214,7 +212,7 @@ pub async fn consume(
             path,
             from,
             until,
-            metrics,
+            metrics.clone(),
             offset_snd,
             tcp_stream
         )

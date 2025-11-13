@@ -25,7 +25,8 @@ impl JsonCodec {
             quotes: false,
             escape: false,
         }
-    }
+    }        
+    
     pub fn reset(&mut self) {
         self.level = 0;
         self.position = 0;
@@ -113,16 +114,8 @@ impl Decoder for JsonCodec {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum JsonEncoderError {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("json: {0}")]
-    Json(#[from] serde_json::error::Error),
-}
-
 impl <T: Serialize> Encoder<T> for JsonCodec {
-    type Error = JsonEncoderError;
+    type Error = JrpkError;
     fn encode(&mut self, item: T, dst: &mut BytesMut) -> Result<(), Self::Error> {
         serde_json::to_writer(dst.writer(), &item)?;
         dst.put_u8(b'\n');

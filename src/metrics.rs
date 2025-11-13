@@ -43,9 +43,9 @@ impl Metrics {
 
     pub fn new(registry: &mut Registry) -> Self {
         let count = Family::<Labels, Counter>::default();
-        registry.register("count", "io operation count", count.clone());
+        registry.register("io_op_count", "io operation count", count.clone());
         let bytes = Family::<Labels, Counter>::default();
-        registry.register_with_unit("bytes", "io operation bytes", Unit::Bytes, bytes.clone());
+        registry.register_with_unit("io_op_volume", "io operation volume", Unit::Bytes, bytes.clone());
         Metrics { count, bytes }
     }
 
