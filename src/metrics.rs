@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::oneshot::Receiver;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 use crate::error::JrpkError;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -83,9 +83,9 @@ impl Metrics {
 
 #[instrument(level="debug", ret, err, skip(registry, snd_req))]
 async fn push(
-    registry: &Registry,
     uri: &Uri,
     auth: &Authority,
+    registry: &Registry,
     snd_req: &mut SendRequest<Full<Bytes>>
 ) -> Result<(), JrpkError> {
     let mut buf = String::with_capacity(16 * 1024);
@@ -112,18 +112,18 @@ async fn push(
 
 #[instrument(ret, err, skip(registry, done_rcv, snd_req))]
 async fn push_loop(
-    registry: Registry,
-    period: Duration,
     uri: Uri,
     auth: Authority,
+    period: Duration,
+    registry: Registry,
     mut done_rcv: Receiver<()>,
     mut snd_req: SendRequest<Full<Bytes>>
 ) -> Result<(), JrpkError> {
     while let Err(TryRecvError::Empty) = done_rcv.try_recv() {
-        push(&registry, &uri, &auth, &mut snd_req).await?;
+        push(&uri, &auth, &registry, &mut snd_req).await?;
         tokio::time::sleep(period).await;
     }
-    push(&registry, &uri, &auth, &mut snd_req).await?;
+    push(&uri, &auth, &registry, &mut snd_req).await?;
     Ok(())
 }
 
@@ -137,22 +137,17 @@ async fn conn_loop(conn: Connection<TokioIo<TcpStream>, Full<Bytes>>) -> Result<
 
 #[instrument(ret, err, skip(registry, done_rcv))]
 pub async fn prometheus_pushgateway(
-    address: String,
+    uri: Uri,
     period: Duration,
     registry: Registry,
     done_rcv: Receiver<()>
 ) -> Result<(), JrpkError> {
-    let auth: Authority = address.parse()?;
-    let uri = Uri::builder()
-        .scheme("http")
-        .authority(auth.clone())
-        .path_and_query("/metrics/job/jrpk")
-        .build()?;
-    let tcp = TcpStream::connect(address).await?;
+    let auth = uri.authority().ok_or(JrpkError::Unexpected("URI must have an authority"))?.clone();
+    let tcp = TcpStream::connect(auth.as_str()).await?;
     let io = TokioIo::new(tcp);
     let (snd_req, conn) = handshake(io).await?;
     let ch = spawn(conn_loop(conn));
-    let ph = spawn(push_loop(registry, period, uri, auth, done_rcv, snd_req));
+    let ph = spawn(push_loop(uri, auth, period, registry, done_rcv, snd_req));
     let _ = try_join!(ch, ph)?;
     Ok(())
 }

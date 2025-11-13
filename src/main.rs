@@ -20,7 +20,16 @@ use crate::client::{consume, produce};
 
 async fn run(args: args::Args) {
     match args.mode {
-        Mode::Server { brokers, bind, max_frame_byte_size: max_frame_size, send_buffer_byte_size: send_buffer_size, recv_buffer_byte_size: recv_buffer_size, queue_len: queue_size } => {
+        Mode::Server {
+            brokers,
+            bind,
+            max_frame_byte_size: max_frame_size,
+            send_buffer_byte_size: send_buffer_size,
+            recv_buffer_byte_size: recv_buffer_size,
+            queue_len: queue_size,
+            metrics_uri,
+            metrics_period
+        } => {
             join_with_signal(
                 spawn(
                     listen(
@@ -34,10 +43,23 @@ async fn run(args: args::Args) {
                 )
             ).await
         }
-        Mode::Client { address, topic, partition, path, max_frame_byte_size: max_frame_size, command } => {
+        Mode::Client {
+            address,
+            topic,
+            partition,
+            path,
+            max_frame_byte_size,
+            metrics_uri,
+            metrics_period,
+            command
+        } => {
             info!("client, address: {}, topic: {}, partition: {:?}, path: {:?}, command: {:?}", address, topic, partition, path, command);
             match command {
-                Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size } => {
+                Command::Produce {
+                    max_batch_rec_count,
+                    max_batch_byte_size,
+                    max_rec_byte_size
+                } => {
                     join_with_signal(
                         spawn(
                             produce(
@@ -45,15 +67,22 @@ async fn run(args: args::Args) {
                                 address,
                                 topic,
                                 partition,
-                                max_frame_size.as_u64() as usize,
+                                max_frame_byte_size.as_u64() as usize,
                                 max_batch_rec_count as usize,
                                 max_batch_byte_size.as_u64() as usize,
                                 max_rec_byte_size.as_u64() as usize,
+                                metrics_uri,
+                                Duration::from(&metrics_period),
                             )
                         )
                     ).await
                 }
-                Command::Consume { from, until, max_batch_byte_size: batch_size, max_wait_ms } => {
+                Command::Consume {
+                    from,
+                    until,
+                    max_batch_byte_size,
+                    max_wait_ms
+                } => {
                     join_with_signal(
                         spawn(
                             consume(
@@ -63,9 +92,11 @@ async fn run(args: args::Args) {
                                 partition,
                                 from,
                                 until,
-                                batch_size,
+                                max_batch_byte_size.as_u64() as i32,
                                 max_wait_ms,
-                                max_frame_size,
+                                max_frame_byte_size.as_u64() as usize,
+                                metrics_uri,
+                                Duration::from(&metrics_period),
                             )
                         )
                     ).await

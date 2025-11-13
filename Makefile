@@ -26,13 +26,17 @@ server-debug: build-debug
 	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk \
 		server \
 		--brokers=kfk:9092 \
-		--bind 0.0.0.0:1133
+		--bind=0.0.0.0:1133 \
+		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
+		--metrics-period=1s
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/release/jrpk \
 		server \
 		--brokers=kfk:9092 \
-		--bind=0.0.0.0:1133
+		--bind=0.0.0.0:1133 \
+		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
+		--metrics-period=1s
 
 client-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk \
@@ -41,6 +45,8 @@ client-debug-consume: build-debug
  		--address=jrpk:1133 \
  		--topic=posts \
  		--partition=0 \
+		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
+		--metrics-period=1s \
  		consume \
  		--from=earliest \
  		--until=latest \
@@ -54,6 +60,8 @@ client-release-consume: build-release
 		--address=jrpk:1133 \
 		--topic=posts \
 		--partition=0 \
+		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
+		--metrics-period=1s \
 		consume \
 		--from=earliest \
 		--until=latest \
@@ -68,6 +76,8 @@ client-debug-produce: build-debug
  		--topic=posts \
  		--partition=0 \
  		--max-frame-byte-size=1m \
+		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
+		--metrics-period=1s \
  		produce
 
 client-release-produce: build-release
@@ -78,6 +88,8 @@ client-release-produce: build-release
  		--topic=posts \
  		--partition=0 \
  		--max-frame-byte-size=1m \
+		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
+		--metrics-period=1s \
  		produce
 
 trace:

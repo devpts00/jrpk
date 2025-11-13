@@ -5,7 +5,6 @@ use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::metrics::{prometheus_pushgateway, Metrics};
 use bytes::Bytes;
-use bytesize::ByteSize;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use log::warn;
@@ -16,6 +15,7 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::Duration;
+use hyper::Uri;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -38,7 +38,7 @@ fn a2j_offset(ao: Offset) -> JrpOffset {
 async fn consumer_req_writer<'a>(
     topic: Ustr,
     partition: i32,
-    max_batch_byte_size: ByteSize,
+    max_batch_size: i32,
     max_wait_ms: i32,
     metrics: Metrics,
     mut offset_rcv: Receiver<Offset>,
@@ -50,7 +50,7 @@ async fn consumer_req_writer<'a>(
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
-        let bytes = 1..max_batch_byte_size.as_u64() as i32;
+        let bytes = 1..max_batch_size;
         let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
         tcp_sink.send(jrp_req_fetch).await?;
         tcp_write_count.inc();
@@ -174,23 +174,28 @@ pub async fn consume(
     partition: i32,
     from: Offset,
     until: Offset,
-    batch_size: ByteSize,
+    max_batch_size: i32,
     max_wait_ms: i32,
-    max_frame_size: ByteSize,
+    max_frame_size: usize,
+    metrics_uri: Uri,
+    metrics_period: Duration,
 ) -> Result<(), JrpkError> {
 
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
 
     let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
-    let ph = spawn(async move{
-        let address = "pmg:9091".to_string();
-        let period = Duration::from_secs(1);
-        prometheus_pushgateway(address, period, registry, done_rcv)
-    }.await);
+    let ph = spawn(
+        prometheus_pushgateway(
+            metrics_uri,
+            metrics_period,
+            registry,
+            done_rcv
+        )
+    );
 
     let stream = TcpStream::connect(address.as_str()).await?;
-    let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
+    let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::new(stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
@@ -199,7 +204,7 @@ pub async fn consume(
         consumer_req_writer(
             topic,
             partition,
-            batch_size,
+            max_batch_size,
             max_wait_ms,
             metrics.clone(),
             offset_rcv,
@@ -232,8 +237,8 @@ pub async fn producer_req_writer(
     partition: i32,
     max_frame_size: usize,
     max_batch_rec_count: usize,
-    max_batch_byte_size: usize,
-    max_rec_byte_size: usize,
+    max_batch_size: usize,
+    max_rec_size: usize,
     metrics: Metrics,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
 ) -> Result<(), JrpkError> {
@@ -258,7 +263,7 @@ pub async fn producer_req_writer(
         size += frame.len();
         frames.push(frame);
         records.push(jrp_rec);
-        if size > max_batch_byte_size - max_rec_byte_size || records.len() >= max_batch_rec_count {
+        if size > max_batch_size - max_rec_size || records.len() >= max_batch_rec_count {
             let jrp_req = JrpReq::send(id, topic, partition, records);
             records = Vec::with_capacity(max_batch_rec_count);
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
@@ -313,10 +318,12 @@ pub async fn produce(
     address: Ustr,
     topic: Ustr,
     partition: i32,
-    max_frame_byte_size: usize,
+    max_frame_size: usize,
     max_batch_rec_count: usize,
-    max_batch_byte_size: usize,
+    max_batch_size: usize,
     max_rec_byte_size: usize,
+    metrics_uri: Uri,
+    metrics_period: Duration,
 ) -> Result<(), JrpkError> {
 
     let mut registry = Registry::default();
@@ -325,21 +332,21 @@ pub async fn produce(
     let ph = spawn(async move{
         let address = "pmg:9091".to_string();
         let period = Duration::from_secs(1);
-        prometheus_pushgateway(address, period, registry, done_rcv)
+        prometheus_pushgateway(metrics_uri, metrics_period, registry, done_rcv)
     }.await);
 
     let stream = TcpStream::connect(address.as_str()).await?;
-    let codec = JsonCodec::new(max_frame_byte_size);
-    let framed = Framed::with_capacity(stream, codec, max_frame_byte_size);
+    let codec = JsonCodec::new(max_frame_size);
+    let framed = Framed::with_capacity(stream, codec, max_frame_size);
     let (tcp_sink, tcp_stream) = framed.split();
     let wh = tokio::spawn(
         producer_req_writer(
             path,
             topic,
             partition,
-            max_frame_byte_size,
+            max_frame_size,
             max_batch_rec_count,
-            max_batch_byte_size,
+            max_batch_size,
             max_rec_byte_size,
             metrics.clone(),
             tcp_sink

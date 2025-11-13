@@ -4,13 +4,16 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
+use clap_duration::duration_range_value_parse;
+use duration_human::{DurationHuman, DurationHumanValidator};
+use hyper::Uri;
 use ustr::Ustr;
 use crate::error::JrpkError;
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
     #[command(subcommand)]
-    pub mode: Mode
+    pub mode: Mode,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,7 +88,11 @@ pub enum Mode {
         #[arg(long, default_value = "32KiB")]
         recv_buffer_byte_size: ByteSize,
         #[arg(long, default_value_t = 32)]
-        queue_len: usize
+        queue_len: usize,
+        #[arg(long)]
+        metrics_uri: Uri,
+        #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
+        metrics_period: DurationHuman,
     },
     Client {
         #[arg(long)]
@@ -98,6 +105,10 @@ pub enum Mode {
         partition: i32,
         #[arg(long, default_value = "1MiB")]
         max_frame_byte_size: ByteSize,
+        #[arg(long)]
+        metrics_uri: Uri,
+        #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
+        metrics_period: DurationHuman,
         #[command(subcommand)]
         command: Command,
     }
