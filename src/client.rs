@@ -225,7 +225,7 @@ pub async fn consume(
     Ok(())
 }
 
-#[instrument(ret, skip(tcp_sink))]
+#[instrument(ret, skip(metrics, tcp_sink))]
 pub async fn producer_req_writer(
     path: Ustr,
     topic: Ustr,
@@ -234,10 +234,14 @@ pub async fn producer_req_writer(
     max_batch_rec_count: usize,
     max_batch_byte_size: usize,
     max_rec_byte_size: usize,
+    metrics: Metrics,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpBytes<JrpReq<'_>>>,
 ) -> Result<(), JrpkError> {
+    let file_read_bytes = metrics.bytes("client", "produce", "file", "read");
+    let file_read_count = metrics.count("client", "produce", "file", "read");
+    let tcp_write_count = metrics.count("client", "produce", "tcp", "write");
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
-    let reader = tokio::io::BufReader::with_capacity(32 * 1024 * 1024, file);
+    let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
     let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
     let mut id: usize = 0;
@@ -245,7 +249,9 @@ pub async fn producer_req_writer(
     let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
     let mut size: usize = 0;
     while let Some(result) = file_stream.next().await {
+        file_read_count.inc();
         let frame = result?;
+        file_read_bytes.inc_by(frame.len() as u64);
         let json: &RawValue = unsafe { async_clean_return!( JrpBytes::from_bytes(&frame), tcp_sink.close().await) };
         let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
         let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
@@ -258,6 +264,7 @@ pub async fn producer_req_writer(
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
             frames = Vec::with_capacity(max_batch_rec_count);
             async_clean_return!(tcp_sink.send(jrp_bytes).await, tcp_sink.close().await);
+            tcp_write_count.inc();
             id += 1;
             size = 0;
         }
@@ -267,6 +274,7 @@ pub async fn producer_req_writer(
         let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
         let jrp_bytes = JrpBytes::new(jrp_req, frames);
         async_clean_return!(tcp_sink.send(jrp_bytes).await, tcp_sink.close().await);
+        tcp_write_count.inc();
     }
 
     async_clean_return!(tcp_sink.flush().await, tcp_sink.close().await);
@@ -274,10 +282,17 @@ pub async fn producer_req_writer(
     Ok(())
 }
 
-#[instrument(ret, skip(tcp_stream))]
-pub async fn producer_rsp_reader(mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>) -> Result<(), JrpkError> {
+#[instrument(ret, skip(metrics, tcp_stream))]
+pub async fn producer_rsp_reader(
+    metrics: Metrics,
+    mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
+) -> Result<(), JrpkError> {
+    let tcp_read_count = metrics.count("client", "produce", "tcp", "read");
+    let tcp_read_bytes = metrics.bytes("client", "produce", "tcp", "read");
     while let Some(result) = tcp_stream.next().await {
+        tcp_read_count.inc();
         let frame = result?;
+        tcp_read_bytes.inc_by(frame.len() as u64);
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
         match jrp_rsp.take_result() {
@@ -303,14 +318,43 @@ pub async fn produce(
     max_batch_byte_size: usize,
     max_rec_byte_size: usize,
 ) -> Result<(), JrpkError> {
+
+    let mut registry = Registry::default();
+    let metrics = Metrics::new(&mut registry);
+    let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
+    let ph = spawn(async move{
+        let address = "pmg:9091".to_string();
+        let period = Duration::from_secs(1);
+        prometheus_pushgateway(address, period, registry, done_rcv)
+    }.await);
+
     let stream = TcpStream::connect(address.as_str()).await?;
     let codec = JsonCodec::new(max_frame_byte_size);
     let framed = Framed::with_capacity(stream, codec, max_frame_byte_size);
     let (tcp_sink, tcp_stream) = framed.split();
-    let wh = tokio::spawn(producer_req_writer(
-        path, topic, partition, max_frame_byte_size, max_batch_rec_count, max_batch_byte_size, max_rec_byte_size, tcp_sink
-    ));
-    let rh = tokio::spawn(producer_rsp_reader(tcp_stream));
+    let wh = tokio::spawn(
+        producer_req_writer(
+            path,
+            topic,
+            partition,
+            max_frame_byte_size,
+            max_batch_rec_count,
+            max_batch_byte_size,
+            max_rec_byte_size,
+            metrics.clone(),
+            tcp_sink
+        )
+    );
+    let rh = tokio::spawn(
+        producer_rsp_reader(
+            metrics.clone(),
+            tcp_stream
+        )
+    );
+
     let _ = try_join!(wh, rh);
+    let _ = done_snd.send(());
+    let _ = ph.await?;
+
     Ok(())
 }
