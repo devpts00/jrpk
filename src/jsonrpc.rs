@@ -406,12 +406,12 @@ pub struct JrpBytes<J: Serialize> {
     #[serde(flatten)]
     json: J,
     #[serde(skip)]
-    bytes: Vec<Bytes>,
+    _bytes: Vec<Bytes>,
 }
 
 impl <J: Serialize> JrpBytes<J> {
     pub fn new(json: J, bytes: Vec<Bytes>) -> Self {
-        JrpBytes { bytes, json }
+        JrpBytes { _bytes: bytes, json }
     }
 }
 

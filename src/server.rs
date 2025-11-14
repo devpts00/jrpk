@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::str::from_utf8;
 use std::sync::Arc;
+use std::time::Duration;
 use bytesize::ByteSize;
+use hyper::Uri;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
@@ -161,15 +163,13 @@ async fn server_rsp_writer(
 async fn server(
     tcp_stream: TcpStream,
     client_cache: Arc<KfkClientCache<JrpCtx>>,
-    max_frame_size: ByteSize,
-    send_buf_size: ByteSize,
-    recv_buf_size: ByteSize,
+    max_frame_size: usize,
+    send_buf_size: usize,
+    recv_buf_size: usize,
     queue_size: usize,
-    #[allow(unused_variables)]
-    addr: SocketAddr,
 ) -> Result<(), JrpkError> {
-    set_buf_sizes(&tcp_stream, recv_buf_size.as_u64() as usize, send_buf_size.as_u64() as usize)?;
-    let codec = JsonCodec::new(max_frame_size.as_u64() as usize);
+    set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
+    let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(queue_size);
@@ -183,10 +183,12 @@ async fn server(
 pub async fn listen(
     brokers: Vec<String>,
     bind: SocketAddr,
-    max_frame_size: ByteSize,
-    send_buf_size: ByteSize,
-    recv_buf_size: ByteSize,
-    queue_size: usize
+    max_frame_size: usize,
+    send_buf_size: usize,
+    recv_buf_size: usize,
+    queue_size: usize,
+    metrics_uri: Uri,
+    metrics_period: Duration,
 ) -> Result<(), JrpkError> {
     info!("connect: {}", brokers.join(","));
     let client = ClientBuilder::new(brokers).build().await?;
@@ -196,6 +198,6 @@ pub async fn listen(
     loop {
         let (tcp_stream, addr) = listener.accept().await?;
         info!("accepted: {:?}", addr);
-        server(tcp_stream, client_cache.clone(), max_frame_size, send_buf_size, recv_buf_size, queue_size, addr).await?;
+        server(tcp_stream, client_cache.clone(), max_frame_size, send_buf_size, recv_buf_size, queue_size).await?;
     }
 }

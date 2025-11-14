@@ -23,9 +23,9 @@ async fn run(args: args::Args) {
         Mode::Server {
             brokers,
             bind,
-            max_frame_byte_size: max_frame_size,
-            send_buffer_byte_size: send_buffer_size,
-            recv_buffer_byte_size: recv_buffer_size,
+            max_frame_byte_size,
+            send_buffer_byte_size,
+            recv_buffer_byte_size,
             queue_len: queue_size,
             metrics_uri,
             metrics_period
@@ -35,10 +35,12 @@ async fn run(args: args::Args) {
                     listen(
                         brokers,
                         bind,
-                        max_frame_size,
-                        send_buffer_size,
-                        recv_buffer_size,
-                        queue_size
+                        max_frame_byte_size.as_u64() as usize,
+                        send_buffer_byte_size.as_u64() as usize,
+                        recv_buffer_byte_size.as_u64() as usize,
+                        queue_size,
+                        metrics_uri,
+                        Duration::from(&metrics_period),
                     )
                 )
             ).await
