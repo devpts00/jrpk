@@ -45,7 +45,6 @@ async fn consumer_req_writer<'a>(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpReq<'a>>,
 ) -> Result<(), JrpkError> {
     let tcp_write_count = metrics.count("client", "consume", "tcp", "write");
-    let tcp_write_bytes = metrics.bytes("client", "consume", "tcp", "write");
     let mut id = 0;
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
@@ -329,11 +328,14 @@ pub async fn produce(
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
     let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
-    let ph = spawn(async move{
-        let address = "pmg:9091".to_string();
-        let period = Duration::from_secs(1);
-        prometheus_pushgateway(metrics_uri, metrics_period, registry, done_rcv)
-    }.await);
+    let ph = spawn(
+        prometheus_pushgateway(
+            metrics_uri,
+            metrics_period,
+            registry,
+            done_rcv
+        )
+    );
 
     let stream = TcpStream::connect(address.as_str()).await?;
     let codec = JsonCodec::new(max_frame_size);

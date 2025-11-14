@@ -13,7 +13,6 @@ use std::net::SocketAddr;
 use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::Duration;
-use bytesize::ByteSize;
 use hyper::Uri;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};

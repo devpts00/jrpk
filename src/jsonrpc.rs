@@ -303,6 +303,7 @@ impl <'a> JrpReq<'a> {
     pub fn new(id: usize, method: JrpMethod, params: JrpParams<'a>) -> Self {
         JrpReq { jsonrpc: "2.0", id, method, params }
     }
+    #[allow(unused)]
     pub fn offset(id: usize, topic: Ustr, partition: i32, offset: JrpOffset) -> Self {
         JrpReq::new(id, JrpMethod::Offset, JrpParams::offset(topic, partition, offset))
     }
@@ -384,13 +385,6 @@ impl <'a> JrpRsp<'a> {
     }
     pub fn err(id: usize, error: JrpErrorMsg) -> Self {
         JrpRsp::new(id, None, Some(error))
-    }
-    pub fn get_result(&self) -> Result<&JrpRspData<'a>, &JrpErrorMsg> {
-        match (&self.result, &self.error) {
-            (Some(data), _) => Ok(data),
-            (_, Some(err)) => Err(err),
-            _ => unreachable!()
-        }
     }
     pub fn take_result(self) -> Result<JrpRspData<'a>, JrpErrorMsg> {
         match (self.result, self.error) {

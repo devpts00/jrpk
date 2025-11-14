@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::oneshot::Receiver;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, warn};
 use crate::error::JrpkError;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]

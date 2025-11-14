@@ -3,7 +3,6 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use std::cmp::min;
 use std::str::{from_utf8, from_utf8_unchecked};
-use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{enabled, instrument, trace, Level};
 
@@ -25,8 +24,8 @@ impl JsonCodec {
             quotes: false,
             escape: false,
         }
-    }        
-    
+    }
+
     pub fn reset(&mut self) {
         self.level = 0;
         self.position = 0;
