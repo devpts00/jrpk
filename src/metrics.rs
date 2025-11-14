@@ -14,10 +14,10 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::registry::{Registry, Unit};
 use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
-use tokio::sync::oneshot::error::TryRecvError;
-use tokio::sync::oneshot::Receiver;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, warn};
 use crate::error::JrpkError;
+use crate::util::CancellableHandle;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct Labels {
@@ -110,16 +110,16 @@ async fn push(
     Ok(())
 }
 
-#[instrument(ret, err, skip(registry, done_rcv, snd_req))]
+#[instrument(ret, err, skip(registry, cancel, snd_req))]
 async fn push_loop(
     uri: Uri,
     auth: Authority,
     period: Duration,
     registry: Registry,
-    mut done_rcv: Receiver<()>,
+    cancel: CancellationToken,
     mut snd_req: SendRequest<Full<Bytes>>
 ) -> Result<(), JrpkError> {
-    while let Err(TryRecvError::Empty) = done_rcv.try_recv() {
+    while !cancel.is_cancelled() {
         push(&uri, &auth, &registry, &mut snd_req).await?;
         tokio::time::sleep(period).await;
     }
@@ -135,19 +135,29 @@ async fn conn_loop(conn: Connection<TokioIo<TcpStream>, Full<Bytes>>) -> Result<
     Ok(())
 }
 
-#[instrument(ret, err, skip(registry, done_rcv))]
-pub async fn prometheus_pushgateway(
+#[instrument(ret, err, skip(registry, cancel))]
+async fn prometheus_pushgateway(
     uri: Uri,
     period: Duration,
     registry: Registry,
-    done_rcv: Receiver<()>
+    cancel: CancellationToken,
 ) -> Result<(), JrpkError> {
     let auth = uri.authority().ok_or(JrpkError::Unexpected("URI must have an authority"))?.clone();
     let tcp = TcpStream::connect(auth.as_str()).await?;
     let io = TokioIo::new(tcp);
     let (snd_req, conn) = handshake(io).await?;
     let ch = spawn(conn_loop(conn));
-    let ph = spawn(push_loop(uri, auth, period, registry, done_rcv, snd_req));
+    let ph = spawn(push_loop(uri, auth, period, registry, cancel, snd_req));
     let _ = try_join!(ch, ph)?;
     Ok(())
+}
+
+pub fn spawn_prometheus_gateway(
+    uri: Uri,
+    period: Duration,
+    registry: Registry,
+) -> CancellableHandle<Result<(), JrpkError>> {
+    let token = CancellationToken::new();
+    let handle = spawn(prometheus_pushgateway(uri, period, registry, token.clone()));
+    CancellableHandle::new(token, handle)
 }

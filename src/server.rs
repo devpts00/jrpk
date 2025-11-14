@@ -14,6 +14,7 @@ use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::Duration;
 use hyper::Uri;
+use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
@@ -22,6 +23,7 @@ use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
 use crate::error::JrpkError;
+use crate::metrics::{spawn_prometheus_gateway, Metrics};
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
     let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
@@ -166,8 +168,13 @@ async fn server(
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
+    metrics_uri: Uri,
+    metrics_period: Duration,
 ) -> Result<(), JrpkError> {
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
+    let mut registry = Registry::default();
+    let metrics = Metrics::new(&mut registry);
+    let ph = spawn_prometheus_gateway(metrics_uri, metrics_period, registry);
     let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
@@ -175,6 +182,7 @@ async fn server(
     let rh = spawn(server_req_reader(tcp_stream, client_cache, kfk_res_snd, queue_size));
     let wh = spawn(server_rsp_writer(tcp_sink, kfk_res_rcv));
     let _ = try_join!(rh, wh)?;
+    let _ = ph.cancel().await?;
     Ok(())
 }
 
@@ -197,6 +205,17 @@ pub async fn listen(
     loop {
         let (tcp_stream, addr) = listener.accept().await?;
         info!("accepted: {:?}", addr);
-        server(tcp_stream, client_cache.clone(), max_frame_size, send_buf_size, recv_buf_size, queue_size).await?;
+        spawn(
+            server(
+                tcp_stream,
+                client_cache.clone(),
+                max_frame_size,
+                send_buf_size,
+                recv_buf_size,
+                queue_size,
+                metrics_uri.clone(),
+                metrics_period,
+            )
+        );
     }
 }

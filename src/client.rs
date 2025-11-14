@@ -3,7 +3,7 @@ use crate::async_clean_return;
 use crate::codec::JsonCodec;
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{prometheus_pushgateway, Metrics};
+use crate::metrics::{spawn_prometheus_gateway, Metrics};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -182,15 +182,10 @@ pub async fn consume(
 
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
-
-    let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
-    let ph = spawn(
-        prometheus_pushgateway(
-            metrics_uri,
-            metrics_period,
-            registry,
-            done_rcv
-        )
+    let ph = spawn_prometheus_gateway(
+        metrics_uri,
+        metrics_period,
+        registry
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;
@@ -223,9 +218,7 @@ pub async fn consume(
     );
 
     let _ = try_join!(wh, rh);
-    let _ = done_snd.send(());
-    let _ = ph.await?;
-
+    let _ = ph.cancel().await?;
     Ok(())
 }
 
@@ -327,14 +320,10 @@ pub async fn produce(
 
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
-    let (done_snd, done_rcv) = tokio::sync::oneshot::channel();
-    let ph = spawn(
-        prometheus_pushgateway(
-            metrics_uri,
-            metrics_period,
-            registry,
-            done_rcv
-        )
+    let ph = spawn_prometheus_gateway(
+        metrics_uri,
+        metrics_period,
+        registry
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;
@@ -362,8 +351,6 @@ pub async fn produce(
     );
 
     let _ = try_join!(wh, rh);
-    let _ = done_snd.send(());
-    let _ = ph.await?;
-
+    let _ = ph.cancel().await?;
     Ok(())
 }

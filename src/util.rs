@@ -5,8 +5,9 @@ use std::fmt::{Debug, Display, Formatter};
 use std::str::from_utf8;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::select;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -192,4 +193,19 @@ pub fn set_buf_sizes(stream: &TcpStream, recv: usize, send: usize) -> std::io::R
     let socket = SockRef::from(&stream);
     socket.set_recv_buffer_size(recv)?;
     socket.set_send_buffer_size(send)
+}
+
+pub struct CancellableHandle<T> {
+    token: CancellationToken,
+    handle: JoinHandle<T>,
+}
+
+impl <T> CancellableHandle<T> {
+    pub fn new(token: CancellationToken, handle: JoinHandle<T>) -> Self {
+        CancellableHandle { token, handle }
+    }
+    pub async fn cancel(self) -> Result<T, JoinError> {
+        self.token.cancel();
+        self.handle.await
+    }
 }
