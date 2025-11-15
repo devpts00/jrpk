@@ -103,10 +103,20 @@ async fn server_req_reader(
     client_cache: Arc<KfkClientCache<JrpCtx>>,
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCtx>,
     queue_size: usize,
+    metrics: Metrics,
 ) -> Result<(), JrpkError> {
+    let jrp_send_count = metrics.count("server", "send", "tcp", "read");
+    let jrp_send_bytes = metrics.bytes("server", "send", "tcp", "read");
+    let jrp_fetch_count = metrics.count("server", "fetch", "tcp", "read");
+    let jrp_fetch_bytes = metrics.bytes("server", "fetch", "tcp", "read");
+    let jrp_offset_count = metrics.count("server", "offset", "tcp", "read");
+    let jrp_offset_bytes = metrics.bytes("server", "offset", "tcp", "read");
+    let jrp_error_count = metrics.count("server", "error", "tcp", "read");
+    let jrp_error_bytes = metrics.bytes("server", "error", "tcp", "read");
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
+        let length = bytes.len() as u64;
         trace!("json: {}", from_utf8(bytes.as_ref())?);
         // we are optimistic and expect most requests to be well-formed
         match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
@@ -114,6 +124,20 @@ async fn server_req_reader(
             Ok(jrp_req) => {
                 trace!("request: {:?}", jrp_req);
                 let (id, topic, partition, kfk_req, extra) = j2k_req(jrp_req)?;
+                match kfk_req {
+                    KfkReq::Send { .. } => {
+                        jrp_send_count.inc();
+                        jrp_send_bytes.inc_by(length);
+                    }
+                    KfkReq::Fetch { .. } => {
+                        jrp_fetch_count.inc();
+                        jrp_fetch_bytes.inc_by(length);
+                    }
+                    KfkReq::Offset { .. } => {
+                        jrp_offset_count.inc();
+                        jrp_offset_bytes.inc_by(length);
+                    }
+                }
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
                 let kfk_req_ctx_snd = client_cache.lookup_kafka_sender(topic, partition, queue_size).await?;
@@ -123,6 +147,8 @@ async fn server_req_reader(
             // and send decode error directly to the result channel, without round-trip to kafka client
             Err(err) => {
                 warn!("jsonrpc decode error: {}", err);
+                jrp_error_count.inc();
+                jrp_error_bytes.inc_by(length);
                 // if even an id is absent we give up and disconnect
                 let jrp_id = serde_json::from_slice::<JrpId>(bytes.as_ref())?;
                 let jrp_ctx = JrpCtx::new(jrp_id.id, JrpExtra::None);
@@ -138,19 +164,35 @@ async fn server_req_reader(
 #[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv))]
 async fn server_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
-    mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>
+    mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>,
+    metrics: Metrics,
 ) -> Result<(), JrpkError> {
+    let jrp_send_count = metrics.count("server", "send", "tcp", "write");
+    let jrp_fetch_count = metrics.count("server", "fetch", "tcp", "write");
+    let jrp_offset_count = metrics.count("server", "offset", "tcp", "write");
+    let jrp_error_count = metrics.count("server", "error", "tcp", "write");
     while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
         trace!("response: {:?}", kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
         let jrp_rsp = match kfk_res_ctx.res {
             Ok(kfk_rsp) => {
                 match k2j_rsp(kfk_rsp, ctx.extra) {
-                    Ok(jrp_rst_data) => JrpRsp::result(ctx.id, jrp_rst_data),
-                    Err(err) => JrpRsp::err(ctx.id, err.into())
+                    Ok(jrp_rst_data) => {
+                        match jrp_rst_data {
+                            JrpRspData::Send { .. } => jrp_send_count.inc(),
+                            JrpRspData::Fetch { .. } => jrp_fetch_count.inc(),
+                            JrpRspData::Offset(_) => jrp_offset_count.inc(),
+                        };
+                        JrpRsp::result(ctx.id, jrp_rst_data)
+                    },
+                    Err(err) => {
+                        jrp_error_count.inc();
+                        JrpRsp::err(ctx.id, err.into())
+                    }
                 }
             }
             Err(err) => {
+                jrp_error_count.inc();
                 JrpRsp::err(ctx.id, err.into())
             }
         };
@@ -179,8 +221,22 @@ async fn server(
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (kfk_res_snd, kfk_res_rcv) = mpsc::channel::<KfkResCtx<JrpCtx>>(queue_size);
-    let rh = spawn(server_req_reader(tcp_stream, client_cache, kfk_res_snd, queue_size));
-    let wh = spawn(server_rsp_writer(tcp_sink, kfk_res_rcv));
+    let rh = spawn(
+        server_req_reader(
+            tcp_stream,
+            client_cache,
+            kfk_res_snd,
+            queue_size,
+            metrics.clone()
+        )
+    );
+    let wh = spawn(
+        server_rsp_writer(
+            tcp_sink,
+            kfk_res_rcv,
+            metrics.clone(),
+        )
+    );
     let _ = try_join!(rh, wh)?;
     let _ = ph.cancel().await?;
     Ok(())
