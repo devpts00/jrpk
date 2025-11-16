@@ -1,4 +1,4 @@
-use crate::codec::JsonCodec;
+use crate::codec::{JsonCodec, Meter};
 use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpData, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp};
 use crate::util::{set_buf_sizes, ReqCtx};
@@ -23,7 +23,7 @@ use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
 use crate::error::JrpkError;
-use crate::metrics::{spawn_prometheus_gateway, Metrics};
+use crate::metrics::{spawn_prometheus_gateway, ByteMeter, ByteMeters};
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
     let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
@@ -103,20 +103,18 @@ async fn server_req_reader(
     client_cache: Arc<KfkClientCache<JrpCtx>>,
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCtx>,
     queue_size: usize,
-    metrics: Metrics,
+    meters: ByteMeters,
 ) -> Result<(), JrpkError> {
-    let jrp_send_count = metrics.count("server", "send", "tcp", "read");
-    let jrp_send_bytes = metrics.bytes("server", "send", "tcp", "read");
-    let jrp_fetch_count = metrics.count("server", "fetch", "tcp", "read");
-    let jrp_fetch_bytes = metrics.bytes("server", "fetch", "tcp", "read");
-    let jrp_offset_count = metrics.count("server", "offset", "tcp", "read");
-    let jrp_offset_bytes = metrics.bytes("server", "offset", "tcp", "read");
-    let jrp_error_count = metrics.count("server", "error", "tcp", "read");
-    let jrp_error_bytes = metrics.bytes("server", "error", "tcp", "read");
+
+    let send_meter = meters.meter("server", "send", "tcp", "read");
+    let fetch_meter = meters.meter("server", "fetch", "tcp", "read");
+    let offset_meter = meters.meter("server", "offset", "tcp", "read");
+    let error_meter = meters.meter("server", "error", "tcp", "read");
+
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
-        let length = bytes.len() as u64;
+        let length = bytes.len();
         trace!("json: {}", from_utf8(bytes.as_ref())?);
         // we are optimistic and expect most requests to be well-formed
         match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
@@ -125,18 +123,9 @@ async fn server_req_reader(
                 trace!("request: {:?}", jrp_req);
                 let (id, topic, partition, kfk_req, extra) = j2k_req(jrp_req)?;
                 match kfk_req {
-                    KfkReq::Send { .. } => {
-                        jrp_send_count.inc();
-                        jrp_send_bytes.inc_by(length);
-                    }
-                    KfkReq::Fetch { .. } => {
-                        jrp_fetch_count.inc();
-                        jrp_fetch_bytes.inc_by(length);
-                    }
-                    KfkReq::Offset { .. } => {
-                        jrp_offset_count.inc();
-                        jrp_offset_bytes.inc_by(length);
-                    }
+                    KfkReq::Send { .. } => send_meter.meter(length),
+                    KfkReq::Fetch { .. } => fetch_meter.meter(length),
+                    KfkReq::Offset { .. } => offset_meter.meter(length),
                 }
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
@@ -147,8 +136,7 @@ async fn server_req_reader(
             // and send decode error directly to the result channel, without round-trip to kafka client
             Err(err) => {
                 warn!("jsonrpc decode error: {}", err);
-                jrp_error_count.inc();
-                jrp_error_bytes.inc_by(length);
+                error_meter.meter(length);
                 // if even an id is absent we give up and disconnect
                 let jrp_id = serde_json::from_slice::<JrpId>(bytes.as_ref())?;
                 let jrp_ctx = JrpCtx::new(jrp_id.id, JrpExtra::None);
@@ -163,14 +151,16 @@ async fn server_req_reader(
 
 #[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv))]
 async fn server_rsp_writer(
-    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRsp<'static>>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, (JrpRsp<'static>, ByteMeter)>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>,
-    metrics: Metrics,
+    meters: ByteMeters,
 ) -> Result<(), JrpkError> {
-    let jrp_send_count = metrics.count("server", "send", "tcp", "write");
-    let jrp_fetch_count = metrics.count("server", "fetch", "tcp", "write");
-    let jrp_offset_count = metrics.count("server", "offset", "tcp", "write");
-    let jrp_error_count = metrics.count("server", "error", "tcp", "write");
+
+    let send_meter = meters.meter("server", "send", "tcp", "write");
+    let fetch_meter = meters.meter("server", "fetch", "tcp", "write");
+    let offset_meter = meters.meter("server", "offset", "tcp", "write");
+    let error_meter = meters.meter("server", "error", "tcp", "write");
+
     while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
         trace!("response: {:?}", kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
@@ -178,22 +168,20 @@ async fn server_rsp_writer(
             Ok(kfk_rsp) => {
                 match k2j_rsp(kfk_rsp, ctx.extra) {
                     Ok(jrp_rst_data) => {
-                        match jrp_rst_data {
-                            JrpRspData::Send { .. } => jrp_send_count.inc(),
-                            JrpRspData::Fetch { .. } => jrp_fetch_count.inc(),
-                            JrpRspData::Offset(_) => jrp_offset_count.inc(),
+                        let meter = match jrp_rst_data {
+                            JrpRspData::Send { .. } => send_meter.clone(),
+                            JrpRspData::Fetch { .. } => fetch_meter.clone(),
+                            JrpRspData::Offset(_) => offset_meter.clone(),
                         };
-                        JrpRsp::result(ctx.id, jrp_rst_data)
+                        (JrpRsp::result(ctx.id, jrp_rst_data), meter)
                     },
                     Err(err) => {
-                        jrp_error_count.inc();
-                        JrpRsp::err(ctx.id, err.into())
+                        (JrpRsp::err(ctx.id, err.into()), error_meter.clone())
                     }
                 }
             }
             Err(err) => {
-                jrp_error_count.inc();
-                JrpRsp::err(ctx.id, err.into())
+                (JrpRsp::err(ctx.id, err.into()), error_meter.clone())
             }
         };
         tcp_sink.send(jrp_rsp).await?;
@@ -215,7 +203,7 @@ async fn server(
 ) -> Result<(), JrpkError> {
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
     let mut registry = Registry::default();
-    let metrics = Metrics::new(&mut registry);
+    let metrics = ByteMeters::new(&mut registry);
     let ph = spawn_prometheus_gateway(metrics_uri, metrics_period, registry);
     let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);

@@ -16,6 +16,7 @@ use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, warn};
+use crate::codec::Meter;
 use crate::error::JrpkError;
 use crate::util::CancellableHandle;
 
@@ -33,52 +34,47 @@ impl Labels {
     }
 }
 
+#[derive(Clone)]
+pub struct ByteMeter {
+    count: Counter,
+    bytes: Counter,
+}
+
+impl Meter for ByteMeter {
+    fn meter(&self, length: usize) {
+        self.count.inc();
+        self.bytes.inc_by(length as u64);
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct Metrics {
+pub struct ByteMeters {
     count: Family<Labels, Counter>,
     bytes: Family<Labels, Counter>,
 }
 
-impl Metrics {
-
+impl ByteMeters {
     pub fn new(registry: &mut Registry) -> Self {
         let count = Family::<Labels, Counter>::default();
         registry.register("io_op_count", "io operation count", count.clone());
         let bytes = Family::<Labels, Counter>::default();
         registry.register_with_unit("io_op_volume", "io operation volume", Unit::Bytes, bytes.clone());
-        Metrics { count, bytes }
+        ByteMeters { count, bytes }
     }
 
-    fn counter(
-        family: &Family<Labels, Counter>,
+    pub fn meter(
+        &self,
         mode: &'static str,
         command: &'static str,
         io: &'static str,
         traffic: &'static str
-    ) -> Counter {
+    ) -> ByteMeter {
         let labels = Labels::new(mode, command, traffic, io);
-        family.get_or_create_owned(&labels)
+        let count = self.count.get_or_create_owned(&labels);
+        let bytes = self.bytes.get_or_create_owned(&labels);
+        ByteMeter { count, bytes }
     }
-
-    pub fn count(
-        &self,
-        mode: &'static str,
-        command: &'static str,
-        io: &'static str,
-        traffic: &'static str
-    ) -> Counter {
-        Metrics::counter(&self.count, mode, command, io, traffic)
-    }
-
-    pub fn bytes(
-        &self,
-        mode: &'static str,
-        command: &'static str,
-        io: &'static str,
-        traffic: &'static str
-    ) -> Counter {
-        Metrics::counter(&self.bytes, mode, command, io, traffic)
-    }
+    
 }
 
 #[instrument(level="debug", ret, err, skip(registry, snd_req))]

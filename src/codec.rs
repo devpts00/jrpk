@@ -113,11 +113,18 @@ impl Decoder for JsonCodec {
     }
 }
 
-impl <T: Serialize> Encoder<T> for JsonCodec {
+pub trait Meter {
+    fn meter(&self, length: usize);
+}
+
+impl <T: Serialize, M: Meter> Encoder<(T, M)> for JsonCodec {
     type Error = JrpkError;
-    fn encode(&mut self, item: T, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item_with_meter: (T, M), dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let (item, meter) = item_with_meter;
+        let length = dst.len();
         serde_json::to_writer(dst.writer(), &item)?;
         dst.put_u8(b'\n');
+        meter.meter(dst.len() - length);
         Ok(())
     }
 }
