@@ -18,12 +18,12 @@ use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
 use crate::error::JrpkError;
-use crate::metrics::{spawn_prometheus_gateway, ByteMeter, ByteMeters};
+use crate::metrics::{spawn_push_prometheus, ByteMeter, ByteMeters};
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
     let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
@@ -191,20 +191,16 @@ async fn server_rsp_writer(
 }
 
 #[instrument(ret, err, skip(client_cache, tcp_stream))]
-async fn server(
+async fn serve_jsonrpc(
     tcp_stream: TcpStream,
     client_cache: Arc<KfkClientCache<JrpCtx>>,
     max_frame_size: usize,
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    metrics_uri: Uri,
-    metrics_period: Duration,
+    meters: ByteMeters,
 ) -> Result<(), JrpkError> {
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
-    let mut registry = Registry::default();
-    let metrics = ByteMeters::new(&mut registry);
-    let ph = spawn_prometheus_gateway(metrics_uri, metrics_period, registry);
     let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
@@ -215,50 +211,51 @@ async fn server(
             client_cache,
             kfk_res_snd,
             queue_size,
-            metrics.clone()
+            meters.clone()
         )
     );
     let wh = spawn(
         server_rsp_writer(
             tcp_sink,
             kfk_res_rcv,
-            metrics.clone(),
+            meters.clone(),
         )
     );
     let _ = try_join!(rh, wh)?;
-    let _ = ph.cancel().await?;
     Ok(())
 }
 
 #[instrument(ret, err)]
-pub async fn listen(
+pub async fn listen_jsonrpc(
     brokers: Vec<String>,
     bind: SocketAddr,
     max_frame_size: usize,
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    metrics_uri: Uri,
-    metrics_period: Duration,
+    registry: Arc<Mutex<Registry>>,
 ) -> Result<(), JrpkError> {
+    
+    let mut rg = registry.lock().await;
+    let meters = ByteMeters::new(&mut rg);
+
     info!("connect: {}", brokers.join(","));
     let client = ClientBuilder::new(brokers).build().await?;
-    let client_cache: Arc<KfkClientCache<JrpCtx>> = Arc::new(KfkClientCache::new(client, 1024));
+    let client_cache: Arc<KfkClientCache<JrpCtx>> = Arc::new(KfkClientCache::new(client, 1024, meters.clone()));
     info!("bind: {:?}", bind);
     let listener = TcpListener::bind(bind).await?;
     loop {
         let (tcp_stream, addr) = listener.accept().await?;
         info!("accepted: {:?}", addr);
         spawn(
-            server(
+            serve_jsonrpc(
                 tcp_stream,
                 client_cache.clone(),
                 max_frame_size,
                 send_buf_size,
                 recv_buf_size,
                 queue_size,
-                metrics_uri.clone(),
-                metrics_period,
+                meters.clone(),
             )
         );
     }

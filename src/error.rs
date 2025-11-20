@@ -50,9 +50,6 @@ pub enum JrpkError {
     #[error("join: {0}")]
     Join(#[from] JoinError),
 
-    #[error("hyper: {0}")]
-    Hyper(#[from] hyper::Error),
-
     #[error("format: {0}")]
     Format(#[from] std::fmt::Error),
 
@@ -64,6 +61,9 @@ pub enum JrpkError {
 
     #[error("wrapped: {0}")]
     Wrapped(#[from] Arc<JrpkError>),
+    
+    #[error("hyper: {0}")]
+    Hyper(#[from] hyper::Error),
 }
 
 /// deliberately drop payload

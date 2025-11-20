@@ -1,21 +1,28 @@
 use std::convert::Infallible;
+use std::error::Error;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::{handshake, Connection, SendRequest};
-use hyper::{Method, Uri};
+use hyper::{Method, Request, Response, StatusCode, Uri};
+use hyper::body::{Body, Incoming};
 use hyper::http::uri::Authority;
+use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use hyper::server::conn::http1;
 use log::error;
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::registry::{Registry, Unit};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 use crate::codec::Meter;
 use crate::error::JrpkError;
 use crate::util::CancellableHandle;
@@ -74,7 +81,7 @@ impl ByteMeters {
         let bytes = self.bytes.get_or_create_owned(&labels);
         ByteMeter { count, bytes }
     }
-    
+
 }
 
 #[instrument(level="debug", ret, err, skip(registry, snd_req))]
@@ -132,7 +139,7 @@ async fn conn_loop(conn: Connection<TokioIo<TcpStream>, Full<Bytes>>) -> Result<
 }
 
 #[instrument(ret, err, skip(registry, cancel))]
-async fn prometheus_pushgateway(
+async fn push_prometheus(
     uri: Uri,
     period: Duration,
     registry: Registry,
@@ -148,12 +155,72 @@ async fn prometheus_pushgateway(
     Ok(())
 }
 
-pub fn spawn_prometheus_gateway(
+pub fn spawn_push_prometheus(
     uri: Uri,
     period: Duration,
     registry: Registry,
 ) -> CancellableHandle<Result<(), JrpkError>> {
     let token = CancellationToken::new();
-    let handle = spawn(prometheus_pushgateway(uri, period, registry, token.clone()));
+    let handle = spawn(push_prometheus(uri, period, registry, token.clone()));
     CancellableHandle::new(token, handle)
+}
+
+async fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<Bytes, std::fmt::Error> {
+    let mut buf = String::with_capacity(64 * 1024);
+    let rg = registry.lock().await;
+    encode(&mut buf, &rg)?;
+    Ok(buf.into())
+}
+
+#[inline]
+fn rsp<D, B>(data: D, status: StatusCode) -> Result<Response<B>, hyper::http::Error>
+where B: Body + From<D> {
+    Response::builder().status(status).body(B::from(data))
+}
+
+#[inline]
+fn res2rsp<D, B, E>(res: Result<D, E>) -> Result<Response<B>, hyper::http::Error>
+where B: Body + Default + From<D>, E: Error {
+    match res {
+        Ok(data) => {
+            rsp(data, StatusCode::OK)
+        },
+        Err(err) => {
+            error!("error: {}", err);
+            rsp(B::default(), StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[instrument(ret, err, skip(reg))]
+async fn serve_prometheus(req: Request<Incoming>, reg: Arc<Mutex<Registry>>) -> Result<Response<Full<Bytes>>, hyper::http::Error> {
+    match (req.method(), req.uri().path()) {
+        (&Method::GET, "/metrics") => {
+            res2rsp(encode_registry(reg).await)
+        },
+        (method, uri) => {
+            warn!("unexpected, method: {}, uri: {}", method, uri);
+            rsp(Full::default(), StatusCode::NOT_FOUND)
+        }
+    }
+}
+
+#[instrument(ret, err, skip(registry))]
+pub async fn listen_prometheus(bind_addr: SocketAddr, registry: Arc<Mutex<Registry>>) -> Result<(), JrpkError> {
+    let listener = TcpListener::bind(bind_addr).await?;
+    loop {
+        let (stream, peer_addr) = listener.accept().await?;
+        info!("accepted: {}", peer_addr);
+        // 1. clone for every service fn
+        let registry = registry.clone();
+        spawn(
+            http1::Builder::new().serve_connection(
+                TokioIo::new(stream),
+                service_fn(move |req| {
+                    // 2. clone for every future
+                    serve_prometheus(req, registry.clone())
+                })
+            )
+        );
+    }
 }

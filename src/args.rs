@@ -90,9 +90,7 @@ pub enum Mode {
         #[arg(long, default_value_t = 32)]
         queue_len: usize,
         #[arg(long)]
-        metrics_uri: Uri,
-        #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
-        metrics_period: DurationHuman,
+        metrics_bind: SocketAddr,
     },
     Client {
         #[arg(long)]

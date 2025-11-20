@@ -8,17 +8,24 @@ mod client;
 mod metrics;
 mod error;
 
-use crate::server::listen;
+use std::sync::Arc;
+use crate::server::listen_jsonrpc;
 use crate::util::{init_tracing, join_with_signal};
 use clap::Parser;
 use std::time::Duration;
+use futures::future::join_all;
+use prometheus_client::registry::Registry;
 use tokio;
 use tokio::spawn;
+use tokio::sync::Mutex;
 use tracing::info;
 use crate::args::{Command, Mode};
 use crate::client::{consume, produce};
+use crate::metrics::listen_prometheus;
 
 async fn run(args: args::Args) {
+
+    let registry = Arc::new(Mutex::new(Registry::default()));
     match args.mode {
         Mode::Server {
             brokers,
@@ -27,22 +34,27 @@ async fn run(args: args::Args) {
             send_buffer_byte_size,
             recv_buffer_byte_size,
             queue_len: queue_size,
-            metrics_uri,
-            metrics_period
+            metrics_bind,
         } => {
-            join_with_signal(
-                spawn(
-                    listen(
-                        brokers,
-                        bind,
-                        max_frame_byte_size.as_u64() as usize,
-                        send_buffer_byte_size.as_u64() as usize,
-                        recv_buffer_byte_size.as_u64() as usize,
-                        queue_size,
-                        metrics_uri,
-                        Duration::from(&metrics_period),
-                    )
+
+            let jh = spawn(
+                listen_jsonrpc(
+                    brokers,
+                    bind,
+                    max_frame_byte_size.as_u64() as usize,
+                    send_buffer_byte_size.as_u64() as usize,
+                    recv_buffer_byte_size.as_u64() as usize,
+                    queue_size,
+                    registry.clone(),
                 )
+            );
+
+            let ph = spawn(
+                listen_prometheus(metrics_bind, registry)
+            );
+
+            join_with_signal(
+                join_all(vec!(jh, ph))
             ).await
         }
         Mode::Client {

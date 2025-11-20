@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, instrument, trace};
 use ustr::Ustr;
+use crate::codec::Meter;
+use crate::metrics::{ByteMeter, ByteMeters};
 
 #[derive(Debug)]
 pub enum KfkOffset {
@@ -122,11 +124,29 @@ pub type KfkResCtxRcv<CTX> = Receiver<KfkResCtx<CTX>>;
 pub type KfkReqCtxSnd<CTX> = Sender<KfkReqCtx<CTX>>;
 pub type KfkReqCtxRcv<CTX> = Receiver<KfkReqCtx<CTX>>;
 
-#[instrument(ret, err, skip(req_ctx_rcv))]
+#[inline]
+fn record_length(r: &Record) -> usize {
+    r.key.as_ref().map(|k| k.len()).unwrap_or(0) + r.value.as_ref().map(|k| k.len()).unwrap_or(0)
+}
+
+#[inline]
+fn records_length(rs: &Vec<Record>) -> usize {
+    rs.iter().map(|r| record_length(r)).sum()
+}
+
+#[inline]
+fn records_and_offsets_length(ros: &Vec<RecordAndOffset>) -> usize {
+    ros.iter().map(|ro| record_length(&ro.record)).sum()
+}
+
+#[instrument(ret, err, skip(meters, req_ctx_rcv))]
 async fn run_kafka_loop<CTX: Debug>(
     cli: PartitionClient,
+    meters: ByteMeters,
     mut req_ctx_rcv: KfkReqCtxRcv<CTX>
 ) -> Result<(), JrpkError> {
+    let send_meter = meters.meter("server", "send", "kafka", "write");
+    let fetch_meter = meters.meter("server", "fetch", "kafka", "read");
     while let Some(req_ctx) = req_ctx_rcv.recv().await {
         trace!("client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_ctx);
         let ctx = req_ctx.ctx;
@@ -134,6 +154,7 @@ async fn run_kafka_loop<CTX: Debug>(
         let res_ctx_snd = req_ctx.rsp_snd;
         let res_rsp = match req {
             KfkReq::Send { records } => {
+                send_meter.meter(records_length(&records));
                 cli.produce(records, Compression::Snappy).await
                     .map(|offsets| KfkRsp::send(offsets))
             }
@@ -143,7 +164,10 @@ async fn run_kafka_loop<CTX: Debug>(
                     KfkOffset::Explicit(n) => n
                 };
                 cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
-                    .map(|(recs_and_offsets, highwater_mark)| KfkRsp::fetch(recs_and_offsets, highwater_mark))
+                    .map(|(recs_and_offsets, highwater_mark)| {
+                        fetch_meter.meter(records_and_offsets_length(&recs_and_offsets));
+                        KfkRsp::fetch(recs_and_offsets, highwater_mark)
+                    })
             }
             KfkReq::Offset { offset } => {
                 match offset {
@@ -188,12 +212,13 @@ impl Display for KfkClientKey {
 pub struct KfkClientCache<CTX> {
     client: Client,
     cache: Cache<KfkClientKey, KfkReqCtxSnd<CTX>>,
+    meters: ByteMeters,
 }
 
 impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
 
-    pub fn new(client: Client, capacity: u64) -> Self {
-        Self { client, cache: Cache::new(capacity) }
+    pub fn new(client: Client, capacity: u64, meters: ByteMeters) -> Self {
+        Self { client, cache: Cache::new(capacity), meters }
     }
 
     #[instrument(err, skip(self))]
@@ -201,7 +226,7 @@ impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
         info!("init: {}:{}, capacity: {}", key.topic, key.partition, capacity);
         let pc = self.client.partition_client( key.topic.as_str(), key.partition, UnknownTopicHandling::Error).await?;
         let (req_id_snd, req_id_rcv) = mpsc::channel(capacity);
-        spawn(run_kafka_loop(pc, req_id_rcv));
+        spawn(run_kafka_loop(pc, self.meters.clone(), req_id_rcv));
         Ok(req_id_snd)
     }
 

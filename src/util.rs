@@ -2,6 +2,7 @@ use rskafka::record::Record;
 use socket2::SockRef;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
 use std::str::from_utf8;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
@@ -101,9 +102,9 @@ impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, 
     }
 }
 
-pub async fn join_with_signal<T: Debug>(jh: JoinHandle<T>) {
+pub async fn join_with_signal<F: Future>(f: F) {
     select! {
-        _ = jh => {
+        _ = f => {
         },
         _ = tokio::signal::ctrl_c() => {
             info!("signal, exiting...");

@@ -3,7 +3,7 @@ use crate::async_clean_return;
 use crate::codec::{JsonCodec, Meter};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_prometheus_gateway, ByteMeter, ByteMeters};
+use crate::metrics::{spawn_push_prometheus, ByteMeter, ByteMeters};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -84,7 +84,6 @@ async fn write_records<'a>(
                         trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
                         // TODO: differentiate between binary and text data
                         let buf = data.as_bytes()?;
-                        // TODO: block the whole vec instead of every record
                         writer.write_all(buf.as_ref())?;
                         writer.write_all(b"\n")?;
                         meter.meter(buf.len() + 1);
@@ -175,7 +174,7 @@ pub async fn consume(
 
     let mut registry = Registry::default();
     let metrics = ByteMeters::new(&mut registry);
-    let ph = spawn_prometheus_gateway(
+    let ph = spawn_push_prometheus(
         metrics_uri,
         metrics_period,
         registry
@@ -310,7 +309,7 @@ pub async fn produce(
 
     let mut registry = Registry::default();
     let metrics = ByteMeters::new(&mut registry);
-    let ph = spawn_prometheus_gateway(
+    let ph = spawn_push_prometheus(
         metrics_uri,
         metrics_period,
         registry
