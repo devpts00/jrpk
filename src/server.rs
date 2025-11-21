@@ -11,19 +11,17 @@ use rskafka::record::{Record, RecordAndOffset};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::str::from_utf8;
-use std::sync::Arc;
-use std::time::Duration;
-use hyper::Uri;
+use std::sync::{Arc, Mutex};
 use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
 use crate::error::JrpkError;
-use crate::metrics::{spawn_push_prometheus, ByteMeter, ByteMeters};
+use crate::metrics::{ByteMeter, ByteMeters};
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
     let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
@@ -235,10 +233,12 @@ pub async fn listen_jsonrpc(
     queue_size: usize,
     registry: Arc<Mutex<Registry>>,
 ) -> Result<(), JrpkError> {
-    
-    let mut rg = registry.lock().await;
-    let meters = ByteMeters::new(&mut rg);
 
+    let meters = {
+        let mut rg = registry.lock().unwrap();
+        ByteMeters::new(&mut rg)
+    };
+    
     info!("connect: {}", brokers.join(","));
     let client = ClientBuilder::new(brokers).build().await?;
     let client_cache: Arc<KfkClientCache<JrpCtx>> = Arc::new(KfkClientCache::new(client, 1024, meters.clone()));

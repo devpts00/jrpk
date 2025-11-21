@@ -8,7 +8,7 @@ mod client;
 mod metrics;
 mod error;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use crate::server::listen_jsonrpc;
 use crate::util::{init_tracing, join_with_signal};
 use clap::Parser;
@@ -17,7 +17,6 @@ use futures::future::join_all;
 use prometheus_client::registry::Registry;
 use tokio;
 use tokio::spawn;
-use tokio::sync::Mutex;
 use tracing::info;
 use crate::args::{Command, Mode};
 use crate::client::{consume, produce};

@@ -1,13 +1,14 @@
 use std::convert::Infallible;
 use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::{handshake, Connection, SendRequest};
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper::body::{Body, Incoming};
+use hyper::header::CONTENT_TYPE;
 use hyper::http::uri::Authority;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -20,9 +21,8 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::registry::{Registry, Unit};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use crate::codec::Meter;
 use crate::error::JrpkError;
 use crate::util::CancellableHandle;
@@ -167,15 +167,19 @@ pub fn spawn_push_prometheus(
 
 async fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<Bytes, std::fmt::Error> {
     let mut buf = String::with_capacity(64 * 1024);
-    let rg = registry.lock().await;
+    let rg = registry.lock().unwrap();
     encode(&mut buf, &rg)?;
+    trace!("metrics:\n{}", buf);
     Ok(buf.into())
 }
 
 #[inline]
 fn rsp<D, B>(data: D, status: StatusCode) -> Result<Response<B>, hyper::http::Error>
 where B: Body + From<D> {
-    Response::builder().status(status).body(B::from(data))
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(B::from(data))
 }
 
 #[inline]
@@ -192,7 +196,7 @@ where B: Body + Default + From<D>, E: Error {
     }
 }
 
-#[instrument(ret, err, skip(reg))]
+#[instrument(level="debug", ret, err, skip(reg))]
 async fn serve_prometheus(req: Request<Incoming>, reg: Arc<Mutex<Registry>>) -> Result<Response<Full<Bytes>>, hyper::http::Error> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/metrics") => {

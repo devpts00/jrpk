@@ -23,12 +23,11 @@ build-release:
 	docker compose run --rm rst cargo build --release
 
 server-debug: build-debug
-	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/debug/jrpk \
+	docker compose run --rm -it --remove-orphans -p 127.0.0.1:9999:9090 --name jrpk rst ./target/debug/jrpk \
 		server \
 		--brokers=kfk:9092 \
 		--bind=0.0.0.0:1133 \
-		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=1s
+		--metrics-bind=0.0.0.0:9090
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans --name jrpk rst ./target/release/jrpk \
