@@ -24,33 +24,35 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, trace, warn};
-use tracing_subscriber::fmt::time;
-use crate::codec::Meter;
 use crate::error::JrpkError;
 use crate::util::CancellableHandle;
 
+pub trait Meter {
+    fn meter(&self, bytes: usize, duration: Option<Instant>);
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct Labels {
+pub struct JrpkLabels {
     mode: &'static str,
     command: &'static str,
     io: &'static str,
     traffic: &'static str,
 }
 
-impl Labels {
+impl JrpkLabels {
     pub fn new(mode: &'static str, command: &'static str, traffic: &'static str, io: &'static str) -> Self {
-        Labels { mode, command, traffic, io }
+        JrpkLabels { mode, command, traffic, io }
     }
 }
 
 #[derive(Clone)]
-pub struct ByteMeter {
+pub struct JrpkMeter {
     count: Counter,
     bytes: Counter,
     times: Histogram
 }
 
-impl Meter for ByteMeter {
+impl Meter for JrpkMeter {
     fn meter(&self, bytes: usize, timestamp: Option<Instant>) {
         self.count.inc();
         self.bytes.inc_by(bytes as u64);
@@ -61,21 +63,21 @@ impl Meter for ByteMeter {
 }
 
 #[derive(Clone, Debug)]
-pub struct ByteMeters {
-    count: Family<Labels, Counter>,
-    bytes: Family<Labels, Counter>,
-    times: Family<Labels, Histogram>,
+pub struct JrpkMeters {
+    count: Family<JrpkLabels, Counter>,
+    bytes: Family<JrpkLabels, Counter>,
+    times: Family<JrpkLabels, Histogram>,
 }
 
-impl ByteMeters {
+impl JrpkMeters {
     pub fn new(registry: &mut Registry) -> Self {
-        let count = Family::<Labels, Counter>::default();
+        let count = Family::<JrpkLabels, Counter>::default();
         registry.register("io_op_count", "io operation count", count.clone());
-        let bytes = Family::<Labels, Counter>::default();
+        let bytes = Family::<JrpkLabels, Counter>::default();
         registry.register_with_unit("io_op_volume", "io operation volume", Unit::Bytes, bytes.clone());
-        let times = Family::<Labels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.000001, 2.0, 20)) });
+        let times = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.000001, 2.0, 20)) });
         registry.register_with_unit("io_op_duration", "io operation duration", Unit::Seconds, times.clone());
-        ByteMeters { count, bytes, times }
+        JrpkMeters { count, bytes, times }
     }
 
     pub fn meter(
@@ -84,12 +86,12 @@ impl ByteMeters {
         command: &'static str,
         io: &'static str,
         traffic: &'static str
-    ) -> ByteMeter {
-        let labels = Labels::new(mode, command, traffic, io);
+    ) -> JrpkMeter {
+        let labels = JrpkLabels::new(mode, command, traffic, io);
         let count = self.count.get_or_create_owned(&labels);
         let bytes = self.bytes.get_or_create_owned(&labels);
         let times = self.times.get_or_create_owned(&labels);
-        ByteMeter { count, bytes, times }
+        JrpkMeter { count, bytes, times }
     }
 
 }

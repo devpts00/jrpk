@@ -1,4 +1,4 @@
-use crate::codec::{JsonCodec, Meter};
+use crate::codec::{JsonCodec, MeteredItem};
 use crate::jsonrpc::{JrpCtx, JrpDataCodecs, JrpData, JrpExtra, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp};
 use crate::util::{set_buf_sizes, ReqCtx};
@@ -22,7 +22,7 @@ use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
 use crate::error::JrpkError;
-use crate::metrics::{ByteMeter, ByteMeters};
+use crate::metrics::{JrpkMeter, JrpkMeters, Meter};
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
     let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
@@ -102,7 +102,7 @@ async fn server_req_reader(
     client_cache: Arc<KfkClientCache<JrpCtx>>,
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCtx>,
     queue_size: usize,
-    meters: ByteMeters,
+    meters: JrpkMeters,
 ) -> Result<(), JrpkError> {
     let send_meter = meters.meter("server", "send", "tcp", "read");
     let fetch_meter = meters.meter("server", "fetch", "tcp", "read");
@@ -146,11 +146,13 @@ async fn server_req_reader(
     Ok(())
 }
 
+type JrpkMeteredItem = MeteredItem<JrpRsp<'static>, JrpkMeter>;
+
 #[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv))]
 async fn server_rsp_writer(
-    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, (JrpRsp<'static>, ByteMeter, Option<Instant>)>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredItem>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>,
-    meters: ByteMeters,
+    meters: JrpkMeters,
 ) -> Result<(), JrpkError> {
 
     let send_meter = meters.meter("server", "send", "tcp", "write");
@@ -181,7 +183,8 @@ async fn server_rsp_writer(
                 (JrpRsp::err(ctx.id, err.into()), error_meter.clone())
             }
         };
-        tcp_sink.send((jrp_rsp, meter, Some(ctx.ts))).await?;
+        let metered_item = JrpkMeteredItem::new(jrp_rsp, meter, Some(ctx.ts));
+        tcp_sink.send(metered_item).await?;
     }
     tcp_sink.flush().await?;
     Ok(())
@@ -195,7 +198,7 @@ async fn serve_jsonrpc(
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    meters: ByteMeters,
+    meters: JrpkMeters,
 ) -> Result<(), JrpkError> {
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
     let codec = JsonCodec::new(max_frame_size);
@@ -235,7 +238,7 @@ pub async fn listen_jsonrpc(
 
     let meters = {
         let mut rg = registry.lock().unwrap();
-        ByteMeters::new(&mut rg)
+        JrpkMeters::new(&mut rg)
     };
 
     info!("connect: {}", brokers.join(","));

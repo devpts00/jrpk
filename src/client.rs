@@ -1,9 +1,9 @@
 use crate::args::Offset;
 use crate::async_clean_return;
-use crate::codec::{JsonCodec, Meter};
+use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, ByteMeter, ByteMeters};
+use crate::metrics::{spawn_push_prometheus, Meter, JrpkMeter, JrpkMeters};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -35,16 +35,18 @@ fn a2j_offset(ao: Offset) -> JrpOffset {
     }
 }
 
+type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>, JrpkMeter>;
+
 #[instrument(ret, err, skip(metrics, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     topic: Ustr,
     partition: i32,
     max_batch_size: i32,
     max_wait_ms: i32,
-    metrics: ByteMeters,
+    metrics: JrpkMeters,
     times: Arc<Cache<usize, Instant>>,
     mut offset_rcv: Receiver<Offset>,
-    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, (JrpReq<'a>, ByteMeter, Option<Instant>)>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
     let mut id = 0;
     let meter = metrics.meter("client", "fetch", "tcp", "write");
@@ -54,7 +56,8 @@ async fn consumer_req_writer<'a>(
         let bytes = 1..max_batch_size;
         let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
         times.insert(id, Instant::now()).await;
-        tcp_sink.send((jrp_req_fetch, meter.clone(), None)).await?;
+        let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, meter.clone(), None);
+        tcp_sink.send(metered_item).await?;
         id = id + 1;
     }
     tcp_sink.flush().await?;
@@ -77,7 +80,7 @@ async fn write_records<'a>(
     id: usize,
     records: Vec<JrpRecFetch<'a>>,
     until: Offset,
-    meter: &ByteMeter,
+    meter: &JrpkMeter,
     writer: &mut BufWriter<File>,
 ) -> Result<(), JrpkError> {
     block_in_place(|| {
@@ -107,7 +110,7 @@ async fn consumer_rsp_reader(
     path: Ustr,
     from: Offset,
     until: Offset,
-    meters: ByteMeters,
+    meters: JrpkMeters,
     times: Arc<Cache<usize, Instant>>,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
@@ -179,7 +182,7 @@ pub async fn consume(
 ) -> Result<(), JrpkError> {
 
     let mut registry = Registry::default();
-    let metrics = ByteMeters::new(&mut registry);
+    let metrics = JrpkMeters::new(&mut registry);
     let ph = spawn_push_prometheus(
         metrics_uri,
         metrics_period,
@@ -223,6 +226,8 @@ pub async fn consume(
     Ok(())
 }
 
+type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>, JrpkMeter>;
+
 #[instrument(ret, skip(meters, tcp_sink))]
 pub async fn producer_req_writer(
     path: Ustr,
@@ -232,9 +237,9 @@ pub async fn producer_req_writer(
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_size: usize,
-    meters: ByteMeters,
+    meters: JrpkMeters,
     times: Arc<Cache<usize, Instant>>,
-    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, (JrpBytes<JrpReq<'_>>, ByteMeter, Option<Instant>)>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
     let file_read_meter = meters.meter("client", "send", "file", "read");
     let tcp_write_meter = meters.meter("client", "send", "tcp", "write");
@@ -262,7 +267,8 @@ pub async fn producer_req_writer(
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
             frames = Vec::with_capacity(max_batch_rec_count);
             times.insert(id, Instant::now()).await;
-            async_clean_return!(tcp_sink.send((jrp_bytes, tcp_write_meter.clone(), None)).await, tcp_sink.close().await);
+            let metered_item = JrpkMeteredProdReq::new(jrp_bytes, tcp_write_meter.clone(), None);
+            async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
             id += 1;
             size = 0;
         }
@@ -272,7 +278,8 @@ pub async fn producer_req_writer(
         let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
         let jrp_bytes = JrpBytes::new(jrp_req, frames);
         times.insert(id, Instant::now()).await;
-        async_clean_return!(tcp_sink.send((jrp_bytes, tcp_write_meter.clone(), None)).await, tcp_sink.close().await);
+        let metered_item = JrpkMeteredProdReq::new(jrp_bytes, tcp_write_meter.clone(), None);
+        async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
     }
 
     async_clean_return!(tcp_sink.flush().await, tcp_sink.close().await);
@@ -282,7 +289,7 @@ pub async fn producer_req_writer(
 
 #[instrument(ret, skip(meters, tcp_stream))]
 pub async fn producer_rsp_reader(
-    meters: ByteMeters,
+    meters: JrpkMeters,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
@@ -323,7 +330,7 @@ pub async fn produce(
 ) -> Result<(), JrpkError> {
 
     let mut registry = Registry::default();
-    let metrics = ByteMeters::new(&mut registry);
+    let metrics = JrpkMeters::new(&mut registry);
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
     let ph = spawn_push_prometheus(
         metrics_uri,

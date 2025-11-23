@@ -6,6 +6,7 @@ use std::str::{from_utf8, from_utf8_unchecked};
 use std::time::{Duration, Instant};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{enabled, instrument, trace, Level};
+use crate::metrics::Meter;
 
 #[derive(Debug)]
 pub struct JsonCodec {
@@ -114,14 +115,22 @@ impl Decoder for JsonCodec {
     }
 }
 
-pub trait Meter {
-    fn meter(&self, bytes: usize, duration: Option<Instant>);
+pub struct MeteredItem<T, M: Meter> {
+    item: T,
+    meter: M,
+    timestamp: Option<Instant>,
 }
 
-impl <T: Serialize, M: Meter> Encoder<(T, M, Option<Instant>)> for JsonCodec {
+impl <T, M: Meter> MeteredItem<T, M> {
+    pub fn new(item: T, meter: M, timestamp: Option<Instant>) -> Self {
+        MeteredItem { item, meter, timestamp }
+    }
+}
+
+impl <T: Serialize, M: Meter> Encoder<MeteredItem<T, M>> for JsonCodec {
     type Error = JrpkError;
-    fn encode(&mut self, item_with_meter: (T, M, Option<Instant>), dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let (item, meter, timestamp) = item_with_meter;
+    fn encode(&mut self, metered_item: MeteredItem<T, M>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let MeteredItem { item, meter, timestamp } = metered_item;
         let length = dst.len();
         serde_json::to_writer(dst.writer(), &item)?;
         dst.put_u8(b'\n');

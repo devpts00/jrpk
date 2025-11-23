@@ -12,8 +12,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, instrument, trace};
 use ustr::Ustr;
-use crate::codec::Meter;
-use crate::metrics::{ByteMeter, ByteMeters};
+use crate::metrics::{Meter, JrpkMeter, JrpkMeters};
 
 #[derive(Debug)]
 pub enum KfkOffset {
@@ -143,7 +142,7 @@ fn records_and_offsets_length(ros: &Vec<RecordAndOffset>) -> usize {
 #[instrument(ret, err, skip(meters, req_ctx_rcv))]
 async fn run_kafka_loop<CTX: Debug>(
     cli: PartitionClient,
-    meters: ByteMeters,
+    meters: JrpkMeters,
     mut req_ctx_rcv: KfkReqCtxRcv<CTX>
 ) -> Result<(), JrpkError> {
     let send_meter = meters.meter("server", "send", "kafka", "write");
@@ -220,12 +219,12 @@ impl Display for KfkClientKey {
 pub struct KfkClientCache<CTX> {
     client: Client,
     cache: Cache<KfkClientKey, KfkReqCtxSnd<CTX>>,
-    meters: ByteMeters,
+    meters: JrpkMeters,
 }
 
 impl <CTX: Debug + Send + 'static> KfkClientCache<CTX> {
 
-    pub fn new(client: Client, capacity: u64, meters: ByteMeters) -> Self {
+    pub fn new(client: Client, capacity: u64, meters: JrpkMeters) -> Self {
         Self { client, cache: Cache::new(capacity), meters }
     }
 
