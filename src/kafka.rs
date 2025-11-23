@@ -6,13 +6,13 @@ use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, instrument, trace};
 use ustr::Ustr;
-use crate::metrics::{Meter, JrpkMeter, JrpkMeters};
+use crate::metrics::{Meter, JrpkMeters, SERVER, SEND, FETCH, KAFKA, READ, OFFSET, WRITE};
 
 #[derive(Debug)]
 pub enum KfkOffset {
@@ -145,8 +145,9 @@ async fn run_kafka_loop<CTX: Debug>(
     meters: JrpkMeters,
     mut req_ctx_rcv: KfkReqCtxRcv<CTX>
 ) -> Result<(), JrpkError> {
-    let send_meter = meters.meter("server", "send", "kafka", "write");
-    let fetch_meter = meters.meter("server", "fetch", "kafka", "read");
+    let send_meter = meters.meter(SERVER, SEND, KAFKA, WRITE);
+    let fetch_meter = meters.meter(SERVER, FETCH, KAFKA, READ);
+    let offset_meter = meters.meter(SERVER, OFFSET, KAFKA, READ);
     while let Some(req_ctx) = req_ctx_rcv.recv().await {
         trace!("client: {}/{}, request: {:?}", cli.topic(), cli.partition(), req_ctx);
         let ctx = req_ctx.ctx;
@@ -180,7 +181,10 @@ async fn run_kafka_loop<CTX: Debug>(
                 match offset {
                     KfkOffset::Implicit(at) => {
                         cli.get_offset(at).await
-                            .map(|offset| KfkRsp::offset(offset))
+                            .map(|offset| {
+                                offset_meter.meter(4, Some(timestamp));
+                                KfkRsp::offset(offset)
+                            })
                     }
                     KfkOffset::Explicit(pos) => {
                         Ok(KfkRsp::offset(pos))

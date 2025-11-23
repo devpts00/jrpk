@@ -3,7 +3,7 @@ use crate::async_clean_return;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, Meter, JrpkMeter, JrpkMeters};
+use crate::metrics::{spawn_push_prometheus, Meter, JrpkMeter, JrpkMeters, CLIENT, FETCH, TCP, READ, FILE, WRITE, SEND, ERROR};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -49,7 +49,7 @@ async fn consumer_req_writer<'a>(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
     let mut id = 0;
-    let meter = metrics.meter("client", "fetch", "tcp", "write");
+    let meter = metrics.meter(CLIENT, FETCH, TCP, WRITE);
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
@@ -115,8 +115,8 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let tcp_read_meter = meters.meter("client", "fetch", "tcp", "read");
-    let file_write_meter = meters.meter("client", "fetch", "file", "write");
+    let tcp_read_meter = meters.meter(CLIENT, FETCH, TCP, READ);
+    let file_write_meter = meters.meter(CLIENT, FETCH, FILE, WRITE);
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
@@ -241,8 +241,8 @@ pub async fn producer_req_writer(
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
-    let file_read_meter = meters.meter("client", "send", "file", "read");
-    let tcp_write_meter = meters.meter("client", "send", "tcp", "write");
+    let file_read_meter = meters.meter(CLIENT, SEND, FILE, READ);
+    let tcp_write_meter = meters.meter(CLIENT, SEND, TCP, WRITE);
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
@@ -293,8 +293,8 @@ pub async fn producer_rsp_reader(
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
-    let tcp_send_read_meter = meters.meter("client", "send", "tcp", "read");
-    let tcp_error_read_meter = meters.meter("client", "error", "tcp", "read");
+    let tcp_send_read_meter = meters.meter(CLIENT, SEND, TCP, READ);
+    let tcp_error_read_meter = meters.meter(CLIENT, ERROR, TCP, READ);
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
         let length = frame.len();

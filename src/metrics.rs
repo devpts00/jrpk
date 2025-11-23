@@ -69,14 +69,29 @@ pub struct JrpkMeters {
     times: Family<JrpkLabels, Histogram>,
 }
 
+pub static IO_OP_COUNT: &str = "io_op_count";
+pub static IO_OP_VOLUME: &str = "io_op_volume";
+pub static IO_OP_DURATION: &str = "io_op_duration";
+pub static SERVER: &str = "server";
+pub static CLIENT: &str = "client";
+pub static TCP: &str = "tcp";
+pub static FILE: &str = "file";
+pub static KAFKA: &str = "kafka";
+pub static READ: &str = "read";
+pub static WRITE: &str = "write";
+pub static SEND: &str = "send";
+pub static FETCH: &str = "fetch";
+pub static OFFSET: &str = "offset";
+pub static ERROR: &str = "error";
+
 impl JrpkMeters {
     pub fn new(registry: &mut Registry) -> Self {
         let count = Family::<JrpkLabels, Counter>::default();
-        registry.register("io_op_count", "io operation count", count.clone());
+        registry.register(IO_OP_COUNT, "io operation count", count.clone());
         let bytes = Family::<JrpkLabels, Counter>::default();
-        registry.register_with_unit("io_op_volume", "io operation volume", Unit::Bytes, bytes.clone());
+        registry.register_with_unit(IO_OP_VOLUME, "io operation volume", Unit::Bytes, bytes.clone());
         let times = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.000001, 2.0, 20)) });
-        registry.register_with_unit("io_op_duration", "io operation duration", Unit::Seconds, times.clone());
+        registry.register_with_unit(IO_OP_DURATION, "io operation duration", Unit::Seconds, times.clone());
         JrpkMeters { count, bytes, times }
     }
 

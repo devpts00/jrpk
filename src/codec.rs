@@ -3,7 +3,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use std::cmp::min;
 use std::str::{from_utf8, from_utf8_unchecked};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{enabled, instrument, trace, Level};
 use crate::metrics::Meter;

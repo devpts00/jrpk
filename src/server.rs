@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
@@ -22,7 +21,7 @@ use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use ustr::Ustr;
 use crate::error::JrpkError;
-use crate::metrics::{JrpkMeter, JrpkMeters, Meter};
+use crate::metrics::{JrpkMeter, JrpkMeters, Meter, ERROR, FETCH, OFFSET, READ, SEND, SERVER, TCP, WRITE};
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
     let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
@@ -104,10 +103,10 @@ async fn server_req_reader(
     queue_size: usize,
     meters: JrpkMeters,
 ) -> Result<(), JrpkError> {
-    let send_meter = meters.meter("server", "send", "tcp", "read");
-    let fetch_meter = meters.meter("server", "fetch", "tcp", "read");
-    let offset_meter = meters.meter("server", "offset", "tcp", "read");
-    let error_meter = meters.meter("server", "error", "tcp", "read");
+    let send_meter = meters.meter(SERVER, SEND, TCP, READ);
+    let fetch_meter = meters.meter(SERVER, FETCH, TCP, READ);
+    let offset_meter = meters.meter(SERVER, OFFSET, TCP, READ);
+    let error_meter = meters.meter(SERVER, ERROR, TCP, READ);
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
@@ -155,10 +154,10 @@ async fn server_rsp_writer(
     meters: JrpkMeters,
 ) -> Result<(), JrpkError> {
 
-    let send_meter = meters.meter("server", "send", "tcp", "write");
-    let fetch_meter = meters.meter("server", "fetch", "tcp", "write");
-    let offset_meter = meters.meter("server", "offset", "tcp", "write");
-    let error_meter = meters.meter("server", "error", "tcp", "write");
+    let send_meter = meters.meter(SERVER, SEND, TCP, WRITE);
+    let fetch_meter = meters.meter(SERVER, FETCH, TCP, WRITE);
+    let offset_meter = meters.meter(SERVER, OFFSET, TCP, WRITE);
+    let error_meter = meters.meter(SERVER, ERROR, TCP, WRITE);
 
     while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
         trace!("response: {:?}", kfk_res_ctx);
