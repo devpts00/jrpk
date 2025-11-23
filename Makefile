@@ -34,8 +34,7 @@ server-release: build-release
 		server \
 		--brokers=kfk:9092 \
 		--bind=0.0.0.0:1133 \
-		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=1s
+		--metrics-bind=0.0.0.0:9090
 
 client-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk \
