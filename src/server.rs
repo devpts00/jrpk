@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
@@ -103,12 +104,10 @@ async fn server_req_reader(
     queue_size: usize,
     meters: ByteMeters,
 ) -> Result<(), JrpkError> {
-
     let send_meter = meters.meter("server", "send", "tcp", "read");
     let fetch_meter = meters.meter("server", "fetch", "tcp", "read");
     let offset_meter = meters.meter("server", "offset", "tcp", "read");
     let error_meter = meters.meter("server", "error", "tcp", "read");
-
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
         let bytes = result?;
@@ -121,9 +120,9 @@ async fn server_req_reader(
                 trace!("request: {:?}", jrp_req);
                 let (id, topic, partition, kfk_req, extra) = j2k_req(jrp_req)?;
                 match kfk_req {
-                    KfkReq::Send { .. } => send_meter.meter(length),
-                    KfkReq::Fetch { .. } => fetch_meter.meter(length),
-                    KfkReq::Offset { .. } => offset_meter.meter(length),
+                    KfkReq::Send { .. } => send_meter.meter(length, None),
+                    KfkReq::Fetch { .. } => fetch_meter.meter(length, None),
+                    KfkReq::Offset { .. } => offset_meter.meter(length, None),
                 }
                 let jrp_ctx = JrpCtx::new(id, extra);
                 let kfk_req_ctx = ReqCtx::new(jrp_ctx, kfk_req, kfk_res_ctx_snd.clone());
@@ -134,12 +133,12 @@ async fn server_req_reader(
             // and send decode error directly to the result channel, without round-trip to kafka client
             Err(err) => {
                 warn!("jsonrpc decode error: {}", err);
-                error_meter.meter(length);
                 // if even an id is absent we give up and disconnect
                 let jrp_id = serde_json::from_slice::<JrpId>(bytes.as_ref())?;
                 let jrp_ctx = JrpCtx::new(jrp_id.id, JrpExtra::None);
                 let kfk_err = JrpkError::Internal(format!("jsonrpc decode error: {}", err));
                 let kfk_res = KfkResCtx::err(jrp_ctx, kfk_err);
+                error_meter.meter(length, None);
                 kfk_res_ctx_snd.send(kfk_res).await?;
             }
         }
@@ -149,7 +148,7 @@ async fn server_req_reader(
 
 #[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv))]
 async fn server_rsp_writer(
-    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, (JrpRsp<'static>, ByteMeter)>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, (JrpRsp<'static>, ByteMeter, Option<Instant>)>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCtx>,
     meters: ByteMeters,
 ) -> Result<(), JrpkError> {
@@ -162,7 +161,7 @@ async fn server_rsp_writer(
     while let Some(kfk_res_ctx) = kfk_res_ctx_rcv.recv().await {
         trace!("response: {:?}", kfk_res_ctx);
         let ctx = kfk_res_ctx.ctx;
-        let jrp_rsp = match kfk_res_ctx.res {
+        let (jrp_rsp, meter) = match kfk_res_ctx.res {
             Ok(kfk_rsp) => {
                 match k2j_rsp(kfk_rsp, ctx.extra) {
                     Ok(jrp_rst_data) => {
@@ -182,7 +181,7 @@ async fn server_rsp_writer(
                 (JrpRsp::err(ctx.id, err.into()), error_meter.clone())
             }
         };
-        tcp_sink.send(jrp_rsp).await?;
+        tcp_sink.send((jrp_rsp, meter, Some(ctx.ts))).await?;
     }
     tcp_sink.flush().await?;
     Ok(())
@@ -209,7 +208,7 @@ async fn serve_jsonrpc(
             client_cache,
             kfk_res_snd,
             queue_size,
-            meters.clone()
+            meters.clone(),
         )
     );
     let wh = spawn(
@@ -238,7 +237,7 @@ pub async fn listen_jsonrpc(
         let mut rg = registry.lock().unwrap();
         ByteMeters::new(&mut rg)
     };
-    
+
     info!("connect: {}", brokers.join(","));
     let client = ClientBuilder::new(brokers).build().await?;
     let client_cache: Arc<KfkClientCache<JrpCtx>> = Arc::new(KfkClientCache::new(client, 1024, meters.clone()));

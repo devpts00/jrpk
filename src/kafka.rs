@@ -6,6 +6,7 @@ use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
+use std::time::{Instant, SystemTime};
 use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -152,11 +153,15 @@ async fn run_kafka_loop<CTX: Debug>(
         let ctx = req_ctx.ctx;
         let req = req_ctx.req;
         let res_ctx_snd = req_ctx.rsp_snd;
+        let timestamp = Instant::now();
         let res_rsp = match req {
             KfkReq::Send { records } => {
-                send_meter.meter(records_length(&records));
+                let length = records_length(&records);
                 cli.produce(records, Compression::Snappy).await
-                    .map(|offsets| KfkRsp::send(offsets))
+                    .map(|offsets| {
+                        send_meter.meter(length, Some(timestamp));
+                        KfkRsp::send(offsets)
+                    })
             }
             KfkReq::Fetch { offset, bytes, max_wait_ms } => {
                 let offset_explicit = match offset {
@@ -165,7 +170,10 @@ async fn run_kafka_loop<CTX: Debug>(
                 };
                 cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| {
-                        fetch_meter.meter(records_and_offsets_length(&recs_and_offsets));
+                        fetch_meter.meter(
+                            records_and_offsets_length(&recs_and_offsets),
+                            Some(timestamp),
+                        );
                         KfkRsp::fetch(recs_and_offsets, highwater_mark)
                     })
             }

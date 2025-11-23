@@ -3,6 +3,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use std::cmp::min;
 use std::str::{from_utf8, from_utf8_unchecked};
+use std::time::{Duration, Instant};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{enabled, instrument, trace, Level};
 
@@ -114,17 +115,17 @@ impl Decoder for JsonCodec {
 }
 
 pub trait Meter {
-    fn meter(&self, length: usize);
+    fn meter(&self, bytes: usize, duration: Option<Instant>);
 }
 
-impl <T: Serialize, M: Meter> Encoder<(T, M)> for JsonCodec {
+impl <T: Serialize, M: Meter> Encoder<(T, M, Option<Instant>)> for JsonCodec {
     type Error = JrpkError;
-    fn encode(&mut self, item_with_meter: (T, M), dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let (item, meter) = item_with_meter;
+    fn encode(&mut self, item_with_meter: (T, M, Option<Instant>), dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let (item, meter, timestamp) = item_with_meter;
         let length = dst.len();
         serde_json::to_writer(dst.writer(), &item)?;
         dst.put_u8(b'\n');
-        meter.meter(dst.len() - length);
+        meter.meter(dst.len() - length, timestamp);
         Ok(())
     }
 }

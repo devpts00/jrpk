@@ -12,6 +12,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::slice::from_raw_parts;
 use std::str::FromStr;
+use std::time::Instant;
 use ustr::Ustr;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -136,12 +137,13 @@ pub enum JrpExtra {
 #[derive(Debug)]
 pub struct JrpCtx {
     pub id: usize,
+    pub ts: Instant,
     pub extra: JrpExtra,
 }
 
 impl JrpCtx {
     pub fn new(id: usize, extra: JrpExtra) -> Self {
-        Self { id, extra }
+        Self { id, ts: Instant::now(), extra }
     }
 }
 

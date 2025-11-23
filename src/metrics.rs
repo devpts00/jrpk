@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::{handshake, Connection, SendRequest};
@@ -18,11 +18,13 @@ use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
+use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::{Registry, Unit};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{spawn, try_join};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, trace, warn};
+use tracing_subscriber::fmt::time;
 use crate::codec::Meter;
 use crate::error::JrpkError;
 use crate::util::CancellableHandle;
@@ -45,12 +47,16 @@ impl Labels {
 pub struct ByteMeter {
     count: Counter,
     bytes: Counter,
+    times: Histogram
 }
 
 impl Meter for ByteMeter {
-    fn meter(&self, length: usize) {
+    fn meter(&self, bytes: usize, timestamp: Option<Instant>) {
         self.count.inc();
-        self.bytes.inc_by(length as u64);
+        self.bytes.inc_by(bytes as u64);
+        if let Some(timestamp) = timestamp {
+            self.times.observe(timestamp.elapsed().as_secs_f64());
+        }
     }
 }
 
@@ -58,6 +64,7 @@ impl Meter for ByteMeter {
 pub struct ByteMeters {
     count: Family<Labels, Counter>,
     bytes: Family<Labels, Counter>,
+    times: Family<Labels, Histogram>,
 }
 
 impl ByteMeters {
@@ -66,7 +73,9 @@ impl ByteMeters {
         registry.register("io_op_count", "io operation count", count.clone());
         let bytes = Family::<Labels, Counter>::default();
         registry.register_with_unit("io_op_volume", "io operation volume", Unit::Bytes, bytes.clone());
-        ByteMeters { count, bytes }
+        let times = Family::<Labels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.000001, 2.0, 20)) });
+        registry.register_with_unit("io_op_duration", "io operation duration", Unit::Seconds, times.clone());
+        ByteMeters { count, bytes, times }
     }
 
     pub fn meter(
@@ -79,7 +88,8 @@ impl ByteMeters {
         let labels = Labels::new(mode, command, traffic, io);
         let count = self.count.get_or_create_owned(&labels);
         let bytes = self.bytes.get_or_create_owned(&labels);
-        ByteMeter { count, bytes }
+        let times = self.times.get_or_create_owned(&labels);
+        ByteMeter { count, bytes, times }
     }
 
 }
