@@ -3,10 +3,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use std::cmp::min;
 use std::str::{from_utf8, from_utf8_unchecked};
-use std::time::Instant;
+use prometheus_client::metrics::counter::Counter;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{enabled, instrument, trace, Level};
-use crate::metrics::Meter;
 
 #[derive(Debug)]
 pub struct JsonCodec {
@@ -115,26 +114,25 @@ impl Decoder for JsonCodec {
     }
 }
 
-pub struct MeteredItem<T, M: Meter> {
+pub struct MeteredItem<T> {
     item: T,
-    meter: M,
-    timestamp: Option<Instant>,
+    throughput: Counter,
 }
 
-impl <T, M: Meter> MeteredItem<T, M> {
-    pub fn new(item: T, meter: M, timestamp: Option<Instant>) -> Self {
-        MeteredItem { item, meter, timestamp }
+impl <T> MeteredItem<T> {
+    pub fn new(item: T, throughput: Counter) -> Self {
+        MeteredItem { item, throughput }
     }
 }
 
-impl <T: Serialize, M: Meter> Encoder<MeteredItem<T, M>> for JsonCodec {
+impl <T: Serialize> Encoder<MeteredItem<T>> for JsonCodec {
     type Error = JrpkError;
-    fn encode(&mut self, metered_item: MeteredItem<T, M>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let MeteredItem { item, meter, timestamp } = metered_item;
+    fn encode(&mut self, metered_item: MeteredItem<T>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let MeteredItem { item, throughput } = metered_item;
         let length = dst.len();
         serde_json::to_writer(dst.writer(), &item)?;
         dst.put_u8(b'\n');
-        meter.meter(dst.len() - length, timestamp);
+        throughput.inc_by((dst.len() - length) as u64);
         Ok(())
     }
 }

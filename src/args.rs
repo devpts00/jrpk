@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use clap_duration::duration_range_value_parse;
 use duration_human::{DurationHuman, DurationHumanValidator};
+use faststr::FastStr;
 use hyper::Uri;
 use ustr::Ustr;
 use crate::error::JrpkError;
@@ -98,7 +99,7 @@ pub enum Mode {
         #[arg(long)]
         address: Ustr,
         #[arg(long)]
-        topic: Ustr,
+        topic: FastStr,
         #[arg(long, required = false)]
         partition: i32,
         #[arg(long, default_value = "1MiB")]

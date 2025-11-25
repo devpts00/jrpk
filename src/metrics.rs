@@ -2,8 +2,9 @@ use std::convert::Infallible;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use bytes::Bytes;
+use faststr::FastStr;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::{handshake, Connection, SendRequest};
 use hyper::{Method, Request, Response, StatusCode, Uri};
@@ -14,7 +15,8 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper::server::conn::http1;
 use log::error;
-use prometheus_client::encoding::EncodeLabelSet;
+use parking_lot::MappedRwLockReadGuard;
+use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue, LabelValueEncoder};
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
@@ -25,91 +27,138 @@ use tokio::{spawn, try_join};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, trace, warn};
 use crate::error::JrpkError;
+use crate::kafka::KfkKey;
 use crate::util::CancellableHandle;
 
-pub trait Meter {
-    fn meter(&self, bytes: usize, duration: Option<Instant>);
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct FastStrExt(FastStr);
+
+impl From<FastStr> for FastStrExt {
+    fn from(s: FastStr) -> Self {
+        FastStrExt(s)
+    }
 }
 
+impl EncodeLabelValue for FastStrExt {
+    fn encode(&self, encoder: &mut LabelValueEncoder) -> Result<(), std::fmt::Error> {
+        EncodeLabelValue::encode(&self.0.as_str(), encoder)
+    }
+}
+
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct JrpkLabels {
+struct ThroughputLabels {
     mode: &'static str,
     command: &'static str,
     io: &'static str,
     traffic: &'static str,
+    topic: Option<FastStrExt>,
+    partition: Option<i32>,
 }
 
-impl JrpkLabels {
-    pub fn new(mode: &'static str, command: &'static str, traffic: &'static str, io: &'static str) -> Self {
-        JrpkLabels { mode, command, traffic, io }
+impl ThroughputLabels {
+    pub fn new(
+        mode: &'static str,
+        command: &'static str,
+        traffic: &'static str,
+        io: &'static str,
+        topic: Option<FastStr>,
+        partition: Option<i32>,
+    ) -> Self {
+        ThroughputLabels { mode, command, traffic, io, topic: topic.map(|t|t.into()), partition }
     }
 }
 
-#[derive(Clone)]
-pub struct JrpkMeter {
-    count: Counter,
-    bytes: Counter,
-    times: Histogram
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct LatencyLabels {
+    mode: &'static str,
+    command: &'static str,
+    topic: FastStrExt,
+    partition: i32,
 }
 
-impl Meter for JrpkMeter {
-    fn meter(&self, bytes: usize, timestamp: Option<Instant>) {
-        self.count.inc();
-        self.bytes.inc_by(bytes as u64);
-        if let Some(timestamp) = timestamp {
-            self.times.observe(timestamp.elapsed().as_secs_f64());
-        }
+impl LatencyLabels {
+    fn new(
+        mode: &'static str,
+        command: &'static str,
+        topic: FastStr,
+        partition: i32,
+    ) -> Self {
+        LatencyLabels { mode, command, topic: topic.into(), partition }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct JrpkMeters {
-    count: Family<JrpkLabels, Counter>,
-    bytes: Family<JrpkLabels, Counter>,
-    times: Family<JrpkLabels, Histogram>,
+    throughputs: Family<ThroughputLabels, Counter>,
+    latencies: Family<LatencyLabels, Histogram>,
 }
-
-pub static IO_OP_COUNT: &str = "io_op_count";
-pub static IO_OP_VOLUME: &str = "io_op_volume";
-pub static IO_OP_DURATION: &str = "io_op_duration";
-pub static SERVER: &str = "server";
-pub static CLIENT: &str = "client";
-pub static TCP: &str = "tcp";
-pub static FILE: &str = "file";
-pub static KAFKA: &str = "kafka";
-pub static READ: &str = "read";
-pub static WRITE: &str = "write";
-pub static SEND: &str = "send";
-pub static FETCH: &str = "fetch";
-pub static OFFSET: &str = "offset";
-pub static ERROR: &str = "error";
 
 impl JrpkMeters {
     pub fn new(registry: &mut Registry) -> Self {
-        let count = Family::<JrpkLabels, Counter>::default();
-        registry.register(IO_OP_COUNT, "io operation count", count.clone());
-        let bytes = Family::<JrpkLabels, Counter>::default();
-        registry.register_with_unit(IO_OP_VOLUME, "io operation volume", Unit::Bytes, bytes.clone());
-        let times = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.000001, 2.0, 20)) });
-        registry.register_with_unit(IO_OP_DURATION, "io operation duration", Unit::Seconds, times.clone());
-        JrpkMeters { count, bytes, times }
+        let throughputs = Family::<ThroughputLabels, Counter>::default();
+        registry.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, throughputs.clone());
+        let latencies = Family::<LatencyLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.000001, 2.0, 20)) });
+        registry.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies.clone());
+        JrpkMeters { throughputs, latencies }
     }
-
-    pub fn meter(
+    pub fn throughput_ref(
         &self,
         mode: &'static str,
         command: &'static str,
+        traffic: &'static str,
         io: &'static str,
-        traffic: &'static str
-    ) -> JrpkMeter {
-        let labels = JrpkLabels::new(mode, command, traffic, io);
-        let count = self.count.get_or_create_owned(&labels);
-        let bytes = self.bytes.get_or_create_owned(&labels);
-        let times = self.times.get_or_create_owned(&labels);
-        JrpkMeter { count, bytes, times }
+        key: Option<KfkKey>,
+    ) -> MappedRwLockReadGuard<'_, Counter> {
+        let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
+        let labels = ThroughputLabels::new(mode, command, traffic, io, topic, partition);
+        self.throughputs.get_or_create(&labels)
+    }
+    pub fn throughput_owned(
+        &self,
+        mode: &'static str,
+        command: &'static str,
+        traffic: &'static str,
+        io: &'static str,
+        key: Option<KfkKey>,
+    ) -> Counter {
+        let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
+        let labels = ThroughputLabels::new(mode, command, traffic, io, topic, partition);
+        self.throughputs.get_or_create_owned(&labels)
+    }
+    pub fn latency_ref(
+        &self,
+        mode: &'static str,
+        command: &'static str,
+        key: KfkKey,
+    ) -> MappedRwLockReadGuard<'_, Histogram> {
+        let labels = LatencyLabels::new(mode, command, key.topic, key.partition);
+        self.latencies.get_or_create(&labels)
+    }
+    pub fn latency_owned(
+        &self,
+        mode: &'static str,
+        command: &'static str,
+        key: KfkKey,
+    ) -> Histogram {
+        let labels = LatencyLabels::new(mode, command, key.topic, key.partition);
+        self.latencies.get_or_create_owned(&labels)
     }
 
 }
+
+pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
+pub static IO_OP_LATENCY: &str = "io_op_latency";
+pub static LBL_SERVER: &str = "server";
+pub static LBL_CLIENT: &str = "client";
+pub static LBL_TCP: &str = "tcp";
+pub static LBL_KAFKA: &str = "kafka";
+pub static LBL_READ: &str = "read";
+pub static LBL_WRITE: &str = "write";
+pub static LBL_SEND: &str = "send";
+pub static LBL_FETCH: &str = "fetch";
+pub static LBL_OFFSET: &str = "offset";
+pub static LBL_ERROR: &str = "error";
 
 #[instrument(level="debug", ret, err, skip(registry, snd_req))]
 async fn push(

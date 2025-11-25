@@ -51,21 +51,24 @@ pub fn init_tracing() {
 }
 
 #[derive(Debug)]
-pub struct ResCtx<RSP, CTX, ERR: Error> {
-    pub ctx: CTX,
+pub struct ResCtx<RSP, ERR: Error, CTX> {
     pub res: Result<RSP, ERR>,
+    pub ctx: CTX,
 }
 
-impl <RSP, CTX, ERR: Error> ResCtx<RSP, CTX, ERR> {
-    pub fn ok(ctx: CTX, data: RSP) -> Self {
-        ResCtx { ctx, res: Ok(data) }
+impl <RSP, CTX, ERR: Error> ResCtx<RSP, ERR, CTX> {
+    pub fn new(res: Result<RSP, ERR>, ctx: CTX) -> Self {
+        ResCtx { res, ctx }
     }
-    pub fn err(ctx: CTX, err: ERR) -> Self {
-        ResCtx { ctx, res: Err(err) }
+    pub fn ok(data: RSP, ctx: CTX) -> Self {
+        ResCtx::new(Ok(data), ctx)
+    }
+    pub fn err(err: ERR, ctx: CTX) -> Self {
+        ResCtx::new(Err(err), ctx)
     }
 }
 
-impl <RSP: Display, CTX: Display, ERR: Error> Display for ResCtx<RSP, CTX, ERR> {
+impl <RSP: Display, ERR: Error, CTX: Display> Display for ResCtx<RSP, ERR, CTX> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.res.as_ref() {
             Ok(rsp) => {
@@ -78,27 +81,27 @@ impl <RSP: Display, CTX: Display, ERR: Error> Display for ResCtx<RSP, CTX, ERR> 
     }
 }
 
-pub struct ReqCtx<REQ, RSP, CTX, ERR: Error> {
-    pub ctx: CTX,
+pub struct ReqCtx<REQ, RSP, ERR: Error, CTX> {
     pub req: REQ,
-    pub rsp_snd: Sender<ResCtx<RSP, CTX, ERR>>,
+    pub ctx: CTX,
+    pub res_rsp_ctx_snd: Sender<ResCtx<RSP, ERR, CTX>>,
 }
 
-impl <REQ: Debug, RSP, CTX: Debug, ERR: Error> Debug for ReqCtx<REQ, RSP, CTX, ERR> {
+impl <REQ: Debug, RSP, ERR: Error, CTX: Debug> Debug for ReqCtx<REQ, RSP, ERR, CTX> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "ReqTag {{ ctx: {:?}, req: {:?} }}>", self.ctx, self.req)
     }
 }
 
-impl <REQ, RSP, CTX, ERR: Error> ReqCtx<REQ, RSP, CTX, ERR> {
-    pub fn new(ctx: CTX, req: REQ, rsp_snd: Sender<ResCtx<RSP, CTX, ERR>>) -> Self {
-        ReqCtx { ctx, req, rsp_snd }
+impl <REQ, RSP, ERR: Error, CTX> ReqCtx<REQ, RSP, ERR, CTX> {
+    pub fn new(req: REQ, ctx: CTX, res_rsp_ctx_snd: Sender<ResCtx<RSP, ERR, CTX>>) -> Self {
+        ReqCtx { req, ctx, res_rsp_ctx_snd }
     }
 }
 
-impl <REQ: Display, RSP, TAG: Display, ERR: Error> Display for ReqCtx<REQ, RSP, TAG, ERR> {
+impl <REQ: Display, RSP, ERR: Error, CTX: Display> Display for ReqCtx<REQ, RSP, ERR, CTX> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tag: {}, req: {}", self.ctx, self.req)
+        write!(f, "ctx: {}, req: {}", self.ctx, self.req)
     }
 }
 

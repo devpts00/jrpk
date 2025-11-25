@@ -3,7 +3,7 @@ use crate::async_clean_return;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, Meter, JrpkMeter, JrpkMeters, CLIENT, FETCH, TCP, READ, FILE, WRITE, SEND, ERROR};
+use crate::metrics::{spawn_push_prometheus, JrpkMeters, LBL_CLIENT, LBL_FETCH, LBL_TCP, LBL_READ, LBL_WRITE, LBL_SEND};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -25,6 +25,7 @@ use tokio::{spawn, try_join};
 use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, instrument, trace};
 use ustr::Ustr;
+use crate::kafka::KfkKey;
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -35,12 +36,11 @@ fn a2j_offset(ao: Offset) -> JrpOffset {
     }
 }
 
-type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>, JrpkMeter>;
+type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
 
 #[instrument(ret, err, skip(metrics, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
-    topic: Ustr,
-    partition: i32,
+    key: KfkKey,
     max_batch_size: i32,
     max_wait_ms: i32,
     metrics: JrpkMeters,
@@ -49,14 +49,15 @@ async fn consumer_req_writer<'a>(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
     let mut id = 0;
-    let meter = metrics.meter(CLIENT, FETCH, TCP, WRITE);
+    let throughput = metrics.throughput_owned(LBL_CLIENT, LBL_FETCH, LBL_TCP, LBL_WRITE, Some(key.clone()));
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
+        let key = key.clone();
         let codecs = JrpDataCodecs::new(JrpDataCodec::Str, JrpDataCodec::Json);
         let bytes = 1..max_batch_size;
-        let jrp_req_fetch = JrpReq::fetch(id, topic, partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
+        let jrp_req_fetch = JrpReq::fetch(id, key.topic, key.partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
+        let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, throughput.clone());
         times.insert(id, Instant::now()).await;
-        let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, meter.clone(), None);
         tcp_sink.send(metered_item).await?;
         id = id + 1;
     }
@@ -75,12 +76,11 @@ fn less_record_offset(record: &JrpRecFetch, offset: Offset) -> bool {
 }
 
 #[allow(clippy::needless_lifetimes)]
-#[instrument(ret, err, level="trace", skip(writer, meter, records))]
+#[instrument(ret, err, level="trace", skip(writer, records))]
 async fn write_records<'a>(
     id: usize,
     records: Vec<JrpRecFetch<'a>>,
     until: Offset,
-    meter: &JrpkMeter,
     writer: &mut BufWriter<File>,
 ) -> Result<(), JrpkError> {
     block_in_place(|| {
@@ -93,7 +93,6 @@ async fn write_records<'a>(
                         let buf = data.as_bytes()?;
                         writer.write_all(buf.as_ref())?;
                         writer.write_all(b"\n")?;
-                        meter.meter(buf.len() + 1, None);
                     }
                     None => {
                         warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
@@ -107,6 +106,7 @@ async fn write_records<'a>(
 
 #[instrument(ret, err, skip(meters, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
+    key: KfkKey,
     path: Ustr,
     from: Offset,
     until: Offset,
@@ -115,22 +115,21 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let tcp_read_meter = meters.meter(CLIENT, FETCH, TCP, READ);
-    let file_write_meter = meters.meter(CLIENT, FETCH, FILE, WRITE);
+    let throughput = meters.throughput_owned(LBL_CLIENT, LBL_FETCH, LBL_TCP, LBL_READ, Some(key));
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
-        let length = frame.len();
+        let length = frame.len() as u64;
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
-        let ts = times.remove(&id).await;
+        // TODO: write latency metric
         match jrp_rsp.take_result() {
             Ok(jrp_rsp_data) => {
                 match jrp_rsp_data {
                     JrpRspData::Fetch { high_watermark, mut records } => {
-                        tcp_read_meter.meter(length, ts);
+                        throughput.inc_by(length);
                         records.sort_by_key(|r| r.offset);
                         let mut done = true;
                         // if more data is available
@@ -141,7 +140,7 @@ async fn consumer_rsp_reader(
                                 offset_snd.send(Offset::Offset(last.offset + 1)).await?;
                             }
                         }
-                        write_records(id, records, until, &file_write_meter, &mut writer).await?;
+                        write_records(id, records, until, &mut writer).await?;
                         if done {
                             break;
                         }
@@ -168,10 +167,9 @@ async fn consumer_rsp_reader(
 
 #[instrument(ret, err)]
 pub async fn consume(
-    path: Ustr,
     address: Ustr,
-    topic: Ustr,
-    partition: i32,
+    key: KfkKey,
+    path: Ustr,
     from: Offset,
     until: Offset,
     max_batch_size: i32,
@@ -198,8 +196,7 @@ pub async fn consume(
 
     let wh = spawn(
         consumer_req_writer(
-            topic,
-            partition,
+            key.clone(),
             max_batch_size,
             max_wait_ms,
             metrics.clone(),
@@ -211,6 +208,7 @@ pub async fn consume(
 
     let rh = spawn(
         consumer_rsp_reader(
+            key,
             path,
             from,
             until,
@@ -226,13 +224,12 @@ pub async fn consume(
     Ok(())
 }
 
-type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>, JrpkMeter>;
+type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>>;
 
 #[instrument(ret, skip(meters, tcp_sink))]
 pub async fn producer_req_writer(
+    key: KfkKey,
     path: Ustr,
-    topic: Ustr,
-    partition: i32,
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,
@@ -241,8 +238,7 @@ pub async fn producer_req_writer(
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
-    let file_read_meter = meters.meter(CLIENT, SEND, FILE, READ);
-    let tcp_write_meter = meters.meter(CLIENT, SEND, TCP, WRITE);
+    let throughput = meters.throughput_owned(LBL_CLIENT, LBL_SEND, LBL_TCP, LBL_WRITE, Some(key.clone()));
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
@@ -251,23 +247,22 @@ pub async fn producer_req_writer(
     let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
     let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
     let mut size: usize = 0;
-    let timestamp = Instant::now();
     while let Some(result) = file_stream.next().await {
+        let key = key.clone();
         let frame = result?;
         let json: &RawValue = unsafe { async_clean_return!( JrpBytes::from_bytes(&frame), tcp_sink.close().await) };
         let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
         let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
-        file_read_meter.meter(frame.len(), Some(timestamp));
         size += frame.len();
         frames.push(frame);
         records.push(jrp_rec);
         if size > max_batch_size - max_rec_size || records.len() >= max_batch_rec_count {
-            let jrp_req = JrpReq::send(id, topic, partition, records);
+            let jrp_req = JrpReq::send(id, key.topic, key.partition, records);
             records = Vec::with_capacity(max_batch_rec_count);
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
             frames = Vec::with_capacity(max_batch_rec_count);
             times.insert(id, Instant::now()).await;
-            let metered_item = JrpkMeteredProdReq::new(jrp_bytes, tcp_write_meter.clone(), None);
+            let metered_item = JrpkMeteredProdReq::new(jrp_bytes, throughput.clone());
             async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
             id += 1;
             size = 0;
@@ -275,10 +270,10 @@ pub async fn producer_req_writer(
     }
 
     if !records.is_empty() && !frames.is_empty() {
-        let jrp_req = JrpReq::send(id, topic.clone(), partition, records);
+        let jrp_req = JrpReq::send(id, key.topic, key.partition, records);
         let jrp_bytes = JrpBytes::new(jrp_req, frames);
         times.insert(id, Instant::now()).await;
-        let metered_item = JrpkMeteredProdReq::new(jrp_bytes, tcp_write_meter.clone(), None);
+        let metered_item = JrpkMeteredProdReq::new(jrp_bytes, throughput);
         async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
     }
 
@@ -289,26 +284,24 @@ pub async fn producer_req_writer(
 
 #[instrument(ret, skip(meters, tcp_stream))]
 pub async fn producer_rsp_reader(
+    key: KfkKey,
     meters: JrpkMeters,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
-    let tcp_send_read_meter = meters.meter(CLIENT, SEND, TCP, READ);
-    let tcp_error_read_meter = meters.meter(CLIENT, ERROR, TCP, READ);
+    let throughput = meters.throughput_owned(LBL_CLIENT, LBL_SEND, LBL_TCP, LBL_READ, Some(key.clone()));
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
-        let length = frame.len();
+        let length = frame.len() as u64;
+        throughput.inc_by(length);
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
-        let timestamp = times.remove(&id).await;
         match jrp_rsp.take_result() {
             Ok(data) => {
                 debug!("success, id: {}, {:?}", id, data);
-                tcp_send_read_meter.meter(length, timestamp);
             }
             Err(err) => {
                 error!("error, id: {}, message: {}", id, err);
-                tcp_error_read_meter.meter(length, timestamp);
             }
         }
     }
@@ -317,10 +310,9 @@ pub async fn producer_rsp_reader(
 
 #[instrument(ret, err)]
 pub async fn produce(
-    path: Ustr,
     address: Ustr,
-    topic: Ustr,
-    partition: i32,
+    key: KfkKey,
+    path: Ustr,
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,
@@ -344,9 +336,8 @@ pub async fn produce(
     let (tcp_sink, tcp_stream) = framed.split();
     let wh = tokio::spawn(
         producer_req_writer(
+            key.clone(),
             path,
-            topic,
-            partition,
             max_frame_size,
             max_batch_rec_count,
             max_batch_size,
@@ -358,6 +349,7 @@ pub async fn produce(
     );
     let rh = tokio::spawn(
         producer_rsp_reader(
+            key,
             metrics.clone(),
             times.clone(),
             tcp_stream

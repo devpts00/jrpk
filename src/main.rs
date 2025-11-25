@@ -20,6 +20,7 @@ use tokio::spawn;
 use tracing::info;
 use crate::args::{Command, Mode};
 use crate::client::{consume, produce};
+use crate::kafka::KfkKey;
 use crate::metrics::listen_prometheus;
 
 async fn run(args: args::Args) {
@@ -76,10 +77,9 @@ async fn run(args: args::Args) {
                     join_with_signal(
                         spawn(
                             produce(
-                                path,
                                 address,
-                                topic,
-                                partition,
+                                KfkKey::new(topic, partition),
+                                path,
                                 max_frame_byte_size.as_u64() as usize,
                                 max_batch_rec_count as usize,
                                 max_batch_byte_size.as_u64() as usize,
@@ -99,10 +99,9 @@ async fn run(args: args::Args) {
                     join_with_signal(
                         spawn(
                             consume(
-                                path,
                                 address,
-                                topic,
-                                partition,
+                                KfkKey::new(topic, partition),
+                                path,
                                 from,
                                 until,
                                 max_batch_byte_size.as_u64() as i32,

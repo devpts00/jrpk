@@ -13,7 +13,8 @@ use std::ops::Range;
 use std::slice::from_raw_parts;
 use std::str::FromStr;
 use std::time::Instant;
-use ustr::Ustr;
+use faststr::FastStr;
+use crate::kafka::KfkKey;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -130,7 +131,6 @@ impl JrpDataCodecs {
 
 #[derive(Debug)]
 pub enum JrpExtra {
-    None,
     DataCodecs(JrpDataCodecs),
 }
 
@@ -138,12 +138,19 @@ pub enum JrpExtra {
 pub struct JrpCtx {
     pub id: usize,
     pub ts: Instant,
-    pub extra: JrpExtra,
+    pub key: Option<KfkKey>,
+    pub extra: Option<JrpExtra>,
 }
 
 impl JrpCtx {
-    pub fn new(id: usize, extra: JrpExtra) -> Self {
-        Self { id, ts: Instant::now(), extra }
+    pub fn new(id: usize, ts: Instant, key: Option<KfkKey>, extra: Option<JrpExtra>) -> Self {
+        JrpCtx { id, ts, key, extra }
+    }
+    pub fn full(id: usize, key: KfkKey, extra: Option<JrpExtra>) -> Self {
+        JrpCtx::new(id, Instant::now(), Some(key), extra)
+    }
+    pub fn id(id: usize) -> Self {
+        JrpCtx::new(id, Instant::now(), None, None)
     }
 }
 
@@ -254,7 +261,7 @@ impl <'de> Deserialize<'de> for JrpOffset {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(bound(deserialize = "'de: 'a"))]
 pub struct JrpParams<'a> {
-    pub topic: Ustr,
+    pub topic: FastStr,
     pub partition: i32,
     pub offset: Option<JrpOffset>,
     pub codecs: Option<JrpDataCodecs>,
@@ -266,7 +273,7 @@ pub struct JrpParams<'a> {
 impl <'a> JrpParams<'a> {
     #[inline]
     pub fn new(
-        topic: Ustr,
+        topic: FastStr,
         partition: i32,
         offset: Option<JrpOffset>,
         codecs: Option<JrpDataCodecs>,
@@ -278,17 +285,17 @@ impl <'a> JrpParams<'a> {
     }
 
     #[inline]
-    pub fn send (topic: Ustr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
+    pub fn send (topic: FastStr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
         JrpParams::new(topic, partition, None, None, Some(records), None, None)
     }
 
     #[inline]
-    pub fn fetch(topic: Ustr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+    pub fn fetch(topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         JrpParams::new(topic, partition, Some(offset), Some(codecs), None, Some(bytes), Some(max_wait_ms))
     }
 
     #[inline]
-    pub fn offset (topic: Ustr, partition: i32, offset: JrpOffset) -> Self {
+    pub fn offset (topic: FastStr, partition: i32, offset: JrpOffset) -> Self {
         JrpParams::new(topic, partition, Some(offset), None, None, None, None)
     }
 }
@@ -308,13 +315,13 @@ impl <'a> JrpReq<'a> {
         JrpReq { jsonrpc: "2.0", id, method, params }
     }
     #[allow(unused)]
-    pub fn offset(id: usize, topic: Ustr, partition: i32, offset: JrpOffset) -> Self {
+    pub fn offset(id: usize, topic: FastStr, partition: i32, offset: JrpOffset) -> Self {
         JrpReq::new(id, JrpMethod::Offset, JrpParams::offset(topic, partition, offset))
     }
-    pub fn fetch(id: usize, topic: Ustr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+    pub fn fetch(id: usize, topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         JrpReq::new(id, JrpMethod::Fetch, JrpParams::fetch(topic, partition, offset, codecs, bytes, max_wait_ms))
     }
-    pub fn send(id: usize, topic: Ustr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
+    pub fn send(id: usize, topic: FastStr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
         JrpReq::new(id, JrpMethod::Send, JrpParams::send(topic, partition, records))
     }
 }
