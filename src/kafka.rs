@@ -12,7 +12,7 @@ use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, instrument, trace};
-use crate::metrics::{JrpkMeters, LblCommand, LblIO, LblMode, LblTraffic};
+use crate::metrics::{JrpkMeters, LblCommand, LblTier, LblTraffic};
 
 #[derive(Debug)]
 pub enum KfkOffset {
@@ -152,10 +152,12 @@ async fn run_kafka_loop<CTX: Debug>(
             KfkReq::Send { records } => {
                 let length = records_length(&records);
                 let key = key.clone();
+                meters.throughput_ref(LblTier::Kafka, LblCommand::Send, LblTraffic::Write, Some(key.clone()))
+                    .inc_by(length as u64);
                 cli.produce(records, Compression::Snappy).await
                     .map(|offsets| {
-                        meters.throughput_owned(LblMode::Server, LblCommand::Send, LblTraffic::Write, LblIO::Kafka, Some(key))
-                            .inc_by(length as u64);
+                        meters.throughput_ref(LblTier::Kafka, LblCommand::Send, LblTraffic::Read, Some(key))
+                            .inc_by(8 * offsets.len() as u64);
                         KfkRsp::send(offsets)
                     })
             }
@@ -165,9 +167,11 @@ async fn run_kafka_loop<CTX: Debug>(
                     KfkOffset::Explicit(n) => n
                 };
                 let key = key.clone();
+                meters.throughput_ref(LblTier::Kafka, LblCommand::Fetch, LblTraffic::Write, Some(key.clone()))
+                    .inc_by(20);
                 cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| {
-                        meters.throughput_ref(LblMode::Server, LblCommand::Fetch, LblTraffic::Read, LblIO::Kafka, Some(key))
+                        meters.throughput_ref(LblTier::Kafka, LblCommand::Fetch, LblTraffic::Read, Some(key))
                             .inc_by(records_and_offsets_length(&recs_and_offsets) as u64);
                         KfkRsp::fetch(recs_and_offsets, highwater_mark)
                     })
@@ -176,9 +180,11 @@ async fn run_kafka_loop<CTX: Debug>(
                 match offset {
                     KfkOffset::Implicit(at) => {
                         let key = key.clone();
+                        meters.throughput_ref(LblTier::Kafka, LblCommand::Offset, LblTraffic::Write, Some(key.clone()))
+                            .inc_by(4);
                         cli.get_offset(at).await
                             .map(|offset| {
-                                meters.throughput_ref(LblMode::Server, LblCommand::Offset, LblTraffic::Read, LblIO::Kafka, Some(key))
+                                meters.throughput_ref(LblTier::Kafka, LblCommand::Offset, LblTraffic::Read, Some(key))
                                     .inc_by(4);
                                 KfkRsp::offset(offset)
                             })

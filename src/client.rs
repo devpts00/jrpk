@@ -3,7 +3,7 @@ use crate::async_clean_return;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpDataCodec, JrpDataCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, JrpkMeters, LblCommand, LblIO, LblMode, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, JrpkMeters, LblCommand, LblTier, LblTraffic};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -49,7 +49,7 @@ async fn consumer_req_writer<'a>(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
     let mut id = 0;
-    let throughput = metrics.throughput_owned(LblMode::Client, LblCommand::Fetch, LblTraffic::Write, LblIO::TCP, Some(key.clone()));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblCommand::Fetch, LblTraffic::Write, Some(key.clone()));
     while let Some(offset) = offset_rcv.recv().await {
         // TODO: support all codecs
         let key = key.clone();
@@ -115,7 +115,7 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let throughput = meters.throughput_owned(LblMode::Client, LblCommand::Fetch, LblTraffic::Read, LblIO::TCP, Some(key));
+    let throughput = meters.throughput_owned(LblTier::Client, LblCommand::Fetch, LblTraffic::Read, Some(key));
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
@@ -238,7 +238,7 @@ pub async fn producer_req_writer(
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
-    let throughput = meters.throughput_owned(LblMode::Client, LblCommand::Send, LblTraffic::Write, LblIO::TCP, Some(key.clone()));
+    let throughput = meters.throughput_owned(LblTier::Client, LblCommand::Send, LblTraffic::Write, Some(key.clone()));
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
@@ -289,7 +289,7 @@ pub async fn producer_rsp_reader(
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
-    let throughput = meters.throughput_owned(LblMode::Client, LblCommand::Send, LblTraffic::Read, LblIO::TCP, Some(key.clone()));
+    let throughput = meters.throughput_owned(LblTier::Client, LblCommand::Send, LblTraffic::Read, Some(key.clone()));
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
         let length = frame.len() as u64;

@@ -46,18 +46,13 @@ impl EncodeLabelValue for FastStrExt {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
-pub enum LblMode {
-    Server, Client
+pub enum LblTier {
+    Kafka, Server, Client
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
 pub enum LblCommand {
     Unknown, Send, Fetch, Offset
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
-pub enum LblIO {
-    TCP, Kafka
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
@@ -67,9 +62,8 @@ pub enum LblTraffic {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ThroughputLabels {
-    mode: LblMode,
+    tier: LblTier,
     command: LblCommand,
-    io: LblIO,
     traffic: LblTraffic,
     topic: Option<FastStrExt>,
     partition: Option<i32>,
@@ -77,20 +71,19 @@ struct ThroughputLabels {
 
 impl ThroughputLabels {
     pub fn new(
-        mode: LblMode,
+        tier: LblTier,
         command: LblCommand,
         traffic: LblTraffic,
-        io: LblIO,
         topic: Option<FastStr>,
         partition: Option<i32>,
     ) -> Self {
-        ThroughputLabels { mode, command, traffic, io, topic: topic.map(|t|t.into()), partition }
+        ThroughputLabels { tier, command, traffic, topic: topic.map(|t|t.into()), partition }
     }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct LatencyLabels {
-    mode: LblMode,
+    tier: LblTier,
     command: LblCommand,
     topic: FastStrExt,
     partition: i32,
@@ -98,12 +91,12 @@ struct LatencyLabels {
 
 impl LatencyLabels {
     fn new(
-        mode: LblMode,
+        tier: LblTier,
         command: LblCommand,
         topic: FastStr,
         partition: i32,
     ) -> Self {
-        LatencyLabels { mode, command, topic: topic.into(), partition }
+        LatencyLabels { tier, command, topic: topic.into(), partition }
     }
 }
 
@@ -123,44 +116,42 @@ impl JrpkMeters {
     }
     pub fn throughput_ref(
         &self,
-        mode: LblMode,
+        tier: LblTier,
         command: LblCommand,
         traffic: LblTraffic,
-        io: LblIO,
         key: Option<KfkKey>,
     ) -> MappedRwLockReadGuard<'_, Counter> {
         let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
-        let labels = ThroughputLabels::new(mode, command, traffic, io, topic, partition);
+        let labels = ThroughputLabels::new(tier, command, traffic, topic, partition);
         self.throughputs.get_or_create(&labels)
     }
     pub fn throughput_owned(
         &self,
-        mode: LblMode,
+        tier: LblTier,
         command: LblCommand,
         traffic: LblTraffic,
-        io: LblIO,
         key: Option<KfkKey>,
     ) -> Counter {
         let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
-        let labels = ThroughputLabels::new(mode, command, traffic, io, topic, partition);
+        let labels = ThroughputLabels::new(tier, command, traffic, topic, partition);
         self.throughputs.get_or_create_owned(&labels)
     }
     pub fn latency_ref(
         &self,
-        mode: LblMode,
+        tier: LblTier,
         command: LblCommand,
         key: KfkKey,
     ) -> MappedRwLockReadGuard<'_, Histogram> {
-        let labels = LatencyLabels::new(mode, command, key.topic, key.partition);
+        let labels = LatencyLabels::new(tier, command, key.topic, key.partition);
         self.latencies.get_or_create(&labels)
     }
     pub fn latency_owned(
         &self,
-        mode: LblMode,
+        tier: LblTier,
         command: LblCommand,
         key: KfkKey,
     ) -> Histogram {
-        let labels = LatencyLabels::new(mode, command, key.topic, key.partition);
+        let labels = LatencyLabels::new(tier, command, key.topic, key.partition);
         self.latencies.get_or_create_owned(&labels)
     }
 
