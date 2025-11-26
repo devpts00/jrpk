@@ -45,23 +45,42 @@ impl EncodeLabelValue for FastStrExt {
     }
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum LblMode {
+    Server, Client
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum LblCommand {
+    Unknown, Send, Fetch, Offset
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum LblIO {
+    TCP, Kafka
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum LblTraffic {
+    Read, Write
+}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ThroughputLabels {
-    mode: &'static str,
-    command: &'static str,
-    io: &'static str,
-    traffic: &'static str,
+    mode: LblMode,
+    command: LblCommand,
+    io: LblIO,
+    traffic: LblTraffic,
     topic: Option<FastStrExt>,
     partition: Option<i32>,
 }
 
 impl ThroughputLabels {
     pub fn new(
-        mode: &'static str,
-        command: &'static str,
-        traffic: &'static str,
-        io: &'static str,
+        mode: LblMode,
+        command: LblCommand,
+        traffic: LblTraffic,
+        io: LblIO,
         topic: Option<FastStr>,
         partition: Option<i32>,
     ) -> Self {
@@ -71,16 +90,16 @@ impl ThroughputLabels {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct LatencyLabels {
-    mode: &'static str,
-    command: &'static str,
+    mode: LblMode,
+    command: LblCommand,
     topic: FastStrExt,
     partition: i32,
 }
 
 impl LatencyLabels {
     fn new(
-        mode: &'static str,
-        command: &'static str,
+        mode: LblMode,
+        command: LblCommand,
         topic: FastStr,
         partition: i32,
     ) -> Self {
@@ -104,10 +123,10 @@ impl JrpkMeters {
     }
     pub fn throughput_ref(
         &self,
-        mode: &'static str,
-        command: &'static str,
-        traffic: &'static str,
-        io: &'static str,
+        mode: LblMode,
+        command: LblCommand,
+        traffic: LblTraffic,
+        io: LblIO,
         key: Option<KfkKey>,
     ) -> MappedRwLockReadGuard<'_, Counter> {
         let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
@@ -116,10 +135,10 @@ impl JrpkMeters {
     }
     pub fn throughput_owned(
         &self,
-        mode: &'static str,
-        command: &'static str,
-        traffic: &'static str,
-        io: &'static str,
+        mode: LblMode,
+        command: LblCommand,
+        traffic: LblTraffic,
+        io: LblIO,
         key: Option<KfkKey>,
     ) -> Counter {
         let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
@@ -128,8 +147,8 @@ impl JrpkMeters {
     }
     pub fn latency_ref(
         &self,
-        mode: &'static str,
-        command: &'static str,
+        mode: LblMode,
+        command: LblCommand,
         key: KfkKey,
     ) -> MappedRwLockReadGuard<'_, Histogram> {
         let labels = LatencyLabels::new(mode, command, key.topic, key.partition);
@@ -137,8 +156,8 @@ impl JrpkMeters {
     }
     pub fn latency_owned(
         &self,
-        mode: &'static str,
-        command: &'static str,
+        mode: LblMode,
+        command: LblCommand,
         key: KfkKey,
     ) -> Histogram {
         let labels = LatencyLabels::new(mode, command, key.topic, key.partition);
@@ -149,16 +168,6 @@ impl JrpkMeters {
 
 pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
 pub static IO_OP_LATENCY: &str = "io_op_latency";
-pub static LBL_SERVER: &str = "server";
-pub static LBL_CLIENT: &str = "client";
-pub static LBL_TCP: &str = "tcp";
-pub static LBL_KAFKA: &str = "kafka";
-pub static LBL_READ: &str = "read";
-pub static LBL_WRITE: &str = "write";
-pub static LBL_SEND: &str = "send";
-pub static LBL_FETCH: &str = "fetch";
-pub static LBL_OFFSET: &str = "offset";
-pub static LBL_ERROR: &str = "error";
 
 #[instrument(level="debug", ret, err, skip(registry, snd_req))]
 async fn push(

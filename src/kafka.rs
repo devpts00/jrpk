@@ -12,7 +12,7 @@ use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, instrument, trace};
-use crate::metrics::{JrpkMeters, LBL_SERVER, LBL_SEND, LBL_FETCH, LBL_KAFKA, LBL_READ, LBL_OFFSET, LBL_WRITE};
+use crate::metrics::{JrpkMeters, LblCommand, LblIO, LblMode, LblTraffic};
 
 #[derive(Debug)]
 pub enum KfkOffset {
@@ -154,7 +154,7 @@ async fn run_kafka_loop<CTX: Debug>(
                 let key = key.clone();
                 cli.produce(records, Compression::Snappy).await
                     .map(|offsets| {
-                        meters.throughput_owned(LBL_SERVER, LBL_SEND, LBL_WRITE, LBL_KAFKA, Some(key))
+                        meters.throughput_owned(LblMode::Server, LblCommand::Send, LblTraffic::Write, LblIO::Kafka, Some(key))
                             .inc_by(length as u64);
                         KfkRsp::send(offsets)
                     })
@@ -167,7 +167,7 @@ async fn run_kafka_loop<CTX: Debug>(
                 let key = key.clone();
                 cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| {
-                        meters.throughput_ref(LBL_SERVER, LBL_FETCH, LBL_READ, LBL_KAFKA, Some(key))
+                        meters.throughput_ref(LblMode::Server, LblCommand::Fetch, LblTraffic::Read, LblIO::Kafka, Some(key))
                             .inc_by(records_and_offsets_length(&recs_and_offsets) as u64);
                         KfkRsp::fetch(recs_and_offsets, highwater_mark)
                     })
@@ -178,7 +178,7 @@ async fn run_kafka_loop<CTX: Debug>(
                         let key = key.clone();
                         cli.get_offset(at).await
                             .map(|offset| {
-                                meters.throughput_ref(LBL_SERVER, LBL_OFFSET, LBL_WRITE, LBL_KAFKA, Some(key))
+                                meters.throughput_ref(LblMode::Server, LblCommand::Offset, LblTraffic::Read, LblIO::Kafka, Some(key))
                                     .inc_by(4);
                                 KfkRsp::offset(offset)
                             })

@@ -48,7 +48,7 @@ client-debug-consume: build-debug
  		consume \
  		--from=earliest \
  		--until=latest \
- 		--max-batch-byte-size=128KiB \
+ 		--max-batch-byte-size=256KiB \
  		--max-wait-ms=100
 
 client-release-consume: build-release

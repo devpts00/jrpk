@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use tokio_util::codec::{Framed};
 use tracing::{error, info, instrument, trace, warn};
 use crate::error::JrpkError;
-use crate::metrics::{JrpkMeters, LBL_ERROR, LBL_FETCH, LBL_OFFSET, LBL_READ, LBL_SEND, LBL_SERVER, LBL_TCP, LBL_WRITE};
+use crate::metrics::{JrpkMeters, LblCommand, LblIO, LblMode, LblTraffic};
 
 fn j2k_rec_send(jrp_rec_send: JrpRecSend) -> Result<Record, DecodeError> {
     let key: Option<Vec<u8>> = jrp_rec_send.key.map(|k| k.into_bytes()).transpose()?;
@@ -115,13 +115,13 @@ async fn server_req_reader(
                 let key = Some(kfk_key.clone());
                 match kfk_req {
                     KfkReq::Send { .. } =>
-                        meters.throughput_ref(LBL_SERVER, LBL_SEND, LBL_TCP, LBL_READ, key)
+                        meters.throughput_ref(LblMode::Server, LblCommand::Send, LblTraffic::Read, LblIO::TCP, key)
                             .inc_by(length),
                     KfkReq::Fetch { .. } =>
-                        meters.throughput_ref(LBL_SERVER, LBL_FETCH, LBL_TCP, LBL_READ, key)
+                        meters.throughput_ref(LblMode::Server, LblCommand::Fetch, LblTraffic::Read, LblIO::TCP, key)
                             .inc_by(length),
                     KfkReq::Offset { .. } =>
-                        meters.throughput_ref(LBL_SERVER, LBL_OFFSET, LBL_TCP, LBL_READ, key)
+                        meters.throughput_ref(LblMode::Server, LblCommand::Offset, LblTraffic::Read, LblIO::TCP, key)
                             .inc_by(length),
                 };
                 let jrp_ctx = JrpCtx::full(id, kfk_key.clone(), extra);
@@ -138,7 +138,7 @@ async fn server_req_reader(
                 let jrp_ctx = JrpCtx::id(jrp_id.id);
                 let kfk_err = JrpkError::Internal(format!("jsonrpc decode error: {}", err));
                 let kfk_res = KfkResCtx::err(kfk_err, jrp_ctx);
-                meters.throughput_ref(LBL_SERVER, LBL_ERROR, LBL_TCP, LBL_READ, None).inc_by(length as u64);
+                meters.throughput_ref(LblMode::Server, LblCommand::Unknown, LblTraffic::Read, LblIO::TCP, None).inc_by(length as u64);
                 kfk_res_ctx_snd.send(kfk_res).await?;
             }
         }
@@ -163,20 +163,20 @@ async fn server_rsp_writer(
                 match k2j_rsp(rsp, ctx.extra) {
                     Ok(jrp_rst_data) => {
                         let meter = match jrp_rst_data {
-                            JrpRspData::Send { .. } => meters.throughput_owned(LBL_SERVER, LBL_SEND, LBL_TCP, LBL_WRITE, ctx.key),
-                            JrpRspData::Fetch { .. } => meters.throughput_owned(LBL_SERVER, LBL_FETCH, LBL_TCP, LBL_WRITE, ctx.key),
-                            JrpRspData::Offset(_) => meters.throughput_owned(LBL_SERVER, LBL_OFFSET, LBL_TCP, LBL_WRITE, ctx.key),
+                            JrpRspData::Send { .. } => meters.throughput_owned(LblMode::Server, LblCommand::Send, LblTraffic::Write, LblIO::TCP, ctx.key),
+                            JrpRspData::Fetch { .. } => meters.throughput_owned(LblMode::Server, LblCommand::Fetch, LblTraffic::Write, LblIO::TCP, ctx.key),
+                            JrpRspData::Offset(_) => meters.throughput_owned(LblMode::Server, LblCommand::Offset, LblTraffic::Write, LblIO::TCP, ctx.key),
                         };
                         (JrpRsp::result(ctx.id, jrp_rst_data), meter)
                     },
                     Err(err) => {
-                        let meter = meters.throughput_owned(LBL_SERVER, LBL_ERROR, LBL_TCP, LBL_WRITE, ctx.key);
+                        let meter = meters.throughput_owned(LblMode::Server, LblCommand::Unknown, LblTraffic::Write, LblIO::TCP, ctx.key);
                         (JrpRsp::err(ctx.id, err.into()), meter)
                     }
                 }
             }
             Err(err) => {
-                let meter = meters.throughput_owned(LBL_SERVER, LBL_ERROR, LBL_TCP, LBL_WRITE, ctx.key);
+                let meter = meters.throughput_owned(LblMode::Server, LblCommand::Unknown, LblTraffic::Write, LblIO::TCP, ctx.key);
                 (JrpRsp::err(ctx.id, err.into()), meter)
             }
         };
