@@ -14,7 +14,7 @@ use std::slice::from_raw_parts;
 use std::str::FromStr;
 use std::time::Instant;
 use faststr::FastStr;
-use crate::kafka::KfkKey;
+use crate::util::Tap;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -80,20 +80,20 @@ impl <'a> JrpData<'a> {
         }
     }
 
-    pub fn from_bytes(bytes: Vec<u8>, codec: JrpDataCodec) -> Result<Self, JrpkError> {
+    pub fn from_bytes(bytes: Vec<u8>, codec: JrpCodec) -> Result<Self, JrpkError> {
         match codec {
-            JrpDataCodec::Json => {
+            JrpCodec::Json => {
                 let string = String::from_utf8(bytes)?;
                 let json = RawValue::from_string(string)?;
                 let data = JrpData::json(json);
                 Ok(data)
             }
-            JrpDataCodec::Str => {
+            JrpCodec::Str => {
                 let string = String::from_utf8(bytes)?;
                 let data = JrpData::str(string);
                 Ok(data)
             }
-            JrpDataCodec::Base64 => {
+            JrpCodec::Base64 => {
                 let base64= BASE64_STANDARD.encode(bytes);
                 let data = JrpData::base64(base64);
                 Ok(data)
@@ -108,7 +108,7 @@ impl <'a> JrpData<'a> {
 /// Fetch codec defines how to decode Kafka bytes to JSON
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
-pub enum JrpDataCodec {
+pub enum JrpCodec {
     /// bytes will be interpreted as utf-8 and output as they are, assuming valid JSON fragment
     Json,
     /// bytes will be interpreted as utf-8 and output double-quoted, assuming valid
@@ -118,39 +118,14 @@ pub enum JrpDataCodec {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct JrpDataCodecs {
-    pub key: JrpDataCodec,
-    pub value: JrpDataCodec,
+pub struct JrpCodecs {
+    pub key: JrpCodec,
+    pub value: JrpCodec,
 }
 
-impl JrpDataCodecs {
-    pub fn new(key: JrpDataCodec, value: JrpDataCodec) -> Self {
-        JrpDataCodecs { key, value }
-    }
-}
-
-#[derive(Debug)]
-pub enum JrpExtra {
-    DataCodecs(JrpDataCodecs),
-}
-
-#[derive(Debug)]
-pub struct JrpCtx {
-    pub id: usize,
-    pub ts: Instant,
-    pub key: Option<KfkKey>,
-    pub extra: Option<JrpExtra>,
-}
-
-impl JrpCtx {
-    pub fn new(id: usize, ts: Instant, key: Option<KfkKey>, extra: Option<JrpExtra>) -> Self {
-        JrpCtx { id, ts, key, extra }
-    }
-    pub fn full(id: usize, key: KfkKey, extra: Option<JrpExtra>) -> Self {
-        JrpCtx::new(id, Instant::now(), Some(key), extra)
-    }
-    pub fn id(id: usize) -> Self {
-        JrpCtx::new(id, Instant::now(), None, None)
+impl JrpCodecs {
+    pub fn new(key: JrpCodec, value: JrpCodec) -> Self {
+        JrpCodecs { key, value }
     }
 }
 
@@ -190,7 +165,7 @@ impl <'a> JrpRecFetch<'a> {
 }
 
 /// JSONRPC method as an enumeration.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum JrpMethod {
     Send,
@@ -264,7 +239,7 @@ pub struct JrpParams<'a> {
     pub topic: FastStr,
     pub partition: i32,
     pub offset: Option<JrpOffset>,
-    pub codecs: Option<JrpDataCodecs>,
+    pub codecs: Option<JrpCodecs>,
     pub records: Option<Vec<JrpRecSend<'a>>>,
     pub bytes: Option<Range<i32>>,
     pub max_wait_ms: Option<i32>,
@@ -276,7 +251,7 @@ impl <'a> JrpParams<'a> {
         topic: FastStr,
         partition: i32,
         offset: Option<JrpOffset>,
-        codecs: Option<JrpDataCodecs>,
+        codecs: Option<JrpCodecs>,
         records: Option<Vec<JrpRecSend<'a>>>,
         bytes: Option<Range<i32>>,
         max_wait_ms: Option<i32>,
@@ -290,7 +265,7 @@ impl <'a> JrpParams<'a> {
     }
 
     #[inline]
-    pub fn fetch(topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+    pub fn fetch(topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         JrpParams::new(topic, partition, Some(offset), Some(codecs), None, Some(bytes), Some(max_wait_ms))
     }
 
@@ -318,7 +293,7 @@ impl <'a> JrpReq<'a> {
     pub fn offset(id: usize, topic: FastStr, partition: i32, offset: JrpOffset) -> Self {
         JrpReq::new(id, JrpMethod::Offset, JrpParams::offset(topic, partition, offset))
     }
-    pub fn fetch(id: usize, topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpDataCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+    pub fn fetch(id: usize, topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
         JrpReq::new(id, JrpMethod::Fetch, JrpParams::fetch(topic, partition, offset, codecs, bytes, max_wait_ms))
     }
     pub fn send(id: usize, topic: FastStr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
@@ -391,12 +366,20 @@ impl <'a> JrpRsp<'a> {
     fn new(id: usize, result: Option<JrpRspData<'a>>, error: Option<JrpErrorMsg>) -> Self {
         JrpRsp { id, result, error  }
     }
-    pub fn result(id: usize, data: JrpRspData<'a>) -> Self {
+    pub fn ok(id: usize, data: JrpRspData<'a>) -> Self {
         JrpRsp::new(id, Some(data), None)
     }
     pub fn err(id: usize, error: JrpErrorMsg) -> Self {
         JrpRsp::new(id, None, Some(error))
     }
+
+    pub fn res(id: usize, result: Result<JrpRspData<'a>, JrpkError>) -> Self {
+        match result {
+            Ok(rsp_data) => JrpRsp::ok(id, rsp_data),
+            Err(jrp_err) => JrpRsp::err(id, jrp_err.into())
+        }
+    }
+
     pub fn take_result(self) -> Result<JrpRspData<'a>, JrpErrorMsg> {
         match (self.result, self.error) {
             (Some(data), _) => Ok(data),

@@ -4,12 +4,14 @@ use std::sync::Arc;
 use base64::DecodeError;
 use hyper::http;
 use hyper::http::uri::InvalidUri;
+use strum::IntoStaticStr;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 use crate::kafka::RsKafkaError;
 
-#[derive(Error, Debug)]
+
+#[derive(Error, Debug, IntoStaticStr)]
 pub enum JrpkError {
     #[error("internal: {0}")]
     Internal(String),

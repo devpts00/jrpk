@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::from_utf8;
+use faststr::FastStr;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio::task::{JoinError, JoinHandle};
@@ -48,6 +49,24 @@ pub fn init_tracing() {
             )
         )
         .init();
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct Tap {
+    pub topic: FastStr,
+    pub partition: i32
+}
+
+impl Tap {
+    pub fn new<S: Into<FastStr>>(topic: S, partition: i32) -> Self {
+        Tap { topic: topic.into(), partition }
+    }
+}
+
+impl Display for Tap {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{}", self.topic, self.partition)
+    }
 }
 
 #[derive(Debug)]

@@ -27,8 +27,8 @@ use tokio::{spawn, try_join};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, trace, warn};
 use crate::error::JrpkError;
-use crate::kafka::KfkKey;
-use crate::util::CancellableHandle;
+use crate::jsonrpc::JrpMethod;
+use crate::util::{CancellableHandle, Tap};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct FastStrExt(FastStr);
@@ -51,52 +51,70 @@ pub enum LblTier {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
-pub enum LblCommand {
-    Unknown, Send, Fetch, Offset
+pub enum LblMethod {
+    Send, Fetch, Offset
+}
+
+impl From<JrpMethod> for LblMethod {
+    fn from(value: JrpMethod) -> Self {
+        match value {
+            JrpMethod::Send => LblMethod::Send,
+            JrpMethod::Fetch => LblMethod::Fetch,
+            JrpMethod::Offset => LblMethod::Offset
+        }
+    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
 pub enum LblTraffic {
-    Read, Write
+    In, Out
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ThroughputLabels {
     tier: LblTier,
-    command: LblCommand,
     traffic: LblTraffic,
+    method: Option<LblMethod>,
     topic: Option<FastStrExt>,
     partition: Option<i32>,
+}
+
+#[inline]
+fn unzip_key(key: Option<Tap>) -> (Option<FastStrExt>, Option<i32>) {
+    match key {
+        Some(Tap { topic, partition }) => (Some(topic.into()), Some(partition)),
+        None => (None, None)
+    }
 }
 
 impl ThroughputLabels {
     pub fn new(
         tier: LblTier,
-        command: LblCommand,
         traffic: LblTraffic,
-        topic: Option<FastStr>,
-        partition: Option<i32>,
+        method: Option<LblMethod>,
+        key: Option<Tap>,
     ) -> Self {
-        ThroughputLabels { tier, command, traffic, topic: topic.map(|t|t.into()), partition }
+        let (topic, partition) = unzip_key(key);
+        ThroughputLabels { tier, traffic, method, topic, partition }
     }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct LatencyLabels {
     tier: LblTier,
-    command: LblCommand,
-    topic: FastStrExt,
-    partition: i32,
+    method: Option<LblMethod>,
+    topic: Option<FastStrExt>,
+    partition: Option<i32>,
 }
 
 impl LatencyLabels {
     fn new(
         tier: LblTier,
-        command: LblCommand,
-        topic: FastStr,
-        partition: i32,
+        method: Option<LblMethod>,
+        tap: Option<Tap>,
     ) -> Self {
-        LatencyLabels { tier, command, topic: topic.into(), partition }
+        let (topic, partition) = unzip_key(tap);
+        LatencyLabels { tier, method, topic, partition }
     }
 }
 
@@ -117,41 +135,39 @@ impl JrpkMeters {
     pub fn throughput_ref(
         &self,
         tier: LblTier,
-        command: LblCommand,
         traffic: LblTraffic,
-        key: Option<KfkKey>,
+        method: Option<LblMethod>,
+        tap: Option<Tap>,
     ) -> MappedRwLockReadGuard<'_, Counter> {
-        let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
-        let labels = ThroughputLabels::new(tier, command, traffic, topic, partition);
+        let labels = ThroughputLabels::new(tier, traffic, method, tap);
         self.throughputs.get_or_create(&labels)
     }
     pub fn throughput_owned(
         &self,
         tier: LblTier,
-        command: LblCommand,
         traffic: LblTraffic,
-        key: Option<KfkKey>,
+        method: Option<LblMethod>,
+        tap: Option<Tap>,
     ) -> Counter {
-        let (topic, partition) = key.map(|k| (k.topic, k.partition)).unzip();
-        let labels = ThroughputLabels::new(tier, command, traffic, topic, partition);
+        let labels = ThroughputLabels::new(tier, traffic, method, tap);
         self.throughputs.get_or_create_owned(&labels)
     }
     pub fn latency_ref(
         &self,
         tier: LblTier,
-        command: LblCommand,
-        key: KfkKey,
+        method: Option<LblMethod>,
+        tap: Option<Tap>,
     ) -> MappedRwLockReadGuard<'_, Histogram> {
-        let labels = LatencyLabels::new(tier, command, key.topic, key.partition);
+        let labels = LatencyLabels::new(tier, method, tap);
         self.latencies.get_or_create(&labels)
     }
     pub fn latency_owned(
         &self,
         tier: LblTier,
-        command: LblCommand,
-        key: KfkKey,
+        method: Option<LblMethod>,
+        tap: Option<Tap>,
     ) -> Histogram {
-        let labels = LatencyLabels::new(tier, command, key.topic, key.partition);
+        let labels = LatencyLabels::new(tier, method, tap);
         self.latencies.get_or_create_owned(&labels)
     }
 

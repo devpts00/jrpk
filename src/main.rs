@@ -10,7 +10,7 @@ mod error;
 
 use std::sync::{Arc, Mutex};
 use crate::server::listen_jsonrpc;
-use crate::util::{init_tracing, join_with_signal};
+use crate::util::{init_tracing, join_with_signal, Tap};
 use clap::Parser;
 use std::time::Duration;
 use futures::future::join_all;
@@ -20,7 +20,6 @@ use tokio::spawn;
 use tracing::info;
 use crate::args::{Command, Mode};
 use crate::client::{consume, produce};
-use crate::kafka::KfkKey;
 use crate::metrics::listen_prometheus;
 
 async fn run(args: args::Args) {
@@ -78,7 +77,7 @@ async fn run(args: args::Args) {
                         spawn(
                             produce(
                                 address,
-                                KfkKey::new(topic, partition),
+                                Tap::new(topic, partition),
                                 path,
                                 max_frame_byte_size.as_u64() as usize,
                                 max_batch_rec_count as usize,
@@ -100,7 +99,7 @@ async fn run(args: args::Args) {
                         spawn(
                             consume(
                                 address,
-                                KfkKey::new(topic, partition),
+                                Tap::new(topic, partition),
                                 path,
                                 from,
                                 until,
