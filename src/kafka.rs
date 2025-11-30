@@ -158,11 +158,11 @@ async fn run_kafka_loop<COD: Debug, CTX: Debug>(
         let res_rsp = match req {
             KfkReq::Send { records } => {
                 let length = records_length(&records);
-                metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Send), tap.clone())
+                metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Send), tap.clone())
                     .inc_by(length as u64);
                 cli.produce(records, Compression::Snappy).await
                     .map(|offsets| {
-                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Send), tap.clone())
+                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Send), tap.clone())
                             .inc_by(8 * offsets.len() as u64);
                         metrics.latency_ref(LblTier::Kafka, Some(LblMethod::Send), tap)
                             .observe(Instant::now().duration_since(ts).as_secs_f64());
@@ -174,11 +174,11 @@ async fn run_kafka_loop<COD: Debug, CTX: Debug>(
                     KfkOffset::Implicit(at) => cli.get_offset(at).await?,
                     KfkOffset::Explicit(n) => n
                 };
-                metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Fetch), tap.clone())
+                metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Fetch), tap.clone())
                     .inc_by(20);
                 cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| {
-                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Fetch), tap.clone())
+                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Fetch), tap.clone())
                             .inc_by(records_and_offsets_length(&recs_and_offsets) as u64);
                         metrics.latency_ref(LblTier::Kafka, Some(LblMethod::Fetch), tap)
                             .observe(Instant::now().duration_since(ts).as_secs_f64());
@@ -189,11 +189,11 @@ async fn run_kafka_loop<COD: Debug, CTX: Debug>(
                 match offset {
                     KfkOffset::Implicit(at) => {
                         let key = tap.clone();
-                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Offset), key.clone())
+                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Offset), key.clone())
                             .inc_by(4);
                         cli.get_offset(at).await
                             .map(|offset| {
-                                metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Offset), key.clone())
+                                metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Offset), key.clone())
                                     .inc_by(4);
                                 metrics.latency_ref(LblTier::Kafka, Some(LblMethod::Offset), key)
                                     .observe(Instant::now().duration_since(ts).as_secs_f64());
