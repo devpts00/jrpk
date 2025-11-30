@@ -115,7 +115,8 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let throughput = meters.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Fetch), Some(tap));
+    let throughput = meters.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Fetch), Some(tap.clone()));
+    let latency = meters.latency_owned(LblTier::Server, Some(LblMethod::Fetch), Some(tap));
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
@@ -130,6 +131,9 @@ async fn consumer_rsp_reader(
                 match jrp_rsp_data {
                     JrpRspData::Fetch { high_watermark, mut records } => {
                         throughput.inc_by(length);
+                        if let Some(ts) = times.remove(&id).await {
+                            latency.observe(Instant::now().duration_since(ts).as_secs_f64())
+                        }
                         records.sort_by_key(|r| r.offset);
                         let mut done = true;
                         // if more data is available
@@ -290,12 +294,16 @@ pub async fn producer_rsp_reader(
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
     let throughput = meters.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Send), Some(tap.clone()));
+    let latency = meters.latency_owned(LblTier::Client, Some(LblMethod::Send), Some(tap));
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
         let length = frame.len() as u64;
-        throughput.inc_by(length);
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
+        throughput.inc_by(length);
+        if let Some(ts) = times.remove(&id).await {
+            latency.observe(Instant::now().duration_since(ts).as_secs_f64());
+        }
         match jrp_rsp.take_result() {
             Ok(data) => {
                 debug!("success, id: {}, {:?}", id, data);
