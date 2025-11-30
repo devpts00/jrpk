@@ -37,58 +37,16 @@ server-release: build-release
 		--metrics-bind=0.0.0.0:9090
 
 client-debug-consume: build-debug
-	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk \
- 		client \
- 		--path=./json/result.json \
- 		--address=jrpk:1133 \
- 		--topic=posts \
- 		--partition=0 \
-		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=1s \
- 		consume \
- 		--from=earliest \
- 		--until=latest \
- 		--max-batch-byte-size=256KiB \
- 		--max-wait-ms=100
+	./consume.sh debug result posts 32
 
 client-release-consume: build-release
-	docker compose run --rm -it --remove-orphans rst ./target/release/jrpk \
-		client \
-		--path=./json/result.json \
-		--address=jrpk:1133 \
-		--topic=posts \
-		--partition=0 \
-		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=1s \
-		consume \
-		--from=earliest \
-		--until=latest \
-		--max-batch-byte-size=128KiB \
-		--max-wait-ms=100
+	./consume.sh release result posts 32
 
 client-debug-produce: build-debug
-	docker compose run --rm -it --remove-orphans rst ./target/debug/jrpk \
-		client \
- 		--path=/jrpk/json/people_40mb.json \
- 		--address=jrpk:1133 \
- 		--topic=posts \
- 		--partition=0 \
- 		--max-frame-byte-size=1m \
-		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=1s \
- 		produce
+	./produce.sh debug employees_1MB.json posts 32
 
 client-release-produce: build-release
-	docker compose run --rm -it --remove-orphans rst ./target/release/jrpk \
-		client \
- 		--path=/jrpk/json/people_40mb.json \
- 		--address=jrpk:1133 \
- 		--topic=posts \
- 		--partition=0 \
- 		--max-frame-byte-size=1m \
-		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=1s \
- 		produce
+	./produce.sh release people_40mb.json posts 32
 
 trace:
 	docker compose run --rm -it --rm --use-aliases --remove-orphans trc

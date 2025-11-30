@@ -119,18 +119,18 @@ impl LatencyLabels {
 }
 
 #[derive(Clone, Debug)]
-pub struct JrpkMeters {
+pub struct JrpkMetrics {
     throughputs: Family<ThroughputLabels, Counter>,
     latencies: Family<LatencyLabels, Histogram>,
 }
 
-impl JrpkMeters {
+impl JrpkMetrics {
     pub fn new(registry: &mut Registry) -> Self {
         let throughputs = Family::<ThroughputLabels, Counter>::default();
         registry.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, throughputs.clone());
-        let latencies = Family::<LatencyLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.000001, 2.0, 20)) });
+        let latencies = Family::<LatencyLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
         registry.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies.clone());
-        JrpkMeters { throughputs, latencies }
+        JrpkMetrics { throughputs, latencies }
     }
     pub fn throughput_ref(
         &self,

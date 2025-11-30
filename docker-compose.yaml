@@ -20,8 +20,8 @@ services:
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
       - KAFKA_LOG_DIR=/kafka
-#    volumes:
-#      - kafka:/kafka:rw
+    volumes:
+      - kafka:/kafka:rw
     healthcheck:
       test: [ "CMD", "nc", "-z", "localhost", "9092" ]
       interval: 10s
@@ -30,7 +30,7 @@ services:
     image: apache/kafka
     profiles:
       - env
-    command: ["./kafka-topics.sh", "--bootstrap-server", "kfk:9092", "--create", "--if-not-exists", "--topic", "posts", "--partitions", "120"]
+    command: ["./kafka-topics.sh", "--bootstrap-server", "kfk:9092", "--create", "--if-not-exists", "--topic", "posts", "--partitions", "32"]
     working_dir: "/opt/kafka/bin"
     depends_on:
       kfk:

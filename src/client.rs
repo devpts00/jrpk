@@ -3,7 +3,7 @@ use crate::async_clean_return;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpCodec, JrpCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, JrpkMeters, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, JrpkMetrics, LblMethod, LblTier, LblTraffic};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -43,7 +43,7 @@ async fn consumer_req_writer<'a>(
     tap: Tap,
     max_batch_size: i32,
     max_wait_ms: i32,
-    metrics: JrpkMeters,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
@@ -104,19 +104,19 @@ async fn write_records<'a>(
     })
 }
 
-#[instrument(ret, err, skip(meters, offset_snd, tcp_stream))]
+#[instrument(ret, err, skip(metrics, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     tap: Tap,
     path: Ustr,
     from: Offset,
     until: Offset,
-    meters: JrpkMeters,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let throughput = meters.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Fetch), Some(tap.clone()));
-    let latency = meters.latency_owned(LblTier::Server, Some(LblMethod::Fetch), Some(tap));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Fetch), Some(tap.clone()));
+    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Fetch), Some(tap));
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
@@ -184,7 +184,7 @@ pub async fn consume(
 ) -> Result<(), JrpkError> {
 
     let mut registry = Registry::default();
-    let metrics = JrpkMeters::new(&mut registry);
+    let metrics = JrpkMetrics::new(&mut registry);
     let ph = spawn_push_prometheus(
         metrics_uri,
         metrics_period,
@@ -230,7 +230,7 @@ pub async fn consume(
 
 type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>>;
 
-#[instrument(ret, skip(meters, tcp_sink))]
+#[instrument(ret, skip(metrics, tcp_sink))]
 pub async fn producer_req_writer(
     tap: Tap,
     path: Ustr,
@@ -238,11 +238,11 @@ pub async fn producer_req_writer(
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_size: usize,
-    meters: JrpkMeters,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
-    let throughput = meters.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Send), Some(tap.clone()));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Send), Some(tap.clone()));
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
@@ -286,15 +286,15 @@ pub async fn producer_req_writer(
     Ok(())
 }
 
-#[instrument(ret, skip(meters, tcp_stream))]
+#[instrument(ret, skip(metrics, tcp_stream))]
 pub async fn producer_rsp_reader(
     tap: Tap,
-    meters: JrpkMeters,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
-    let throughput = meters.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Send), Some(tap.clone()));
-    let latency = meters.latency_owned(LblTier::Client, Some(LblMethod::Send), Some(tap));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Send), Some(tap.clone()));
+    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Send), Some(tap));
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
         let length = frame.len() as u64;
@@ -330,7 +330,7 @@ pub async fn produce(
 ) -> Result<(), JrpkError> {
 
     let mut registry = Registry::default();
-    let metrics = JrpkMeters::new(&mut registry);
+    let metrics = JrpkMetrics::new(&mut registry);
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
     let ph = spawn_push_prometheus(
         metrics_uri,
