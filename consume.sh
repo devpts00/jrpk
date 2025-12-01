@@ -14,7 +14,7 @@ do
 		--topic=posts \
 		--partition=${p} \
 		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=1s \
+		--metrics-period=5s \
 		consume \
 		--from=earliest \
 		--until=latest \
@@ -23,3 +23,5 @@ do
 done
 
 wait
+
+rm -f ./json/${FILE}-*.json

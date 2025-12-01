@@ -12,7 +12,7 @@ use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, instrument, trace};
-use crate::metrics::{JrpkMetrics, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{JrpkMetrics, LblMethod, LblTier, LblTraffic, SrvLabels};
 
 #[derive(Debug)]
 pub enum KfkOffset {
@@ -148,7 +148,7 @@ fn records_and_offsets_length(ros: &Vec<RecordAndOffset>) -> usize {
 async fn run_kafka_loop<COD: Debug, CTX: Debug>(
     tap: Tap,
     cli: PartitionClient,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<SrvLabels>,
     mut req_ctx_rcv: KfkReqCtxRcv<COD, CTX>
 ) -> Result<(), JrpkError> {
     while let Some(KfkReqCtx { req, ctx, res_rsp_ctx_snd}) = req_ctx_rcv.recv().await {
@@ -188,14 +188,14 @@ async fn run_kafka_loop<COD: Debug, CTX: Debug>(
             KfkReq::Offset { offset } => {
                 match offset {
                     KfkOffset::Implicit(at) => {
-                        let key = tap.clone();
-                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Offset), key.clone())
+                        let tap = tap.clone();
+                        metrics.throughput_ref(LblTier::Kafka, LblTraffic::In, Some(LblMethod::Offset), tap.clone())
                             .inc_by(4);
                         cli.get_offset(at).await
                             .map(|offset| {
-                                metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Offset), key.clone())
+                                metrics.throughput_ref(LblTier::Kafka, LblTraffic::Out, Some(LblMethod::Offset), tap.clone())
                                     .inc_by(4);
-                                metrics.latency_ref(LblTier::Kafka, Some(LblMethod::Offset), key)
+                                metrics.latency_ref(LblTier::Kafka, Some(LblMethod::Offset), tap)
                                     .observe(Instant::now().duration_since(ts).as_secs_f64());
                                 KfkRsp::offset(offset)
                             })
@@ -221,12 +221,12 @@ pub struct KfkClientCache<COD, CTX> {
     client: Client,
     cache: Cache<Tap, KfkReqCtxSnd<COD, CTX>>,
     queue_size: usize,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<SrvLabels>,
 }
 
 impl <COD, CTX> KfkClientCache<COD, CTX>
 where CTX: Debug + Send + 'static, COD: Debug + Send + 'static {
-    pub fn new(client: Client, capacity: u64, queue_size: usize, metrics: JrpkMetrics) -> Self {
+    pub fn new(client: Client, capacity: u64, queue_size: usize, metrics: JrpkMetrics<SrvLabels>) -> Self {
         Self { client, cache: Cache::new(capacity), queue_size, metrics }
     }
 

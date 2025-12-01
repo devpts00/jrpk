@@ -1,5 +1,7 @@
 use std::convert::Infallible;
 use std::error::Error;
+use std::fmt::Debug;
+use std::hash::Hash;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -70,68 +72,72 @@ pub enum LblTraffic {
     In, Out
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct ThroughputLabels {
-    tier: LblTier,
-    traffic: LblTraffic,
-    method: Option<LblMethod>,
-    topic: Option<FastStrExt>,
-    partition: Option<i32>,
-}
-
 #[inline]
-fn unzip_key(key: Option<Tap>) -> (Option<FastStrExt>, Option<i32>) {
-    match key {
+fn unzip_tap(tap: Option<Tap>) -> (Option<FastStrExt>, Option<i32>) {
+    match tap {
         Some(Tap { topic, partition }) => (Some(topic.into()), Some(partition)),
         None => (None, None)
     }
 }
 
-impl ThroughputLabels {
-    pub fn new(
-        tier: LblTier,
-        traffic: LblTraffic,
-        method: Option<LblMethod>,
-        key: Option<Tap>,
-    ) -> Self {
-        let (topic, partition) = unzip_key(key);
-        ThroughputLabels { tier, traffic, method, topic, partition }
-    }
-}
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct LatencyLabels {
+pub struct SrvLabels {
     tier: LblTier,
     method: Option<LblMethod>,
+    traffic: Option<LblTraffic>,
     topic: Option<FastStrExt>,
     partition: Option<i32>,
 }
 
-impl LatencyLabels {
-    fn new(
+impl SrvLabels {
+    pub fn new(
         tier: LblTier,
         method: Option<LblMethod>,
+        traffic: Option<LblTraffic>,
         tap: Option<Tap>,
     ) -> Self {
-        let (topic, partition) = unzip_key(tap);
-        LatencyLabels { tier, method, topic, partition }
+        let (topic, partition) = unzip_tap(tap);
+        SrvLabels { tier, method, traffic, topic, partition }
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct JrpkMetrics {
-    throughputs: Family<ThroughputLabels, Counter>,
-    latencies: Family<LatencyLabels, Histogram>,
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct CliLabels {
+    tier: LblTier,
+    method: Option<LblMethod>,
+    traffic: Option<LblTraffic>,
 }
 
-impl JrpkMetrics {
+impl CliLabels {
+    pub fn new(
+        tier: LblTier,
+        method: Option<LblMethod>,
+        traffic: Option<LblTraffic>,
+    ) -> Self {
+        CliLabels { tier, method, traffic }
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub struct JrpkMetrics<L> {
+    throughputs: Family<L, Counter>,
+    latencies: Family<L, Histogram>,
+}
+
+impl <L> JrpkMetrics<L>
+where L: Clone + Hash + PartialEq + Eq + EncodeLabelSet + Send + Sync + Debug + 'static {
     pub fn new(registry: &mut Registry) -> Self {
-        let throughputs = Family::<ThroughputLabels, Counter>::default();
+        let throughputs = Family::<L, Counter>::default();
         registry.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, throughputs.clone());
-        let latencies = Family::<LatencyLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
+        let latencies = Family::<L, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
         registry.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies.clone());
         JrpkMetrics { throughputs, latencies }
     }
+}
+
+impl JrpkMetrics<SrvLabels> {
+
     pub fn throughput_ref(
         &self,
         tier: LblTier,
@@ -139,9 +145,10 @@ impl JrpkMetrics {
         method: Option<LblMethod>,
         tap: Option<Tap>,
     ) -> MappedRwLockReadGuard<'_, Counter> {
-        let labels = ThroughputLabels::new(tier, traffic, method, tap);
+        let labels = SrvLabels::new(tier, method, Some(traffic), tap);
         self.throughputs.get_or_create(&labels)
     }
+
     pub fn throughput_owned(
         &self,
         tier: LblTier,
@@ -149,16 +156,17 @@ impl JrpkMetrics {
         method: Option<LblMethod>,
         tap: Option<Tap>,
     ) -> Counter {
-        let labels = ThroughputLabels::new(tier, traffic, method, tap);
+        let labels = SrvLabels::new(tier, method, Some(traffic), tap);
         self.throughputs.get_or_create_owned(&labels)
     }
+
     pub fn latency_ref(
         &self,
         tier: LblTier,
         method: Option<LblMethod>,
         tap: Option<Tap>,
     ) -> MappedRwLockReadGuard<'_, Histogram> {
-        let labels = LatencyLabels::new(tier, method, tap);
+        let labels = SrvLabels::new(tier, method, None, tap);
         self.latencies.get_or_create(&labels)
     }
     pub fn latency_owned(
@@ -167,10 +175,49 @@ impl JrpkMetrics {
         method: Option<LblMethod>,
         tap: Option<Tap>,
     ) -> Histogram {
-        let labels = LatencyLabels::new(tier, method, tap);
+        let labels = SrvLabels::new(tier, method, None, tap);
         self.latencies.get_or_create_owned(&labels)
     }
+}
 
+impl JrpkMetrics<CliLabels> {
+
+    pub fn throughput_ref(
+        &self,
+        tier: LblTier,
+        traffic: LblTraffic,
+        method: Option<LblMethod>,
+    ) -> MappedRwLockReadGuard<'_, Counter> {
+        let labels = CliLabels::new(tier, method, Some(traffic));
+        self.throughputs.get_or_create(&labels)
+    }
+
+    pub fn throughput_owned(
+        &self,
+        tier: LblTier,
+        traffic: LblTraffic,
+        method: Option<LblMethod>,
+    ) -> Counter {
+        let labels = CliLabels::new(tier, method, Some(traffic));
+        self.throughputs.get_or_create_owned(&labels)
+    }
+
+    pub fn latency_ref(
+        &self,
+        tier: LblTier,
+        method: Option<LblMethod>,
+    ) -> MappedRwLockReadGuard<'_, Histogram> {
+        let labels = CliLabels::new(tier, method, None);
+        self.latencies.get_or_create(&labels)
+    }
+    pub fn latency_owned(
+        &self,
+        tier: LblTier,
+        method: Option<LblMethod>,
+    ) -> Histogram {
+        let labels = CliLabels::new(tier, method, None);
+        self.latencies.get_or_create_owned(&labels)
+    }
 }
 
 pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
@@ -186,7 +233,7 @@ async fn push(
     let mut buf = String::with_capacity(16 * 1024);
     encode(&mut buf, registry)?;
     let req = hyper::Request::builder()
-        .method(Method::POST)
+        .method(Method::PUT)
         .header(hyper::header::HOST, auth.as_str())
         .uri(uri)
         .body(Full::new(buf.into()))?;

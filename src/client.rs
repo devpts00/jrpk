@@ -3,7 +3,7 @@ use crate::async_clean_return;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpCodec, JrpCodecs, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, JrpkMetrics, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, CliLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -43,19 +43,19 @@ async fn consumer_req_writer<'a>(
     tap: Tap,
     max_batch_size: i32,
     max_wait_ms: i32,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<CliLabels>,
     times: Arc<Cache<usize, Instant>>,
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
     let mut id = 0;
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Fetch), Some(tap.clone()));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Fetch));
     while let Some(offset) = offset_rcv.recv().await {
-        let key = tap.clone();
+        let tap = tap.clone();
         // TODO: support all codecs
         let codecs = JrpCodecs::new(JrpCodec::Str, JrpCodec::Json);
         let bytes = 1..max_batch_size;
-        let jrp_req_fetch = JrpReq::fetch(id, key.topic, key.partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
+        let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
         let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, throughput.clone());
         times.insert(id, Instant::now()).await;
         tcp_sink.send(metered_item).await?;
@@ -110,13 +110,13 @@ async fn consumer_rsp_reader(
     path: Ustr,
     from: Offset,
     until: Offset,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<CliLabels>,
     times: Arc<Cache<usize, Instant>>,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Fetch), Some(tap.clone()));
-    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Fetch), Some(tap));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Fetch));
+    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Fetch));
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
@@ -169,6 +169,19 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
+fn uri_append_tap(uri: Uri, tap: &Tap) -> Result<Uri, hyper::http::Error> {
+    let mut b = Uri::builder();
+    if let Some(scheme) = uri.scheme() {
+        b = b.scheme(scheme.clone());
+    }
+    if let Some(authority) = uri.authority() {
+        b = b.authority(authority.clone());
+    }
+    let path_tap = format!("{}/topic/{}/partition/{}", uri.path(), tap.topic, tap.partition);
+    b = b.path_and_query(&path_tap);
+    b.build()
+}
+
 #[instrument(ret, err)]
 pub async fn consume(
     address: Ustr,
@@ -183,6 +196,7 @@ pub async fn consume(
     metrics_period: Duration,
 ) -> Result<(), JrpkError> {
 
+    let metrics_uri = uri_append_tap(metrics_uri, &tap)?;
     let mut registry = Registry::default();
     let metrics = JrpkMetrics::new(&mut registry);
     let ph = spawn_push_prometheus(
@@ -238,11 +252,11 @@ pub async fn producer_req_writer(
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_size: usize,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<CliLabels>,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Send), Some(tap.clone()));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Send));
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
@@ -289,12 +303,12 @@ pub async fn producer_req_writer(
 #[instrument(ret, skip(metrics, tcp_stream))]
 pub async fn producer_rsp_reader(
     tap: Tap,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<CliLabels>,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Send), Some(tap.clone()));
-    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Send), Some(tap));
+    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Send));
+    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Send));
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
         let length = frame.len() as u64;
@@ -329,6 +343,7 @@ pub async fn produce(
     metrics_period: Duration,
 ) -> Result<(), JrpkError> {
 
+    let metrics_uri = uri_append_tap(metrics_uri, &tap)?;
     let mut registry = Registry::default();
     let metrics = JrpkMetrics::new(&mut registry);
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());

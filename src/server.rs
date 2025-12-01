@@ -24,7 +24,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::{Framed};
 use tracing::{info, instrument, trace, warn};
 use crate::error::JrpkError;
-use crate::metrics::{JrpkMetrics, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{JrpkMetrics, LblMethod, LblTier, LblTraffic, SrvLabels};
 
 #[derive(Debug)]
 pub struct SrvCtx {
@@ -132,7 +132,7 @@ async fn server_req_reader(
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCodecs, SrvCtx>,
     jrp_err_snd: JrpErrSnd,
     queue_size: usize,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<SrvLabels>,
 ) -> Result<(), JrpkError> {
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
@@ -198,7 +198,7 @@ async fn server_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRspMeteredItem>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCodecs, SrvCtx>,
     mut jrp_err_rcv: JrpErrRcv,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<SrvLabels>,
 ) -> Result<(), JrpkError> {
     loop {
         select! {
@@ -242,7 +242,7 @@ async fn serve_jsonrpc(
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    metrics: JrpkMetrics,
+    metrics: JrpkMetrics<SrvLabels>,
 ) -> Result<(), JrpkError> {
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
     let codec = JsonCodec::new(max_frame_size);
