@@ -4,10 +4,9 @@ use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
 use rskafka::record::{Record, RecordAndOffset};
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::time::Instant;
-use faststr::FastStr;
 use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -107,7 +106,6 @@ impl <C: Debug> Debug for KfkRsp<C> {
                 debug_vec_fn(f, recs_and_offsets, |f, r| {
                     debug_record_and_offset(f, &r.record, Some(r.offset))
                 })?;
-                let x = codecs;
                 write!(f, ", high_watermark: {:?}", high_watermark)?;
                 write!(f, ", codecs: {:?}", codecs)?;
                 write!(f, " }}")

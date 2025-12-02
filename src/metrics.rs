@@ -261,9 +261,15 @@ async fn push_loop(
     cancel: CancellationToken,
     mut snd_req: SendRequest<Full<Bytes>>
 ) -> Result<(), JrpkError> {
-    while !cancel.is_cancelled() {
-        push(&uri, &auth, &registry, &mut snd_req).await?;
-        tokio::time::sleep(period).await;
+    loop {
+        match tokio::time::timeout(period, cancel.cancelled()).await {
+            Ok(_) => {
+                break
+            },
+            Err(_) => {
+                push(&uri, &auth, &registry, &mut snd_req).await?;
+            },
+        }
     }
     push(&uri, &auth, &registry, &mut snd_req).await?;
     Ok(())
@@ -273,7 +279,7 @@ async fn push_loop(
 async fn conn_loop(conn: Connection<TokioIo<TcpStream>, Full<Bytes>>) -> Result<(), Infallible> {
     if let Err(err) = conn.await {
         error!("connection error: {}", err);
-    }
+       }
     Ok(())
 }
 

@@ -14,7 +14,7 @@ do
 		--topic=posts \
 		--partition=${p} \
 		--metrics-uri=http://pmg:9091/metrics/job/jrpk \
-		--metrics-period=5s \
+		--metrics-period=1s \
 		consume \
 		--from=earliest \
 		--until=latest \

@@ -14,7 +14,6 @@ use std::ops::Range;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use faststr::FastStr;
 use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
@@ -24,7 +23,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::{Framed};
 use tracing::{info, instrument, trace, warn};
 use crate::error::JrpkError;
-use crate::metrics::{JrpkMetrics, LblMethod, LblTier, LblTraffic, SrvLabels};
+use crate::metrics::{JrpkMetrics, LblTier, LblTraffic, SrvLabels};
 
 #[derive(Debug)]
 pub struct SrvCtx {
@@ -86,11 +85,6 @@ fn j2k_offset(offset: JrpOffset) -> KfkOffset {
 }
 
 #[inline]
-fn j2c_req(id: usize, method: JrpMethod, topic: FastStr, partition: i32) -> SrvCtx {
-    SrvCtx::new(id, method, Tap::new(topic, partition))
-}
-
-#[inline]
 fn j2k_req(
     method: JrpMethod,
     offset: Option<JrpOffset>,
@@ -131,7 +125,6 @@ async fn server_req_reader(
     client_cache: Arc<KfkClientCache<JrpCodecs, SrvCtx>>,
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCodecs, SrvCtx>,
     jrp_err_snd: JrpErrSnd,
-    queue_size: usize,
     metrics: JrpkMetrics<SrvLabels>,
 ) -> Result<(), JrpkError> {
     while let Some(result) = tcp_stream.next().await {
@@ -183,15 +176,6 @@ async fn server_req_reader(
 }
 
 type JrpRspMeteredItem = MeteredItem<JrpRsp<'static>>;
-
-#[inline]
-fn get_command_label(rsp_data: &JrpRspData) -> LblMethod {
-    match rsp_data {
-        JrpRspData::Send { .. } => LblMethod::Send,
-        JrpRspData::Fetch { .. } => LblMethod::Fetch,
-        JrpRspData::Offset(_) => LblMethod::Offset
-    }
-}
 
 #[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv, metrics))]
 async fn server_rsp_writer(
@@ -257,7 +241,6 @@ async fn serve_jsonrpc(
             client_cache,
             kfk_res_snd,
             jrp_err_snd,
-            queue_size,
             metrics.clone(),
         )
     );

@@ -4,9 +4,10 @@ mod util;
 mod jsonrpc;
 mod kafka;
 mod codec;
-mod client;
+mod produce;
 mod metrics;
 mod error;
+mod consume;
 
 use std::sync::{Arc, Mutex};
 use crate::server::listen_jsonrpc;
@@ -19,7 +20,8 @@ use tokio;
 use tokio::spawn;
 use tracing::info;
 use crate::args::{Command, Mode};
-use crate::client::{consume, produce};
+use crate::consume::consume;
+use crate::produce::produce;
 use crate::metrics::listen_prometheus;
 
 async fn run(args: args::Args) {
@@ -73,11 +75,12 @@ async fn run(args: args::Args) {
                     max_batch_byte_size,
                     max_rec_byte_size
                 } => {
+                    let tap = Tap::new(topic, partition);
                     join_with_signal(
                         spawn(
                             produce(
                                 address,
-                                Tap::new(topic, partition),
+                                tap,
                                 path,
                                 max_frame_byte_size.as_u64() as usize,
                                 max_batch_rec_count as usize,
@@ -95,11 +98,12 @@ async fn run(args: args::Args) {
                     max_batch_byte_size,
                     max_wait_ms
                 } => {
+                    let tap = Tap::new(topic, partition);
                     join_with_signal(
                         spawn(
                             consume(
                                 address,
-                                Tap::new(topic, partition),
+                                tap,
                                 path,
                                 from,
                                 until,

@@ -5,6 +5,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::from_utf8;
 use faststr::FastStr;
+use hyper::Uri;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio::task::{JoinError, JoinHandle};
@@ -231,4 +232,17 @@ impl <T> CancellableHandle<T> {
         self.token.cancel();
         self.handle.await
     }
+}
+
+pub fn uri_append_tap(uri: Uri, tap: &Tap) -> Result<Uri, hyper::http::Error> {
+    let mut b = Uri::builder();
+    if let Some(scheme) = uri.scheme() {
+        b = b.scheme(scheme.clone());
+    }
+    if let Some(authority) = uri.authority() {
+        b = b.authority(authority.clone());
+    }
+    let path_tap = format!("{}/topic/{}/partition/{}", uri.path(), tap.topic, tap.partition);
+    b = b.path_and_query(&path_tap);
+    b.build()
 }
