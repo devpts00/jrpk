@@ -10,7 +10,6 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 use crate::kafka::RsKafkaError;
 
-
 #[derive(Error, Debug, IntoStaticStr)]
 pub enum JrpkError {
     #[error("internal: {0}")]

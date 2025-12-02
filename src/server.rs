@@ -23,7 +23,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::{Framed};
 use tracing::{info, instrument, trace, warn};
 use crate::error::JrpkError;
-use crate::metrics::{JrpkMetrics, LblTier, LblTraffic, SrvLabels};
+use crate::metrics::{JrpkMetrics, Labels, LblTier, LblTraffic};
 
 #[derive(Debug)]
 pub struct SrvCtx {
@@ -125,10 +125,11 @@ async fn server_req_reader(
     client_cache: Arc<KfkClientCache<JrpCodecs, SrvCtx>>,
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCodecs, SrvCtx>,
     jrp_err_snd: JrpErrSnd,
-    metrics: JrpkMetrics<SrvLabels>,
+    metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
+        let mut labels = Labels::new(LblTier::Server).traffic(LblTraffic::In).build();    
         let bytes = result?;
         let length = bytes.len() as u64;
         trace!("json: {}", from_utf8(bytes.as_ref())?);
@@ -140,7 +141,8 @@ async fn server_req_reader(
                 let params = jrp_req.params;
                 let tap = Tap::new(params.topic, params.partition);
                 let srv_ctx = SrvCtx::new(jrp_req.id, jrp_req.method, tap.clone());
-                metrics.throughput_ref(LblTier::Server, LblTraffic::In, Some(jrp_req.method.into()), Some(tap))
+                metrics.throughputs
+                    .get_or_create(labels.method(jrp_req.method).tap(tap))
                     .inc_by(length);
                 let kfk_req_res = j2k_req(jrp_req.method, params.offset, params.codecs, params.records, params.bytes, params.max_wait_ms);
                 match kfk_req_res {
@@ -163,7 +165,8 @@ async fn server_req_reader(
             Err(err) => {
                 warn!("jsonrpc decode error: {}", err);
                 // if even an id is absent we give up and disconnect
-                metrics.throughput_ref(LblTier::Server, LblTraffic::In, None, None)
+                metrics.throughputs
+                    .get_or_create(&labels)
                     .inc_by(length);
                 let jrp_id = serde_json::from_slice::<JrpId>(bytes.as_ref())?;
                 let id = jrp_id.id;
@@ -182,7 +185,7 @@ async fn server_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRspMeteredItem>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCodecs, SrvCtx>,
     mut jrp_err_rcv: JrpErrRcv,
-    metrics: JrpkMetrics<SrvLabels>,
+    metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
     loop {
         select! {
@@ -191,17 +194,23 @@ async fn server_rsp_writer(
                 let KfkResCtx { res: kfk_res_rsp, ctx: srv_ctx } = kfk_res_ctx;
                 let ts = srv_ctx.ts;
                 let tap = srv_ctx.tap;
-                metrics.latency_ref(LblTier::Server, Some(srv_ctx.method.into()), Some(tap.clone()))
+                let mut labels = Labels::new(LblTier::Server).method(srv_ctx.method).tap(tap).build();
+                metrics.latencies
+                    .get_or_create(&labels)
                     .observe(Instant::now().duration_since(ts).as_secs_f64());
-                let throughput = metrics.throughput_owned(LblTier::Server, LblTraffic::Out, Some(srv_ctx.method.into()), Some(tap));
-                let jrp_res_rsp_data = kfk_res_rsp.and_then(|kfk_rsp| k2j_rsp(kfk_rsp));
+                let throughput = metrics.throughputs
+                    .get_or_create_owned(labels.traffic(LblTraffic::Out));
+                let jrp_res_rsp_data = kfk_res_rsp
+                    .and_then(|kfk_rsp| k2j_rsp(kfk_rsp));
                 let jrp_rsp = JrpRsp::res(srv_ctx.id, jrp_res_rsp_data);
                 let item = MeteredItem::new(jrp_rsp, throughput);
                 tcp_sink.send(item).await?;
             }
             Some((id, jrp_err)) = jrp_err_rcv.recv() => {
                 let jrp_rsp = JrpRsp::err(id, jrp_err.into());
-                let throughput = metrics.throughput_owned(LblTier::Server, LblTraffic::Out, None, None);
+                let labels = Labels::new(LblTier::Server).traffic(LblTraffic::Out).build();
+                let throughput = metrics.throughputs
+                    .get_or_create_owned(&labels);
                 let item = MeteredItem::new(jrp_rsp, throughput);
                 tcp_sink.send(item).await?;
             }
@@ -226,7 +235,7 @@ async fn serve_jsonrpc(
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    metrics: JrpkMetrics<SrvLabels>,
+    metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
     let codec = JsonCodec::new(max_frame_size);

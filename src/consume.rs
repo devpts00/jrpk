@@ -20,7 +20,7 @@ use crate::args::Offset;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpCodec, JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, CliLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
 use crate::util::{uri_append_tap, Tap};
 
 type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
@@ -78,13 +78,18 @@ async fn consumer_req_writer<'a>(
     tap: Tap,
     max_batch_size: i32,
     max_wait_ms: i32,
-    metrics: JrpkMetrics<CliLabels>,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
+    let labels = Labels::new(LblTier::Client)
+        .method(LblMethod::Fetch)
+        .traffic(LblTraffic::Out)
+        .tap(tap.clone())
+        .build();
+    let throughput = metrics.throughputs.get_or_create_owned(&labels);
     let mut id = 0;
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Fetch));
     while let Some(offset) = offset_rcv.recv().await {
         let tap = tap.clone();
         // TODO: support all codecs
@@ -103,16 +108,22 @@ async fn consumer_req_writer<'a>(
 
 #[instrument(ret, err, skip(metrics, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
+    tap: Tap,
     path: Ustr,
     from: Offset,
     until: Offset,
-    metrics: JrpkMetrics<CliLabels>,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Fetch));
-    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Fetch));
+    let labels = Labels::new(LblTier::Client)
+        .method(LblMethod::Fetch)
+        .traffic(LblTraffic::In)
+        .tap(tap)
+        .build();
+    let throughput = metrics.throughputs.get_or_create_owned(&labels);
+    let latency = metrics.latencies.get_or_create_owned(&labels);
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
@@ -128,7 +139,7 @@ async fn consumer_rsp_reader(
                     JrpRspData::Fetch { high_watermark, mut records } => {
                         throughput.inc_by(length);
                         if let Some(ts) = times.remove(&id).await {
-                            latency.observe(Instant::now().duration_since(ts).as_secs_f64())
+                            latency.observe(ts.elapsed().as_secs_f64())
                         }
                         records.sort_by_key(|r| r.offset);
                         let mut done = true;
@@ -210,6 +221,7 @@ pub async fn consume(
 
     let rh = spawn(
         consumer_rsp_reader(
+            tap,
             path,
             from,
             until,

@@ -17,7 +17,6 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper::server::conn::http1;
 use log::error;
-use parking_lot::MappedRwLockReadGuard;
 use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue, LabelValueEncoder};
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
@@ -33,7 +32,7 @@ use crate::jsonrpc::JrpMethod;
 use crate::util::{CancellableHandle, Tap};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct FastStrExt(FastStr);
+pub struct FastStrExt(FastStr);
 
 impl From<FastStr> for FastStrExt {
     fn from(s: FastStr) -> Self {
@@ -72,16 +71,8 @@ pub enum LblTraffic {
     In, Out
 }
 
-#[inline]
-fn unzip_tap(tap: Option<Tap>) -> (Option<FastStrExt>, Option<i32>) {
-    match tap {
-        Some(Tap { topic, partition }) => (Some(topic.into()), Some(partition)),
-        None => (None, None)
-    }
-}
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct SrvLabels {
+pub struct Labels {
     tier: LblTier,
     method: Option<LblMethod>,
     traffic: Option<LblTraffic>,
@@ -89,134 +80,41 @@ pub struct SrvLabels {
     partition: Option<i32>,
 }
 
-impl SrvLabels {
-    pub fn new(
-        tier: LblTier,
-        method: Option<LblMethod>,
-        traffic: Option<LblTraffic>,
-        tap: Option<Tap>,
-    ) -> Self {
-        let (topic, partition) = unzip_tap(tap);
-        SrvLabels { tier, method, traffic, topic, partition }
+impl Labels {
+    pub fn new(tier: LblTier) -> Self {
+        Labels { tier, method: None, traffic: None, topic: None, partition: None }
+    }
+    pub fn method<M: Into<LblMethod>>(&mut self, method: M) -> &mut Self {
+        self.method = Some(method.into());
+        self
+    }
+    pub fn traffic(&mut self, traffic: LblTraffic) -> &mut Self {
+        self.traffic = Some(traffic);
+        self
+    }
+    pub fn tap(&mut self, tap: Tap) -> &mut Self {
+        self.topic = Some(tap.topic.into());
+        self.partition = Some(tap.partition);
+        self
+    }
+    pub fn build(&self) -> Self {
+        self.clone()
     }
 }
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct CliLabels {
-    tier: LblTier,
-    method: Option<LblMethod>,
-    traffic: Option<LblTraffic>,
-}
-
-impl CliLabels {
-    pub fn new(
-        tier: LblTier,
-        method: Option<LblMethod>,
-        traffic: Option<LblTraffic>,
-    ) -> Self {
-        CliLabels { tier, method, traffic }
-    }
-}
-
 
 #[derive(Clone, Debug)]
-pub struct JrpkMetrics<L> {
-    throughputs: Family<L, Counter>,
-    latencies: Family<L, Histogram>,
+pub struct JrpkMetrics {
+    pub throughputs: Family<Labels, Counter>,
+    pub latencies: Family<Labels, Histogram>,
 }
 
-impl <L> JrpkMetrics<L>
-where L: Clone + Hash + PartialEq + Eq + EncodeLabelSet + Send + Sync + Debug + 'static {
+impl JrpkMetrics {
     pub fn new(registry: &mut Registry) -> Self {
-        let throughputs = Family::<L, Counter>::default();
+        let throughputs = Family::<Labels, Counter>::default();
         registry.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, throughputs.clone());
-        let latencies = Family::<L, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
+        let latencies = Family::<Labels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
         registry.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies.clone());
         JrpkMetrics { throughputs, latencies }
-    }
-}
-
-impl JrpkMetrics<SrvLabels> {
-
-    pub fn throughput_ref(
-        &self,
-        tier: LblTier,
-        traffic: LblTraffic,
-        method: Option<LblMethod>,
-        tap: Option<Tap>,
-    ) -> MappedRwLockReadGuard<'_, Counter> {
-        let labels = SrvLabels::new(tier, method, Some(traffic), tap);
-        self.throughputs.get_or_create(&labels)
-    }
-
-    pub fn throughput_owned(
-        &self,
-        tier: LblTier,
-        traffic: LblTraffic,
-        method: Option<LblMethod>,
-        tap: Option<Tap>,
-    ) -> Counter {
-        let labels = SrvLabels::new(tier, method, Some(traffic), tap);
-        self.throughputs.get_or_create_owned(&labels)
-    }
-
-    pub fn latency_ref(
-        &self,
-        tier: LblTier,
-        method: Option<LblMethod>,
-        tap: Option<Tap>,
-    ) -> MappedRwLockReadGuard<'_, Histogram> {
-        let labels = SrvLabels::new(tier, method, None, tap);
-        self.latencies.get_or_create(&labels)
-    }
-    pub fn latency_owned(
-        &self,
-        tier: LblTier,
-        method: Option<LblMethod>,
-        tap: Option<Tap>,
-    ) -> Histogram {
-        let labels = SrvLabels::new(tier, method, None, tap);
-        self.latencies.get_or_create_owned(&labels)
-    }
-}
-
-impl JrpkMetrics<CliLabels> {
-
-    pub fn throughput_ref(
-        &self,
-        tier: LblTier,
-        traffic: LblTraffic,
-        method: Option<LblMethod>,
-    ) -> MappedRwLockReadGuard<'_, Counter> {
-        let labels = CliLabels::new(tier, method, Some(traffic));
-        self.throughputs.get_or_create(&labels)
-    }
-
-    pub fn throughput_owned(
-        &self,
-        tier: LblTier,
-        traffic: LblTraffic,
-        method: Option<LblMethod>,
-    ) -> Counter {
-        let labels = CliLabels::new(tier, method, Some(traffic));
-        self.throughputs.get_or_create_owned(&labels)
-    }
-
-    pub fn latency_ref(
-        &self,
-        tier: LblTier,
-        method: Option<LblMethod>,
-    ) -> MappedRwLockReadGuard<'_, Histogram> {
-        let labels = CliLabels::new(tier, method, None);
-        self.latencies.get_or_create(&labels)
-    }
-    pub fn latency_owned(
-        &self,
-        tier: LblTier,
-        method: Option<LblMethod>,
-    ) -> Histogram {
-        let labels = CliLabels::new(tier, method, None);
-        self.latencies.get_or_create_owned(&labels)
     }
 }
 

@@ -2,7 +2,7 @@ use crate::async_clean_return;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpRecSend, JrpReq, JrpRsp};
-use crate::metrics::{spawn_push_prometheus, CliLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
 use crate::util::{uri_append_tap, Tap};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
@@ -30,11 +30,16 @@ pub async fn producer_req_writer(
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_size: usize,
-    metrics: JrpkMetrics<CliLabels>,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::Out, Some(LblMethod::Send));
+    let labels = Labels::new(LblTier::Client)
+        .method(LblMethod::Send)
+        .traffic(LblTraffic::Out)
+        .tap(tap.clone())
+        .build();
+    let throughput = metrics.throughputs.get_or_create_owned(&labels);
     let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
@@ -80,12 +85,18 @@ pub async fn producer_req_writer(
 
 #[instrument(ret, skip(metrics, tcp_stream))]
 pub async fn producer_rsp_reader(
-    metrics: JrpkMetrics<CliLabels>,
+    tap: Tap,
+    metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>
 ) -> Result<(), JrpkError> {
-    let throughput = metrics.throughput_owned(LblTier::Client, LblTraffic::In, Some(LblMethod::Send));
-    let latency = metrics.latency_owned(LblTier::Client, Some(LblMethod::Send));
+    let labels = Labels::new(LblTier::Client)
+        .method(LblMethod::Send)
+        .traffic(LblTraffic::In)
+        .tap(tap)
+        .build();
+    let throughput = metrics.throughputs.get_or_create_owned(&labels);
+    let latency = metrics.latencies.get_or_create_owned(&labels);
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
         let length = frame.len() as u64;
@@ -93,7 +104,7 @@ pub async fn producer_rsp_reader(
         let id = jrp_rsp.id;
         throughput.inc_by(length);
         if let Some(ts) = times.remove(&id).await {
-            latency.observe(Instant::now().duration_since(ts).as_secs_f64());
+            latency.observe(ts.elapsed().as_secs_f64());
         }
         match jrp_rsp.take_result() {
             Ok(data) => {
@@ -149,6 +160,7 @@ pub async fn produce(
     );
     let rh = tokio::spawn(
         producer_rsp_reader(
+            tap,
             metrics.clone(),
             times.clone(),
             tcp_stream
