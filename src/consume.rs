@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use faststr::FastStr;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use hyper::Uri;
@@ -15,7 +16,6 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
 use tracing::{error, instrument, trace};
-use ustr::Ustr;
 use crate::args::Offset;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
@@ -109,7 +109,7 @@ async fn consumer_req_writer<'a>(
 #[instrument(ret, err, skip(metrics, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     tap: Tap,
-    path: Ustr,
+    path: FastStr,
     from: Offset,
     until: Offset,
     metrics: JrpkMetrics,
@@ -124,7 +124,7 @@ async fn consumer_rsp_reader(
         .build();
     let throughput = metrics.throughputs.get_or_create_owned(&labels);
     let latency = metrics.latencies.get_or_create_owned(&labels);
-    let file = File::create(path)?;
+    let file = File::create(path.as_str())?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
@@ -177,9 +177,9 @@ async fn consumer_rsp_reader(
 
 #[instrument(ret, err)]
 pub async fn consume(
-    address: Ustr,
+    address: FastStr,
     tap: Tap,
-    path: Ustr,
+    path: FastStr,
     from: Offset,
     until: Offset,
     max_batch_size: i32,

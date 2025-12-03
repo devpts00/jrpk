@@ -12,20 +12,20 @@ use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use faststr::FastStr;
 use hyper::Uri;
 use moka::future::Cache;
 use tokio::net::TcpStream;
 use tokio::try_join;
 use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, instrument};
-use ustr::Ustr;
 
 type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>>;
 
 #[instrument(ret, skip(metrics, tcp_sink))]
 pub async fn producer_req_writer(
     tap: Tap,
-    path: Ustr,
+    path: FastStr,
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,
@@ -40,7 +40,7 @@ pub async fn producer_req_writer(
         .tap(tap.clone())
         .build();
     let throughput = metrics.throughputs.get_or_create_owned(&labels);
-    let file = async_clean_return!(tokio::fs::File::open(path).await, tcp_sink.close().await);
+    let file = async_clean_return!(tokio::fs::File::open(path.as_str()).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let codec = JsonCodec::new(max_frame_size);
     let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
@@ -120,9 +120,9 @@ pub async fn producer_rsp_reader(
 
 #[instrument(ret, err)]
 pub async fn produce(
-    address: Ustr,
+    address: FastStr,
     tap: Tap,
-    path: Ustr,
+    path: FastStr,
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,

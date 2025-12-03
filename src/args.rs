@@ -8,7 +8,6 @@ use clap_duration::duration_range_value_parse;
 use duration_human::{DurationHuman, DurationHumanValidator};
 use faststr::FastStr;
 use hyper::Uri;
-use ustr::Ustr;
 use crate::error::JrpkError;
 
 #[derive(Debug, Clone, Parser)]
@@ -95,9 +94,9 @@ pub enum Mode {
     },
     Client {
         #[arg(long)]
-        path: Ustr,
+        path: FastStr,
         #[arg(long)]
-        address: Ustr,
+        address: FastStr,
         #[arg(long)]
         topic: FastStr,
         #[arg(long, required = false)]

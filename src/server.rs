@@ -180,7 +180,7 @@ async fn server_req_reader(
 
 type JrpRspMeteredItem = MeteredItem<JrpRsp<'static>>;
 
-#[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv, metrics))]
+#[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv, jrp_err_rcv, metrics))]
 async fn server_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRspMeteredItem>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCodecs, SrvCtx>,
@@ -265,7 +265,7 @@ async fn serve_jsonrpc(
     Ok(())
 }
 
-#[instrument(ret, err)]
+#[instrument(ret, err, skip(registry))]
 pub async fn listen_jsonrpc(
     brokers: Vec<String>,
     bind: SocketAddr,
