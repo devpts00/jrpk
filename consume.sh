@@ -19,7 +19,8 @@ do
 		--from=earliest \
 		--until=latest \
 		--max-batch-byte-size=128KiB \
-		--max-wait-ms=10000 &
+		--max-wait-ms=50 &
+	sleep 0.1
 done
 
 wait

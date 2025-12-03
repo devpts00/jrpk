@@ -129,7 +129,7 @@ async fn server_req_reader(
 ) -> Result<(), JrpkError> {
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
-        let mut labels = Labels::new(LblTier::Server).traffic(LblTraffic::In).build();    
+        let mut labels = Labels::new(LblTier::Server).traffic(LblTraffic::In).build();
         let bytes = result?;
         let length = bytes.len() as u64;
         trace!("json: {}", from_utf8(bytes.as_ref())?);
@@ -197,7 +197,7 @@ async fn server_rsp_writer(
                 let mut labels = Labels::new(LblTier::Server).method(srv_ctx.method).tap(tap).build();
                 metrics.latencies
                     .get_or_create(&labels)
-                    .observe(Instant::now().duration_since(ts).as_secs_f64());
+                    .observe(ts.elapsed().as_secs_f64());
                 let throughput = metrics.throughputs
                     .get_or_create_owned(labels.traffic(LblTraffic::Out));
                 let jrp_res_rsp_data = kfk_res_rsp

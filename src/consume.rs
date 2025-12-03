@@ -132,7 +132,6 @@ async fn consumer_rsp_reader(
         let length = frame.len() as u64;
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
-        // TODO: write latency metric
         match jrp_rsp.take_result() {
             Ok(jrp_rsp_data) => {
                 match jrp_rsp_data {
@@ -175,7 +174,6 @@ async fn consumer_rsp_reader(
     writer.flush()?;
     Ok(())
 }
-
 
 #[instrument(ret, err)]
 pub async fn consume(

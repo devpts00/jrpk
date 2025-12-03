@@ -129,7 +129,8 @@ pub type KfkReqCtxRcv<COD, CTX> = Receiver<KfkReqCtx<COD, CTX>>;
 
 #[inline]
 fn record_length(r: &Record) -> usize {
-    r.key.as_ref().map(|k| k.len()).unwrap_or(0) + r.value.as_ref().map(|k| k.len()).unwrap_or(0)
+    r.key.as_ref().map(|k| k.len()).unwrap_or(0) +
+        r.value.as_ref().map(|k| k.len()).unwrap_or(0)
 }
 
 #[inline]
@@ -139,7 +140,7 @@ fn records_length(rs: &Vec<Record>) -> usize {
 
 #[inline]
 fn records_and_offsets_length(ros: &Vec<RecordAndOffset>) -> usize {
-    ros.iter().map(|ro| record_length(&ro.record)).sum()
+    ros.iter().map(|ro| record_length(&ro.record) + size_of::<RecordAndOffset>()).sum()
 }
 
 #[instrument(ret, err, skip(cli, metrics, req_ctx_rcv))]
@@ -155,34 +156,51 @@ async fn run_kafka_loop<COD: Debug, CTX: Debug>(
         let ts = Instant::now();
         let res_rsp = match req {
             KfkReq::Send { records } => {
-                let length = records_length(&records);
                 metrics.throughputs
                     .get_or_create(labels.method(LblMethod::Send).traffic(LblTraffic::In))
-                    .inc_by(length as u64);
+                    .inc_by(records_length(&records) as u64);
                 cli.produce(records, Compression::Snappy).await
                     .map(|offsets| {
                         let labels = labels.traffic(LblTraffic::Out);
                         metrics.latencies.get_or_create(&labels)
                             .observe(ts.elapsed().as_secs_f64());
                         metrics.throughputs.get_or_create(&labels)
-                            .inc_by(8 * offsets.len() as u64);
+                            .inc_by((size_of::<i64>() * offsets.len()) as u64);
                         KfkRsp::send(offsets)
                     })
             }
             KfkReq::Fetch { offset, bytes, max_wait_ms, codecs } => {
                 let offset_explicit = match offset {
-                    KfkOffset::Implicit(at) => cli.get_offset(at).await?,
+                    KfkOffset::Implicit(at) => {
+                        metrics.throughputs
+                            .get_or_create(labels.method(LblMethod::Offset).traffic(LblTraffic::In))
+                            .inc_by(size_of_val(&at) as u64);
+                        let ts = Instant::now();
+                        cli.get_offset(at).await
+                            .map(|offset| {
+                                let labels = labels.traffic(LblTraffic::Out).build();
+                                metrics.throughputs
+                                    .get_or_create(&labels)
+                                    .inc_by(size_of_val(&offset) as u64);
+                                metrics.latencies
+                                    .get_or_create(&labels)
+                                    .observe(ts.elapsed().as_secs_f64());
+                                offset
+                            })?
+                    },
                     KfkOffset::Explicit(n) => n
                 };
                 metrics.throughputs
                     .get_or_create(labels.method(LblMethod::Fetch).traffic(LblTraffic::In))
-                    .inc_by(20);
+                    .inc_by((size_of_val(&offset_explicit) + size_of_val(&bytes) + size_of_val(&max_wait_ms)) as u64);
                 cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
                     .map(|(recs_and_offsets, highwater_mark)| {
                         let labels = labels.traffic(LblTraffic::Out).build();
-                        metrics.throughputs.get_or_create(&labels)
+                        metrics.throughputs
+                            .get_or_create(&labels)
                             .inc_by(records_and_offsets_length(&recs_and_offsets) as u64);
-                        metrics.latencies.get_or_create(&labels)
+                        metrics.latencies
+                            .get_or_create(&labels)
                             .observe(ts.elapsed().as_secs_f64());
                         KfkRsp::fetch(recs_and_offsets, highwater_mark, codecs)
                     })
@@ -192,12 +210,12 @@ async fn run_kafka_loop<COD: Debug, CTX: Debug>(
                     KfkOffset::Implicit(at) => {
                         metrics.throughputs
                             .get_or_create(labels.method(LblMethod::Offset).traffic(LblTraffic::In))
-                            .inc_by(4);
+                            .inc_by(size_of_val(&at) as u64);
                         cli.get_offset(at).await
                             .map(|offset| {
                                 let labels = labels.traffic(LblTraffic::Out).build();
                                 metrics.throughputs.get_or_create(&labels)
-                                    .inc_by(4);
+                                    .inc_by(size_of_val(&offset) as u64);
                                 metrics.latencies.get_or_create(&labels)
                                     .observe(ts.elapsed().as_secs_f64());
                                 KfkRsp::offset(offset)
