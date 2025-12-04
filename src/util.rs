@@ -5,7 +5,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::from_utf8;
 use faststr::FastStr;
-use hyper::Uri;
+use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio::task::{JoinError, JoinHandle};
@@ -17,6 +17,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+use crate::error::JrpkError;
 
 #[macro_export]
 macro_rules! async_clean_return {
@@ -234,15 +235,17 @@ impl <T> CancellableHandle<T> {
     }
 }
 
-pub fn uri_append_tap(uri: Uri, tap: &Tap) -> Result<Uri, hyper::http::Error> {
-    let mut b = Uri::builder();
-    if let Some(scheme) = uri.scheme() {
-        b = b.scheme(scheme.clone());
+pub fn url_append_tap(url: &mut Url, tap: &Tap) -> Result<(), JrpkError> {
+    match url.path_segments_mut() {
+        Ok(mut segments) => {
+            segments.push("topic");
+            segments.push(tap.topic.as_str());
+            segments.push("partition");
+            segments.push(tap.partition.to_string().as_str());
+            Ok(())
+        },
+        Err(_) => {
+            Err(JrpkError::Url)
+        }
     }
-    if let Some(authority) = uri.authority() {
-        b = b.authority(authority.clone());
-    }
-    let path_tap = format!("{}/topic/{}/partition/{}", uri.path(), tap.topic, tap.partition);
-    b = b.path_and_query(&path_tap);
-    b.build()
 }

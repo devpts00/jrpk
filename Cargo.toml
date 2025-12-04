@@ -31,3 +31,5 @@ base64 = "0.22.1"
 log = "0.4.27"
 faststr = { version = "0.2.32", features = ["serde"] }
 strum = { version = "0.27.2", features = ["derive"] }
+axum = "0.8.7"
+reqwest = "0.12.24"

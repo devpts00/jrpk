@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use clap_duration::duration_range_value_parse;
 use duration_human::{DurationHuman, DurationHumanValidator};
 use faststr::FastStr;
-use hyper::Uri;
+use reqwest::Url;
 use crate::error::JrpkError;
 
 #[derive(Debug, Clone, Parser)]
@@ -104,7 +104,7 @@ pub enum Mode {
         #[arg(long, default_value = "1MiB")]
         max_frame_byte_size: ByteSize,
         #[arg(long)]
-        metrics_uri: Uri,
+        metrics_uri: Url,
         #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
         metrics_period: DurationHuman,
         #[command(subcommand)]

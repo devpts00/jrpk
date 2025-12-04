@@ -3,18 +3,18 @@ use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpBytes, JrpData, JrpRecSend, JrpReq, JrpRsp};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
-use crate::util::{uri_append_tap, Tap};
+use crate::util::{url_append_tap, Tap};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use prometheus_client::registry::Registry;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use faststr::FastStr;
-use hyper::Uri;
 use moka::future::Cache;
+use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio::try_join;
 use tokio_util::codec::{Framed, FramedRead};
@@ -127,16 +127,16 @@ pub async fn produce(
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_byte_size: usize,
-    metrics_uri: Uri,
+    mut metrics_url: Url,
     metrics_period: Duration,
 ) -> Result<(), JrpkError> {
 
-    let metrics_uri = uri_append_tap(metrics_uri, &tap)?;
-    let mut registry = Registry::default();
-    let metrics = JrpkMetrics::new(&mut registry);
+    url_append_tap(&mut metrics_url, &tap)?;
+    let registry = Arc::new(Mutex::new(Registry::default()));
+    let metrics = JrpkMetrics::new(registry.clone());
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
     let ph = spawn_push_prometheus(
-        metrics_uri,
+        metrics_url,
         metrics_period,
         registry
     );

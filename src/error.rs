@@ -65,6 +65,12 @@ pub enum JrpkError {
     
     #[error("hyper: {0}")]
     Hyper(#[from] hyper::Error),
+
+    #[error("reqwest: {0}")]
+    Reqwest(#[from] reqwest::Error),
+    
+    #[error("url")]
+    Url,
 }
 
 /// deliberately drop payload

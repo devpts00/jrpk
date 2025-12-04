@@ -276,14 +276,11 @@ pub async fn listen_jsonrpc(
     registry: Arc<Mutex<Registry>>,
 ) -> Result<(), JrpkError> {
 
-    let meters = {
-        let mut rg = registry.lock().unwrap();
-        JrpkMetrics::new(&mut rg)
-    };
+    let metrics = JrpkMetrics::new(registry);
 
     info!("connect: {}", brokers.join(","));
     let client = ClientBuilder::new(brokers).build().await?;
-    let client_cache: Arc<KfkClientCache<JrpCodecs, SrvCtx>> = Arc::new(KfkClientCache::new(client, 1024, queue_size, meters.clone()));
+    let client_cache: Arc<KfkClientCache<JrpCodecs, SrvCtx>> = Arc::new(KfkClientCache::new(client, 1024, queue_size, metrics.clone()));
     info!("bind: {:?}", bind);
     let listener = TcpListener::bind(bind).await?;
     loop {
@@ -297,7 +294,7 @@ pub async fn listen_jsonrpc(
                 send_buf_size,
                 recv_buf_size,
                 queue_size,
-                meters.clone(),
+                metrics.clone(),
             )
         );
     }
