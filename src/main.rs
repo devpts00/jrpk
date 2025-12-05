@@ -8,6 +8,7 @@ mod produce;
 mod metrics;
 mod error;
 mod consume;
+mod http;
 
 use std::sync::{Arc, Mutex};
 use crate::jsonrpc::listen_jsonrpc;
@@ -21,7 +22,7 @@ use tokio::spawn;
 use tracing::info;
 use crate::args::{Command, Mode};
 use crate::consume::consume;
-use crate::metrics::listen_prometheus_metrics;
+use crate::http::listen_http;
 use crate::produce::produce;
 
 async fn run(args: args::Args) {
@@ -50,12 +51,12 @@ async fn run(args: args::Args) {
                 )
             );
 
-            let ph = spawn(
-                listen_prometheus_metrics(metrics_bind, registry)
+            let hh = spawn(
+                listen_http(metrics_bind, registry)
             );
 
             join_with_signal(
-                join_all(vec!(jh, ph))
+                join_all(vec!(jh, hh))
             ).await
         }
         Mode::Client {

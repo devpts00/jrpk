@@ -1,11 +1,7 @@
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use axum::extract::State;
-use axum::Router;
-use axum::routing::get;
 use faststr::FastStr;
 use hyper::StatusCode;
 use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue, LabelValueEncoder};
@@ -16,7 +12,6 @@ use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::{Registry, Unit};
 use reqwest::{Client, Url};
 use reqwest::header::HOST;
-use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
@@ -116,7 +111,7 @@ impl JrpkMetrics {
 pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
 pub static IO_OP_LATENCY: &str = "io_op_latency";
 
-fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<String, std::fmt::Error> {
+pub fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<String, std::fmt::Error> {
     let mut buf = String::with_capacity(64 * 1024);
     let rg = registry.lock().unwrap();
     encode(&mut buf, &rg)?;
@@ -183,20 +178,4 @@ pub fn spawn_push_prometheus(
     let cancel = CancellationToken::new();
     let handle = spawn(loop_push_prometheus(url, period, registry, cancel.clone()));
     CancellableHandle::new(cancel, handle)
-}
-
-#[instrument(level="debug", ret, err, skip(registry))]
-async fn get_prometheus_metrics(State(registry): State<Arc<Mutex<Registry>>>) -> Result<String, JrpkError> {
-    let text = encode_registry(registry)?;
-    Ok(text)
-}
-
-#[instrument(ret, err, skip(registry))]
-pub async fn listen_prometheus_metrics(addr: SocketAddr, registry: Arc<Mutex<Registry>>) -> Result<(), JrpkError> {
-    let listener = TcpListener::bind(addr).await?;
-    let router = Router::new()
-        .route("/metrics", get(get_prometheus_metrics))
-        .with_state(registry);
-    axum::serve(listener, router).await?;
-    Ok(())
 }
