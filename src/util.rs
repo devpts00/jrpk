@@ -235,6 +235,7 @@ impl <T> CancellableHandle<T> {
     }
 }
 
+#[inline]
 pub fn url_append_tap(url: &mut Url, tap: &Tap) -> Result<(), JrpkError> {
     match url.path_segments_mut() {
         Ok(mut segments) => {

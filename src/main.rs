@@ -21,8 +21,8 @@ use tokio::spawn;
 use tracing::info;
 use crate::args::{Command, Mode};
 use crate::consume::consume;
+use crate::metrics::listen_prometheus_metrics;
 use crate::produce::produce;
-use crate::metrics::listen_prometheus;
 
 async fn run(args: args::Args) {
 
@@ -51,7 +51,7 @@ async fn run(args: args::Args) {
             );
 
             let ph = spawn(
-                listen_prometheus(metrics_bind, registry)
+                listen_prometheus_metrics(metrics_bind, registry)
             );
 
             join_with_signal(

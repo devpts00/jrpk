@@ -1,6 +1,8 @@
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 use std::sync::Arc;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use base64::DecodeError;
 use hyper::http;
 use hyper::http::uri::InvalidUri;
@@ -68,7 +70,7 @@ pub enum JrpkError {
 
     #[error("reqwest: {0}")]
     Reqwest(#[from] reqwest::Error),
-    
+
     #[error("url")]
     Url,
 }
@@ -77,5 +79,11 @@ pub enum JrpkError {
 impl <T> From<SendError<T>> for JrpkError {
     fn from(_: SendError<T>) -> Self {
         JrpkError::Send(SendError(()))
+    }
+}
+
+impl IntoResponse for JrpkError {
+    fn into_response(self) -> Response {
+        (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
     }
 }

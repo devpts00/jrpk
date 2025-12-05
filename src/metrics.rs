@@ -1,19 +1,13 @@
-use std::error::Error;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use bytes::Bytes;
+use axum::extract::State;
+use axum::Router;
+use axum::routing::get;
 use faststr::FastStr;
-use http_body_util::Full;
-use hyper::{Method, Request, Response, StatusCode};
-use hyper::body::{Body, Incoming};
-use hyper::header::CONTENT_TYPE;
-use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
-use hyper::server::conn::http1;
-use log::error;
+use hyper::StatusCode;
 use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue, LabelValueEncoder};
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
@@ -25,7 +19,7 @@ use reqwest::header::HOST;
 use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 use crate::error::JrpkError;
 use crate::jsonrpc::JrpMethod;
 use crate::util::{CancellableHandle, Tap};
@@ -122,12 +116,12 @@ impl JrpkMetrics {
 pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
 pub static IO_OP_LATENCY: &str = "io_op_latency";
 
-fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<Bytes, std::fmt::Error> {
+fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<String, std::fmt::Error> {
     let mut buf = String::with_capacity(64 * 1024);
     let rg = registry.lock().unwrap();
     encode(&mut buf, &rg)?;
     trace!("metrics:\n{}", buf);
-    Ok(buf.into())
+    Ok(buf)
 }
 
 #[instrument(level="debug", ret, err, skip(cli, registry))]
@@ -180,6 +174,7 @@ async fn loop_push_prometheus(
     Ok(())
 }
 
+#[instrument(skip(registry))]
 pub fn spawn_push_prometheus(
     url: Url,
     period: Duration,
@@ -190,58 +185,18 @@ pub fn spawn_push_prometheus(
     CancellableHandle::new(cancel, handle)
 }
 
-#[inline]
-fn rsp<D, B>(data: D, status: StatusCode) -> Result<Response<B>, hyper::http::Error>
-where B: Body + From<D> {
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(B::from(data))
-}
-
-#[inline]
-fn res2rsp<D, B, E>(res: Result<D, E>) -> Result<Response<B>, hyper::http::Error>
-where B: Body + Default + From<D>, E: Error {
-    match res {
-        Ok(data) => {
-            rsp(data, StatusCode::OK)
-        },
-        Err(err) => {
-            error!("error: {}", err);
-            rsp(B::default(), StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-#[instrument(level="debug", ret, err, skip(reg))]
-async fn serve_prometheus(req: Request<Incoming>, reg: Arc<Mutex<Registry>>) -> Result<Response<Full<Bytes>>, hyper::http::Error> {
-    match (req.method(), req.uri().path()) {
-        (&Method::GET, "/metrics") => {
-            res2rsp(encode_registry(reg))
-        },
-        (method, uri) => {
-            warn!("unexpected, method: {}, uri: {}", method, uri);
-            rsp(Full::default(), StatusCode::NOT_FOUND)
-        }
-    }
+#[instrument(level="debug", ret, err, skip(registry))]
+async fn get_prometheus_metrics(State(registry): State<Arc<Mutex<Registry>>>) -> Result<String, JrpkError> {
+    let text = encode_registry(registry)?;
+    Ok(text)
 }
 
 #[instrument(ret, err, skip(registry))]
-pub async fn listen_prometheus(bind_addr: SocketAddr, registry: Arc<Mutex<Registry>>) -> Result<(), JrpkError> {
-    let listener = TcpListener::bind(bind_addr).await?;
-    loop {
-        let (stream, peer_addr) = listener.accept().await?;
-        info!("accepted: {}", peer_addr);
-        // 1. clone for every service fn
-        let registry = registry.clone();
-        spawn(
-            http1::Builder::new().serve_connection(
-                TokioIo::new(stream),
-                service_fn(move |req| {
-                    // 2. clone for every future
-                    serve_prometheus(req, registry.clone())
-                })
-            )
-        );
-    }
+pub async fn listen_prometheus_metrics(addr: SocketAddr, registry: Arc<Mutex<Registry>>) -> Result<(), JrpkError> {
+    let listener = TcpListener::bind(addr).await?;
+    let router = Router::new()
+        .route("/metrics", get(get_prometheus_metrics))
+        .with_state(registry);
+    axum::serve(listener, router).await?;
+    Ok(())
 }
