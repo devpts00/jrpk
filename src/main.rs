@@ -1,5 +1,5 @@
 mod args;
-mod server;
+mod jsonrpc;
 mod util;
 mod model;
 mod kafka;
@@ -10,7 +10,7 @@ mod error;
 mod consume;
 
 use std::sync::{Arc, Mutex};
-use crate::server::listen_jsonrpc;
+use crate::jsonrpc::listen_jsonrpc;
 use crate::util::{init_tracing, join_with_signal, Tap};
 use clap::Parser;
 use std::time::Duration;

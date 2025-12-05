@@ -120,7 +120,7 @@ fn j2k_req(
 }
 
 #[instrument(ret, err, skip(tcp_stream, client_cache, kfk_res_ctx_snd, jrp_err_snd, metrics))]
-async fn server_req_reader(
+async fn jsonrpc_req_reader(
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
     client_cache: Arc<KfkClientCache<JrpCodecs, SrvCtx>>,
     kfk_res_ctx_snd: KfkResCtxSnd<JrpCodecs, SrvCtx>,
@@ -181,7 +181,7 @@ async fn server_req_reader(
 type JrpRspMeteredItem = MeteredItem<JrpRsp<'static>>;
 
 #[instrument(ret, err, skip(tcp_sink, kfk_res_ctx_rcv, jrp_err_rcv, metrics))]
-async fn server_rsp_writer(
+async fn jsonrpc_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRspMeteredItem>,
     mut kfk_res_ctx_rcv: KfkResCtxRcv<JrpCodecs, SrvCtx>,
     mut jrp_err_rcv: JrpErrRcv,
@@ -245,7 +245,7 @@ async fn serve_jsonrpc(
     let (jrp_err_snd, jrp_err_rcv) = mpsc::channel::<(usize, JrpkError)>(queue_size);
 
     let rh = spawn(
-        server_req_reader(
+        jsonrpc_req_reader(
             tcp_stream,
             client_cache,
             kfk_res_snd,
@@ -254,7 +254,7 @@ async fn serve_jsonrpc(
         )
     );
     let wh = spawn(
-        server_rsp_writer(
+        jsonrpc_rsp_writer(
             tcp_sink,
             kfk_res_rcv,
             jrp_err_rcv,
