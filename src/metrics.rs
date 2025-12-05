@@ -124,7 +124,7 @@ fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<String, std::fmt::E
     Ok(buf)
 }
 
-#[instrument(level="debug", ret, err, skip(cli, registry))]
+#[instrument(level="debug", ret, err, skip(url, cli, registry))]
 async fn push_prometheus(
     url: Url,
     auth: FastStr,
@@ -151,7 +151,7 @@ async fn push_prometheus(
     Ok(())
 }
 
-#[instrument(ret, err, skip(registry, cancel))]
+#[instrument(ret, err, skip(url, registry, cancel))]
 async fn loop_push_prometheus(
     url: Url,
     period: Duration,
@@ -174,7 +174,7 @@ async fn loop_push_prometheus(
     Ok(())
 }
 
-#[instrument(skip(registry))]
+#[instrument(skip(url, registry))]
 pub fn spawn_push_prometheus(
     url: Url,
     period: Duration,
