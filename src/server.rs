@@ -1,5 +1,5 @@
 use crate::codec::{JsonCodec, MeteredItem};
-use crate::jsonrpc::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkResCtx, KfkResCtxRcv, KfkResCtxSnd, KfkRsp};
 use crate::util::{set_buf_sizes, ReqCtx, Tap};
 use base64::DecodeError;

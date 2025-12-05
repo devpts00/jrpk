@@ -1,7 +1,7 @@
 use crate::async_clean_return;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
-use crate::jsonrpc::{JrpBytes, JrpData, JrpRecSend, JrpReq, JrpRsp};
+use crate::model::{JrpBytes, JrpData, JrpRecSend, JrpReq, JrpRsp};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
 use crate::util::{url_append_tap, Tap};
 use bytes::Bytes;

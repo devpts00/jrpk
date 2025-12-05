@@ -1,7 +1,7 @@
 mod args;
 mod server;
 mod util;
-mod jsonrpc;
+mod model;
 mod kafka;
 mod codec;
 mod produce;

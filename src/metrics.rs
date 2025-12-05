@@ -21,7 +21,7 @@ use tokio::spawn;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 use crate::error::JrpkError;
-use crate::jsonrpc::JrpMethod;
+use crate::model::JrpMethod;
 use crate::util::{CancellableHandle, Tap};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
