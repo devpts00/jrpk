@@ -6,7 +6,6 @@ use base64::DecodeError;
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use rskafka::client::ClientBuilder;
 use rskafka::record::{Record, RecordAndOffset};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -265,22 +264,19 @@ async fn serve_jsonrpc(
     Ok(())
 }
 
-#[instrument(ret, err, skip(registry))]
+#[instrument(ret, err, skip(kafka_clients, prometheus_registry))]
 pub async fn listen_jsonrpc(
-    brokers: Vec<String>,
     bind: SocketAddr,
     max_frame_size: usize,
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    registry: Arc<Mutex<Registry>>,
+    kafka_clients: Arc<KfkClientCache<JrpCodecs, SrvCtx>>,
+    prometheus_registry: Arc<Mutex<Registry>>,
 ) -> Result<(), JrpkError> {
 
-    let metrics = JrpkMetrics::new(registry);
+    let metrics = JrpkMetrics::new(prometheus_registry);
 
-    info!("connect: {}", brokers.join(","));
-    let client = ClientBuilder::new(brokers).build().await?;
-    let client_cache: Arc<KfkClientCache<JrpCodecs, SrvCtx>> = Arc::new(KfkClientCache::new(client, 1024, queue_size, metrics.clone()));
     info!("bind: {:?}", bind);
     let listener = TcpListener::bind(bind).await?;
     loop {
@@ -289,7 +285,7 @@ pub async fn listen_jsonrpc(
         spawn(
             serve_jsonrpc(
                 tcp_stream,
-                client_cache.clone(),
+                kafka_clients.clone(),
                 max_frame_size,
                 send_buf_size,
                 recv_buf_size,

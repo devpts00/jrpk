@@ -11,23 +11,28 @@ mod consume;
 mod http;
 
 use std::sync::{Arc, Mutex};
-use crate::jsonrpc::listen_jsonrpc;
+use crate::jsonrpc::{listen_jsonrpc, SrvCtx};
 use crate::util::{init_tracing, join_with_signal, Tap};
 use clap::Parser;
 use std::time::Duration;
 use futures::future::join_all;
 use prometheus_client::registry::Registry;
+use rskafka::client::ClientBuilder;
 use tokio;
 use tokio::spawn;
 use tracing::info;
 use crate::args::{Command, Mode};
 use crate::consume::consume;
 use crate::http::listen_http;
+use crate::kafka::KfkClientCache;
+use crate::metrics::JrpkMetrics;
+use crate::model::JrpCodecs;
 use crate::produce::produce;
 
 async fn run(args: args::Args) {
 
     let registry = Arc::new(Mutex::new(Registry::default()));
+
     match args.mode {
         Mode::Server {
             brokers,
@@ -39,20 +44,31 @@ async fn run(args: args::Args) {
             metrics_bind,
         } => {
 
+            let metrics = JrpkMetrics::new(registry.clone());
+
+            info!("connect: {}", brokers.join(","));
+            // TODO: handle error
+            let kafka_client = ClientBuilder::new(brokers).build().await.unwrap();
+            let kafka_clients: Arc<KfkClientCache<JrpCodecs, SrvCtx>> = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_size, metrics.clone()));
+
             let jh = spawn(
                 listen_jsonrpc(
-                    brokers,
                     bind,
                     max_frame_byte_size.as_u64() as usize,
                     send_buffer_byte_size.as_u64() as usize,
                     recv_buffer_byte_size.as_u64() as usize,
                     queue_size,
+                    kafka_clients.clone(),
                     registry.clone(),
                 )
             );
 
             let hh = spawn(
-                listen_http(metrics_bind, registry)
+                listen_http(
+                    metrics_bind,
+                    kafka_clients,
+                    registry
+                )
             );
 
             join_with_signal(

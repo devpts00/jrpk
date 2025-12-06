@@ -7,9 +7,9 @@ use std::str::from_utf8;
 use faststr::FastStr;
 use reqwest::Url;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::Sender;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::select;
+use tokio::sync::mpsc::error::SendError;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
@@ -102,10 +102,38 @@ impl <RSP: Display, ERR: Error, CTX: Display> Display for ResCtx<RSP, ERR, CTX> 
     }
 }
 
+//#[derive(Clone)]
+pub enum Respond123<T> {
+    Bounded(tokio::sync::mpsc::Sender<T>),
+    Oneshot(tokio::sync::oneshot::Sender<T>),
+}
+
+impl <T> Respond123<T> {
+    pub fn bounded(snd: tokio::sync::mpsc::Sender<T>) -> Self {
+        Respond123::Bounded(snd)
+    }
+    pub fn oneshot(snd: tokio::sync::oneshot::Sender<T>) -> Self {
+        Respond123::Oneshot(snd)
+    }
+    pub async fn respond(self, value: T) -> Result<(), SendError<T>> {
+        match self {
+            Respond123::Bounded(snd) => {
+                snd.send(value).await
+            }
+            Respond123::Oneshot(snd) => {
+                snd.send(value).map_err(|v| SendError(v))
+            }
+        }
+    }
+}
+
+pub type BoundedSnd<T> = tokio::sync::mpsc::Sender<T>;
+pub type OneshotSnd<T> = tokio::sync::oneshot::Sender<T>;
+
 pub struct ReqCtx<REQ, RSP, ERR: Error, CTX> {
     pub req: REQ,
     pub ctx: CTX,
-    pub res_rsp_ctx_snd: Sender<ResCtx<RSP, ERR, CTX>>,
+    pub res_rsp_ctx_snd: tokio::sync::mpsc::Sender<ResCtx<RSP, ERR, CTX>>,
 }
 
 impl <REQ: Debug, RSP, ERR: Error, CTX: Debug> Debug for ReqCtx<REQ, RSP, ERR, CTX> {
@@ -115,7 +143,7 @@ impl <REQ: Debug, RSP, ERR: Error, CTX: Debug> Debug for ReqCtx<REQ, RSP, ERR, C
 }
 
 impl <REQ, RSP, ERR: Error, CTX> ReqCtx<REQ, RSP, ERR, CTX> {
-    pub fn new(req: REQ, ctx: CTX, res_rsp_ctx_snd: Sender<ResCtx<RSP, ERR, CTX>>) -> Self {
+    pub fn new(req: REQ, ctx: CTX, res_rsp_ctx_snd: BoundedSnd<ResCtx<RSP, ERR, CTX>>) -> Self {
         ReqCtx { req, ctx, res_rsp_ctx_snd }
     }
 }
