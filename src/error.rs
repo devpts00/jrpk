@@ -38,8 +38,11 @@ pub enum JrpkError {
     #[error("json: {0}")]
     Json(#[from] serde_json::error::Error),
 
-    #[error("send: {0}")]
-    Send(SendError<()>),
+    #[error("bounded send: {0}")]
+    BoundedSend(SendError<()>),
+
+    #[error("oneshot send")]
+    OneshotSend,
 
     #[error("rs kafka: {0}")]
     Rs(#[from] RsKafkaError),
@@ -78,7 +81,7 @@ pub enum JrpkError {
 /// deliberately drop payload
 impl <T> From<SendError<T>> for JrpkError {
     fn from(_: SendError<T>) -> Self {
-        JrpkError::Send(SendError(()))
+        JrpkError::BoundedSend(SendError(()))
     }
 }
 

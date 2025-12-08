@@ -11,7 +11,7 @@ mod consume;
 mod http;
 
 use std::sync::{Arc, Mutex};
-use crate::jsonrpc::{listen_jsonrpc, SrvCtx};
+use crate::jsonrpc::{listen_jsonrpc, JrpCtx};
 use crate::util::{init_tracing, join_with_signal, Tap};
 use clap::Parser;
 use std::time::Duration;
@@ -49,7 +49,7 @@ async fn run(args: args::Args) {
             info!("connect: {}", brokers.join(","));
             // TODO: handle error
             let kafka_client = ClientBuilder::new(brokers).build().await.unwrap();
-            let kafka_clients: Arc<KfkClientCache<JrpCodecs, SrvCtx>> = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_size, metrics.clone()));
+            let kafka_clients: Arc<KfkClientCache> = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_size, metrics.clone()));
 
             let jh = spawn(
                 listen_jsonrpc(

@@ -93,9 +93,9 @@ async fn consumer_req_writer<'a>(
     while let Some(offset) = offset_rcv.recv().await {
         let tap = tap.clone();
         // TODO: support all codecs
-        let codecs = JrpCodecs::new(JrpCodec::Str, JrpCodec::Json);
+        let codecs = JrpCodecs::default();
         let bytes = 1..max_batch_size;
-        let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), codecs, bytes, max_wait_ms);
+        let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, codecs);
         let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, throughput.clone());
         times.insert(id, Instant::now()).await;
         tcp_sink.send(metered_item).await?;

@@ -1,5 +1,5 @@
 use crate::error::JrpkError;
-use crate::util::{debug_record_and_offset, debug_vec_fn, ReqCtx, ResCtx, Tap};
+use crate::util::{debug_record_and_offset, debug_vec_fn, BoundedReceiver, BoundedSender, OneshotReceiver, OneshotSender, Req, ReqId, ResId, Tap};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
@@ -7,10 +7,9 @@ use rskafka::record::{Record, RecordAndOffset};
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::time::Instant;
-use tokio::spawn;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{info, instrument, trace};
+use log::info;
+use tokio::{select, spawn};
+use tracing::{instrument, trace};
 use crate::metrics::{JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
 
 #[derive(Debug)]
@@ -19,7 +18,7 @@ pub enum KfkOffset {
     Explicit(i64)
 }
 
-pub enum KfkReq<C> {
+pub enum KfkReq {
     Send {
         records: Vec<Record>
     },
@@ -27,14 +26,13 @@ pub enum KfkReq<C> {
         offset: KfkOffset,
         bytes: Range<i32>,
         max_wait_ms: i32,
-        codecs: C,
     },
     Offset {
         offset: KfkOffset
     }
 }
 
-impl <C: Debug> Debug for KfkReq<C> {
+impl Debug for KfkReq {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             KfkReq::Send { records} => {
@@ -42,12 +40,11 @@ impl <C: Debug> Debug for KfkReq<C> {
                 debug_vec_fn(f, records, |f, r| { debug_record_and_offset(f, r, None) })?;
                 write!(f, " }}")
             }
-            KfkReq::Fetch { offset, bytes, max_wait_ms, codecs } => {
+            KfkReq::Fetch { offset, bytes, max_wait_ms} => {
                 f.debug_struct("Fetch")
                     .field("offset", offset)
                     .field("bytes", bytes)
                     .field("max_wait_ms", max_wait_ms)
-                    .field("codecs: ", codecs)
                     .finish()
             }
             KfkReq::Offset { offset } => {
@@ -59,55 +56,71 @@ impl <C: Debug> Debug for KfkReq<C> {
     }
 }
 
-impl <C> KfkReq<C> {
+impl KfkReq {
     pub fn send(records: Vec<Record>) -> Self {
         KfkReq::Send { records }
     }
-    pub fn fetch(offset: KfkOffset, bytes: Range<i32>, max_wait_ms: i32, codecs: C) -> Self {
-        KfkReq::Fetch { offset, bytes, max_wait_ms, codecs }
+    pub fn fetch(offset: KfkOffset, bytes: Range<i32>, max_wait_ms: i32) -> Self {
+        KfkReq::Fetch { offset, bytes, max_wait_ms }
     }
     pub fn offset(offset: KfkOffset) -> Self {
         KfkReq::Offset { offset }
     }
 }
 
-pub enum KfkRsp<C> {
+pub enum KfkRsp {
     Send {
         offsets: Vec<i64>,
     },
     Fetch {
         recs_and_offsets: Vec<RecordAndOffset>,
         high_watermark: i64,
-        codecs: C
     },
     Offset(i64)
 }
 
-impl <C> KfkRsp<C> {
+impl KfkRsp {
     fn send(offsets: Vec<i64>) -> Self {
         KfkRsp::Send { offsets }
     }
-    fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64, codecs: C) -> Self {
-        KfkRsp::Fetch { recs_and_offsets, high_watermark, codecs }
+    fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64) -> Self {
+        KfkRsp::Fetch { recs_and_offsets, high_watermark }
     }
     fn offset(value: i64) -> Self {
         KfkRsp::Offset(value)
     }
 }
 
-impl <C: Debug> Debug for KfkRsp<C> {
+impl From<Vec<i64>> for KfkRsp {
+    fn from(offsets: Vec<i64>) -> Self {
+        KfkRsp::Send { offsets }
+    }
+}
+
+impl From<(Vec<RecordAndOffset>, i64)> for KfkRsp {
+    fn from((recs_and_offsets, high_watermark): (Vec<RecordAndOffset>, i64)) -> Self {
+        KfkRsp::Fetch { recs_and_offsets, high_watermark }
+    }
+}
+
+impl From<i64> for KfkRsp {
+    fn from(pos: i64) -> Self {
+        KfkRsp::Offset(pos)
+    }
+}
+
+impl Debug for KfkRsp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             KfkRsp::Send { offsets } => {
                 f.debug_struct("Send").field("offsets", offsets).finish()
             }
-            KfkRsp::Fetch { recs_and_offsets, high_watermark, codecs } => {
+            KfkRsp::Fetch { recs_and_offsets, high_watermark} => {
                 write!(f, "Fetch {{ ")?;
                 debug_vec_fn(f, recs_and_offsets, |f, r| {
                     debug_record_and_offset(f, &r.record, Some(r.offset))
                 })?;
                 write!(f, ", high_watermark: {:?}", high_watermark)?;
-                write!(f, ", codecs: {:?}", codecs)?;
                 write!(f, " }}")
             }
             KfkRsp::Offset(offset) => {
@@ -118,14 +131,6 @@ impl <C: Debug> Debug for KfkRsp<C> {
 }
 
 pub type RsKafkaError = rskafka::client::error::Error;
-pub type KfkReqCtx<COD, CTX> = ReqCtx<KfkReq<COD>, KfkRsp<COD>, JrpkError, CTX>;
-pub type KfkResCtx<COD, CTX> = ResCtx<KfkRsp<COD>, JrpkError, CTX>;
-
-// R: From<KfkResId<C>>
-pub type KfkResCtxSnd<COD, CTX> = Sender<KfkResCtx<COD, CTX>>;
-pub type KfkResCtxRcv<COD, CTX> = Receiver<KfkResCtx<COD, CTX>>;
-pub type KfkReqCtxSnd<COD, CTX> = Sender<KfkReqCtx<COD, CTX>>;
-pub type KfkReqCtxRcv<COD, CTX> = Receiver<KfkReqCtx<COD, CTX>>;
 
 #[inline]
 fn record_length(r: &Record) -> usize {
@@ -143,130 +148,164 @@ fn records_and_offsets_length(ros: &Vec<RecordAndOffset>) -> usize {
     ros.iter().map(|ro| record_length(&ro.record) + size_of::<RecordAndOffset>()).sum()
 }
 
-#[instrument(ret, err, skip(cli, metrics, req_ctx_rcv))]
-async fn run_kafka_loop<COD: Debug, CTX: Debug>(
+async fn proc_kafka_send(
+    cli: &PartitionClient,
+    records: Vec<Record>,
+    metrics: &JrpkMetrics,
+    labels: &mut Labels,
+) -> Result<KfkRsp, JrpkError> {
+    let labels = labels.method(LblMethod::Send).traffic(LblTraffic::In);
+    metrics.throughputs.get_or_create(labels)
+        .inc_by(records_length(&records) as u64);
+    let ts = Instant::now();
+    let offsets = cli.produce(records, Compression::Snappy).await?;
+    metrics.throughputs.get_or_create(labels)
+        .inc_by((size_of::<i64>() * offsets.len()) as u64);
+    metrics.latencies.get_or_create(labels)
+        .observe(ts.elapsed().as_secs_f64());
+    Ok(offsets.into())
+}
+
+async fn proc_kafka_offset(
+    cli: &PartitionClient,
+    offset: KfkOffset,
+    metrics: &JrpkMetrics,
+    labels: &mut Labels,
+) -> Result<KfkRsp, JrpkError> {
+    match offset {
+        KfkOffset::Implicit(at) => {
+            let labels = labels.method(LblMethod::Offset).traffic(LblTraffic::In);
+            metrics.throughputs.get_or_create(labels)
+                .inc_by(size_of_val(&at) as u64);
+            let ts = Instant::now();
+            let pos = cli.get_offset(at).await?;
+            let labels = labels.traffic(LblTraffic::Out);
+            metrics.throughputs.get_or_create(labels)
+                .inc_by(size_of_val(&pos) as u64);
+            metrics.latencies.get_or_create(labels)
+                .observe(ts.elapsed().as_secs_f64());
+            Ok(pos.into())
+        }
+        KfkOffset::Explicit(pos) => {
+            Ok(pos.into())
+        }
+    }
+}
+
+async fn proc_kafka_fetch(
+    cli: &PartitionClient,
+    offset: KfkOffset,
+    bytes: Range<i32>,
+    max_wait_ms: i32,
+    metrics: &JrpkMetrics,
+    labels: &mut Labels,
+) -> Result<KfkRsp, JrpkError> {
+    if let KfkRsp::Offset(pos) = proc_kafka_offset(cli, offset, metrics, labels).await? {
+        let labels = labels.method(LblMethod::Fetch).traffic(LblTraffic::In);
+        metrics.throughputs.get_or_create(labels)
+            .inc_by((size_of_val(&pos) + size_of_val(&bytes) + size_of_val(&max_wait_ms)) as u64);
+        let ts = Instant::now();
+        let (recs_and_offsets, high_watermark) = cli.fetch_records(pos, bytes, max_wait_ms).await?;
+        let labels = labels.traffic(LblTraffic::Out);
+        metrics.throughputs.get_or_create(labels)
+            .inc_by((records_and_offsets_length(&recs_and_offsets) + size_of_val(&high_watermark)) as u64);
+        metrics.latencies.get_or_create(labels)
+            .observe(ts.elapsed().as_secs_f64());
+        Ok((recs_and_offsets, high_watermark).into())
+    } else {
+        Err(JrpkError::Unexpected("fetch returns unexpected response"))
+    }
+}
+
+async fn proc_kafka_req(
+    cli: &PartitionClient,
+    req: KfkReq,
+    metrics: &JrpkMetrics,
+    labels: &mut Labels,
+) -> Result<KfkRsp, JrpkError> {
+    match req {
+        KfkReq::Send { records } => {
+            proc_kafka_send(cli, records, metrics, labels).await
+        },
+        KfkReq::Fetch { offset, bytes, max_wait_ms } => {
+            proc_kafka_fetch(cli, offset, bytes, max_wait_ms, metrics, labels).await
+        },
+        KfkReq::Offset { offset } => {
+            proc_kafka_offset(cli, offset, metrics, labels).await
+        },
+    }
+}
+
+pub type KfkResIdSender = BoundedSender<ResId<KfkRsp, JrpkError>>;
+pub type KfkResIdReceiver = BoundedReceiver<ResId<KfkRsp, JrpkError>>;
+pub type KfkResSender = OneshotSender<Result<KfkRsp, JrpkError>>;
+pub type KfkResReceiver = OneshotReceiver<Result<KfkRsp, JrpkError>>;
+pub type KfkReqIdSender = BoundedSender<ReqId<KfkReq, KfkRsp, JrpkError>>;
+pub type KfkReqIdReceiver = BoundedReceiver<ReqId<KfkReq, KfkRsp, JrpkError>>;
+pub type KfkReqSender = BoundedSender<Req<KfkReq, KfkRsp, JrpkError>>;
+pub type KfkReqReceiver = BoundedReceiver<Req<KfkReq, KfkRsp, JrpkError>>;
+
+#[instrument(ret, err, skip(cli, metrics, jsonrpc_rcv, http_rcv))]
+async fn run_kafka_loop(
     tap: Tap,
     cli: PartitionClient,
     metrics: JrpkMetrics,
-    mut req_ctx_rcv: KfkReqCtxRcv<COD, CTX>
+    mut jsonrpc_rcv: KfkReqIdReceiver,
+    mut http_rcv: KfkReqReceiver,
 ) -> Result<(), JrpkError> {
-    while let Some(KfkReqCtx { req, ctx, res_rsp_ctx_snd}) = req_ctx_rcv.recv().await {
-        trace!("request: {:?}", req);
-        let mut labels = Labels::new(LblTier::Kafka).tap(tap.clone()).build();
-        let ts = Instant::now();
-        let res_rsp = match req {
-            KfkReq::Send { records } => {
-                metrics.throughputs
-                    .get_or_create(labels.method(LblMethod::Send).traffic(LblTraffic::In))
-                    .inc_by(records_length(&records) as u64);
-                cli.produce(records, Compression::Snappy).await
-                    .map(|offsets| {
-                        let labels = labels.traffic(LblTraffic::Out);
-                        metrics.latencies.get_or_create(&labels)
-                            .observe(ts.elapsed().as_secs_f64());
-                        metrics.throughputs.get_or_create(&labels)
-                            .inc_by((size_of::<i64>() * offsets.len()) as u64);
-                        KfkRsp::send(offsets)
-                    })
+    let labels = Labels::new(LblTier::Kafka).tap(tap).build();
+    loop {
+        let mut labels = labels.clone();
+        select! {
+            biased;
+            Some(ReqId { id, req, snd }) = jsonrpc_rcv.recv() => {
+                trace!("jrpk, id: {}, req: {:?}", id, req);
+                let res_rsp = proc_kafka_req(&cli, req, &metrics, &mut labels).await;
+                let res_id_rsp = ResId::new(id, res_rsp);
+                snd.send(res_id_rsp).await?
             }
-            KfkReq::Fetch { offset, bytes, max_wait_ms, codecs } => {
-                let offset_explicit = match offset {
-                    KfkOffset::Implicit(at) => {
-                        metrics.throughputs
-                            .get_or_create(labels.method(LblMethod::Offset).traffic(LblTraffic::In))
-                            .inc_by(size_of_val(&at) as u64);
-                        let ts = Instant::now();
-                        cli.get_offset(at).await
-                            .map(|offset| {
-                                let labels = labels.traffic(LblTraffic::Out).build();
-                                metrics.throughputs
-                                    .get_or_create(&labels)
-                                    .inc_by(size_of_val(&offset) as u64);
-                                metrics.latencies
-                                    .get_or_create(&labels)
-                                    .observe(ts.elapsed().as_secs_f64());
-                                offset
-                            })?
-                    },
-                    KfkOffset::Explicit(n) => n
-                };
-                metrics.throughputs
-                    .get_or_create(labels.method(LblMethod::Fetch).traffic(LblTraffic::In))
-                    .inc_by((size_of_val(&offset_explicit) + size_of_val(&bytes) + size_of_val(&max_wait_ms)) as u64);
-                cli.fetch_records(offset_explicit, bytes, max_wait_ms).await
-                    .map(|(recs_and_offsets, highwater_mark)| {
-                        let labels = labels.traffic(LblTraffic::Out).build();
-                        metrics.throughputs
-                            .get_or_create(&labels)
-                            .inc_by(records_and_offsets_length(&recs_and_offsets) as u64);
-                        metrics.latencies
-                            .get_or_create(&labels)
-                            .observe(ts.elapsed().as_secs_f64());
-                        KfkRsp::fetch(recs_and_offsets, highwater_mark, codecs)
-                    })
+            Some(Req { req, snd }) = http_rcv.recv() => {
+                trace!("http, req: {:?}", req);
+                let res_rsp = proc_kafka_req(&cli, req, &metrics, &mut labels).await;
+                snd.send(res_rsp).map_err(|_| JrpkError::OneshotSend)?
             }
-            KfkReq::Offset { offset } => {
-                match offset {
-                    KfkOffset::Implicit(at) => {
-                        metrics.throughputs
-                            .get_or_create(labels.method(LblMethod::Offset).traffic(LblTraffic::In))
-                            .inc_by(size_of_val(&at) as u64);
-                        cli.get_offset(at).await
-                            .map(|offset| {
-                                let labels = labels.traffic(LblTraffic::Out).build();
-                                metrics.throughputs.get_or_create(&labels)
-                                    .inc_by(size_of_val(&offset) as u64);
-                                metrics.latencies.get_or_create(&labels)
-                                    .observe(ts.elapsed().as_secs_f64());
-                                KfkRsp::offset(offset)
-                            })
-                    }
-                    KfkOffset::Explicit(pos) => {
-                        Ok(KfkRsp::offset(pos))
-                    }
-                }
+            else => {
+                break;
             }
-        };
-
-        let res_rsp_ctx = match res_rsp {
-            Ok(rsp) => KfkResCtx::ok(rsp, ctx),
-            Err(err) => KfkResCtx::err(err.into(), ctx)
-        };
-        trace!("client: {}/{}, response: {:?}", cli.topic(), cli.partition(), res_rsp_ctx);
-        res_rsp_ctx_snd.send(res_rsp_ctx).await?;
+        }
     }
     Ok(())
 }
 
-pub struct KfkClientCache<COD, CTX> {
+pub struct KfkClientCache {
     client: Client,
-    cache: Cache<Tap, KfkReqCtxSnd<COD, CTX>>,
+    cache: Cache<Tap, (KfkReqIdSender, KfkReqSender)>,
     queue_size: usize,
     metrics: JrpkMetrics,
 }
 
-impl <COD, CTX> KfkClientCache<COD, CTX>
-where CTX: Debug + Send + 'static, COD: Debug + Send + 'static {
+impl KfkClientCache {
     pub fn new(client: Client, capacity: u64, queue_size: usize, metrics: JrpkMetrics) -> Self {
         Self { client, cache: Cache::new(capacity), queue_size, metrics }
     }
 
     #[instrument(err, skip(self))]
-    async fn init_kafka_loop(&self, tap: Tap) -> Result<KfkReqCtxSnd<COD, CTX>, JrpkError> {
+    async fn init_kafka_loop(&self, tap: Tap) -> Result<(KfkReqIdSender, KfkReqSender), JrpkError> {
         info!("init: {}, queue length: {}", tap, self.queue_size);
-        let pc = self.client.partition_client(tap.topic.as_str(), tap.partition, UnknownTopicHandling::Error).await?;
-        let (req_id_snd, req_id_rcv) = mpsc::channel(self.queue_size);
-        spawn(run_kafka_loop(tap, pc, self.metrics.clone(), req_id_rcv));
-        Ok(req_id_snd)
+        let cli = self.client.partition_client(tap.topic.as_str(), tap.partition, UnknownTopicHandling::Error).await?;
+        let (req_id_snd, req_id_rcv) = tokio::sync::mpsc::channel(self.queue_size);
+        let (req_snd, req_rcv) = tokio::sync::mpsc::channel(self.queue_size);
+        spawn(run_kafka_loop(tap, cli, self.metrics.clone(), req_id_rcv, req_rcv));
+        Ok((req_id_snd, req_snd))
     }
 
     #[instrument(level="debug", err, skip(self))]
-    pub async fn lookup_kafka_sender(&self, tap: Tap) -> Result<KfkReqCtxSnd<COD, CTX>, JrpkError> {
+    pub async fn lookup_kafka_senders(&self, tap: Tap) -> Result<(KfkReqIdSender, KfkReqSender), JrpkError> {
         trace!("lookup: {}", tap);
         let init = self.init_kafka_loop(tap.clone());
-        let req_id_snd = self.cache.try_get_with(tap, init).await?;
+        let senders = self.cache.try_get_with(tap, init).await?;
         self.cache.run_pending_tasks().await;
         //trace!("cached: {}", self.cache.entry_count());
-        Ok(req_id_snd)
+        Ok(senders)
     }
 }

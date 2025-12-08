@@ -71,86 +71,88 @@ impl Display for Tap {
     }
 }
 
-#[derive(Debug)]
-pub struct ResCtx<RSP, ERR: Error, CTX> {
-    pub res: Result<RSP, ERR>,
-    pub ctx: CTX,
+pub type BoundedSender<T> = tokio::sync::mpsc::Sender<T>;
+pub type BoundedReceiver<T> = tokio::sync::mpsc::Receiver<T>;
+pub type OneshotSender<T> = tokio::sync::oneshot::Sender<T>;
+pub type OneshotReceiver<T> = tokio::sync::mpsc::Receiver<T>;
+
+/*
+pub enum Respond<T> {
+    Bounded(BoundedSender<T>),
+    Oneshot(OneshotSender<T>),
 }
 
-impl <RSP, CTX, ERR: Error> ResCtx<RSP, ERR, CTX> {
-    pub fn new(res: Result<RSP, ERR>, ctx: CTX) -> Self {
-        ResCtx { res, ctx }
-    }
-    pub fn ok(data: RSP, ctx: CTX) -> Self {
-        ResCtx::new(Ok(data), ctx)
-    }
-    pub fn err(err: ERR, ctx: CTX) -> Self {
-        ResCtx::new(Err(err), ctx)
-    }
-}
-
-impl <RSP: Display, ERR: Error, CTX: Display> Display for ResCtx<RSP, ERR, CTX> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.res.as_ref() {
-            Ok(rsp) => {
-                write!(f, "tag: {}: {}", self.ctx, rsp)
-            }
-            Err(err) => {
-                write!(f, "tag: {}: {}", self.ctx, err)
-            }
-        }
-    }
-}
-
-//#[derive(Clone)]
-pub enum Respond123<T> {
-    Bounded(tokio::sync::mpsc::Sender<T>),
-    Oneshot(tokio::sync::oneshot::Sender<T>),
-}
-
-impl <T> Respond123<T> {
+impl <T> Respond<T> {
     pub fn bounded(snd: tokio::sync::mpsc::Sender<T>) -> Self {
-        Respond123::Bounded(snd)
+        Respond::Bounded(snd)
     }
     pub fn oneshot(snd: tokio::sync::oneshot::Sender<T>) -> Self {
-        Respond123::Oneshot(snd)
+        Respond::Oneshot(snd)
     }
     pub async fn respond(self, value: T) -> Result<(), SendError<T>> {
         match self {
-            Respond123::Bounded(snd) => {
+            Respond::Bounded(snd) => {
                 snd.send(value).await
             }
-            Respond123::Oneshot(snd) => {
+            Respond::Oneshot(snd) => {
                 snd.send(value).map_err(|v| SendError(v))
             }
         }
     }
 }
+ */
 
-pub type BoundedSnd<T> = tokio::sync::mpsc::Sender<T>;
-pub type OneshotSnd<T> = tokio::sync::oneshot::Sender<T>;
-
-pub struct ReqCtx<REQ, RSP, ERR: Error, CTX> {
-    pub req: REQ,
-    pub ctx: CTX,
-    pub res_rsp_ctx_snd: tokio::sync::mpsc::Sender<ResCtx<RSP, ERR, CTX>>,
+#[derive(Debug)]
+pub struct ResId<T, E> {
+    pub id: usize,
+    pub res: Result<T, E>,
 }
 
-impl <REQ: Debug, RSP, ERR: Error, CTX: Debug> Debug for ReqCtx<REQ, RSP, ERR, CTX> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ReqTag {{ ctx: {:?}, req: {:?} }}>", self.ctx, self.req)
+impl <T, E> ResId<T, E> {
+    pub fn new(id: usize, res: Result<T, E>) -> Self {
+        ResId { id, res }
+    }
+    pub fn ok(id: usize, value: T) -> Self {
+        ResId { id, res: Ok(value) }
+    }
+    pub fn err(err: E) -> Self {
+        ResId { id: 0, res: Err(err) }
     }
 }
 
-impl <REQ, RSP, ERR: Error, CTX> ReqCtx<REQ, RSP, ERR, CTX> {
-    pub fn new(req: REQ, ctx: CTX, res_rsp_ctx_snd: BoundedSnd<ResCtx<RSP, ERR, CTX>>) -> Self {
-        ReqCtx { req, ctx, res_rsp_ctx_snd }
+impl <T: Display, E: Error> Display for ResId<T, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.res.as_ref() {
+            Ok(value) => {
+                write!(f, "id: {}, ok: {}", self.id, value)
+            }
+            Err(err) => {
+                write!(f, "id: {}, err: {}", self.id, err)
+            }
+        }
     }
 }
 
-impl <REQ: Display, RSP, ERR: Error, CTX: Display> Display for ReqCtx<REQ, RSP, ERR, CTX> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ctx: {}, req: {}", self.ctx, self.req)
+pub struct Req<T, U, E> {
+    pub req: T,
+    pub snd: OneshotSender<Result<U, E>>,
+}
+
+impl <T, U, E> Req<T, U, E> {
+    pub fn new(req: T, snd: OneshotSender<Result<U, E>>) -> Self {
+        Req { req, snd }
+    }
+}
+
+pub struct ReqId<T, U, E> {
+    pub id: usize,
+    pub req: T,
+    pub snd: BoundedSender<ResId<U, E>>,
+}
+
+impl <T, U, E> ReqId<T, U, E> {
+    pub fn new(id: usize, req: T, snd: BoundedSender<ResId<U, E>>) -> Self {
+        ReqId { id, req, snd }
     }
 }
 

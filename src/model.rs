@@ -115,10 +115,16 @@ pub enum JrpCodec {
     Base64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct JrpCodecs {
     pub key: JrpCodec,
     pub value: JrpCodec,
+}
+
+impl Default for JrpCodecs {
+    fn default() -> Self {
+        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json }
+    }
 }
 
 impl JrpCodecs {
@@ -237,10 +243,10 @@ pub struct JrpParams<'a> {
     pub topic: FastStr,
     pub partition: i32,
     pub offset: Option<JrpOffset>,
-    pub codecs: Option<JrpCodecs>,
     pub records: Option<Vec<JrpRecSend<'a>>>,
     pub bytes: Option<Range<i32>>,
     pub max_wait_ms: Option<i32>,
+    pub codecs: Option<JrpCodecs>,
 }
 
 impl <'a> JrpParams<'a> {
@@ -249,22 +255,22 @@ impl <'a> JrpParams<'a> {
         topic: FastStr,
         partition: i32,
         offset: Option<JrpOffset>,
-        codecs: Option<JrpCodecs>,
         records: Option<Vec<JrpRecSend<'a>>>,
         bytes: Option<Range<i32>>,
         max_wait_ms: Option<i32>,
+        codecs: Option<JrpCodecs>,
     ) -> Self {
-        JrpParams { topic, partition, offset, codecs, records, bytes, max_wait_ms }
+        JrpParams { topic, partition, offset, records, bytes, max_wait_ms, codecs }
     }
 
     #[inline]
     pub fn send (topic: FastStr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
-        JrpParams::new(topic, partition, None, None, Some(records), None, None)
+        JrpParams::new(topic, partition, None, Some(records), None, None, None)
     }
 
     #[inline]
-    pub fn fetch(topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
-        JrpParams::new(topic, partition, Some(offset), Some(codecs), None, Some(bytes), Some(max_wait_ms))
+    pub fn fetch(topic: FastStr, partition: i32, offset: JrpOffset, bytes: Range<i32>, max_wait_ms: i32, codecs: JrpCodecs) -> Self {
+        JrpParams::new(topic, partition, Some(offset), None, Some(bytes), Some(max_wait_ms), Some(codecs))
     }
 
     #[inline]
@@ -291,8 +297,8 @@ impl <'a> JrpReq<'a> {
     pub fn offset(id: usize, topic: FastStr, partition: i32, offset: JrpOffset) -> Self {
         JrpReq::new(id, JrpMethod::Offset, JrpParams::offset(topic, partition, offset))
     }
-    pub fn fetch(id: usize, topic: FastStr, partition: i32, offset: JrpOffset, codecs: JrpCodecs, bytes: Range<i32>, max_wait_ms: i32) -> Self {
-        JrpReq::new(id, JrpMethod::Fetch, JrpParams::fetch(topic, partition, offset, codecs, bytes, max_wait_ms))
+    pub fn fetch(id: usize, topic: FastStr, partition: i32, offset: JrpOffset, bytes: Range<i32>, max_wait_ms: i32, codecs: JrpCodecs) -> Self {
+        JrpReq::new(id, JrpMethod::Fetch, JrpParams::fetch(topic, partition, offset, bytes, max_wait_ms, codecs))
     }
     pub fn send(id: usize, topic: FastStr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
         JrpReq::new(id, JrpMethod::Send, JrpParams::send(topic, partition, records))

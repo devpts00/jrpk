@@ -7,12 +7,10 @@ use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tracing::instrument;
 use crate::error::JrpkError;
-use crate::jsonrpc::SrvCtx;
+use crate::jsonrpc::JrpCtx;
 use crate::kafka::KfkClientCache;
 use crate::metrics::encode_registry;
 use crate::model::JrpCodecs;
-
-type JrpKfkClientCache = KfkClientCache<JrpCodecs, SrvCtx>;
 
 #[instrument(level="debug", ret, err, skip(registry))]
 async fn get_prometheus_metrics(State(registry): State<Arc<Mutex<Registry>>>) -> Result<String, JrpkError> {
@@ -20,14 +18,14 @@ async fn get_prometheus_metrics(State(registry): State<Arc<Mutex<Registry>>>) ->
     Ok(text)
 }
 
-async fn get_kafka_offset(State(cache): State<Arc<KfkClientCache<JrpCodecs, SrvCtx>>>) -> Result<String, JrpkError> {
+async fn get_kafka_offset(State(cache): State<Arc<KfkClientCache>>) -> Result<String, JrpkError> {
     Ok("123".to_string())
 }
 
 #[instrument(ret, err, skip(kafka_clients, prometheus_registry))]
 pub async fn listen_http(
     addr: SocketAddr,
-    kafka_clients: Arc<JrpKfkClientCache>,
+    kafka_clients: Arc<KfkClientCache>,
     prometheus_registry: Arc<Mutex<Registry>>
 ) -> Result<(), JrpkError> {
     let listener = TcpListener::bind(addr).await?;
