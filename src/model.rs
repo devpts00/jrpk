@@ -196,6 +196,23 @@ impl Serialize for JrpOffset {
     }
 }
 
+impl FromStr for JrpOffset {
+    type Err = JrpkError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "earliest" {
+            Ok(JrpOffset::Earliest)
+        } else if s == "latest" {
+            Ok(JrpOffset::Latest)
+        } else if let Ok(ts) = DateTime::<Utc>::from_str(s) {
+            Ok(JrpOffset::Timestamp(ts))
+        } else if let Ok(pos) = i64::from_str(s) {
+            Ok(JrpOffset::Offset(pos))
+        } else {
+            Err(JrpkError::Parse(format!("invalid offset: {}", s)))
+        }
+    }
+}
+
 impl <'de> Deserialize<'de> for JrpOffset {
 
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -217,17 +234,7 @@ impl <'de> Deserialize<'de> for JrpOffset {
             }
 
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-                if v == "earliest" {
-                    Ok(JrpOffset::Earliest)
-                } else if v == "latest" {
-                    Ok(JrpOffset::Latest)
-                } else if let Ok(ts) = DateTime::<Utc>::from_str(v) {
-                    Ok(JrpOffset::Timestamp(ts))
-                } else if let Ok(ms) = i64::from_str(v) {
-                    self.visit_i64(ms)
-                } else {
-                    Err(E::custom(format!("invalid offset: {}", v)))
-                }
+                JrpOffset::from_str(v).map_err(Error::custom)
             }
         }
 

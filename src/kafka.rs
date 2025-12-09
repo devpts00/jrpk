@@ -80,14 +80,26 @@ pub enum KfkRsp {
 }
 
 impl KfkRsp {
-    fn send(offsets: Vec<i64>) -> Self {
-        KfkRsp::Send { offsets }
+    pub fn to_send(self) -> Result<Vec<i64>, JrpkError> {
+        if let KfkRsp::Send { offsets } = self {
+            Ok(offsets)
+        } else {
+            Err(JrpkError::Unexpected("Unexpected kafka response"))
+        }
     }
-    fn fetch(recs_and_offsets: Vec<RecordAndOffset>, high_watermark: i64) -> Self {
-        KfkRsp::Fetch { recs_and_offsets, high_watermark }
+    pub fn to_fetch(self) -> Result<(Vec<RecordAndOffset>, i64), JrpkError> {
+        if let KfkRsp::Fetch { recs_and_offsets, high_watermark } = self {
+            Ok((recs_and_offsets, high_watermark))
+        } else {
+            Err(JrpkError::Unexpected("Unexpected kafka response"))
+        }
     }
-    fn offset(value: i64) -> Self {
-        KfkRsp::Offset(value)
+    pub fn to_offset(self) -> Result<i64, JrpkError> {
+        if let KfkRsp::Offset(pos) = self {
+            Ok(pos)
+        } else {
+            Err(JrpkError::Unexpected("Unexpected kafka response"))
+        }
     }
 }
 

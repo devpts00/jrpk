@@ -75,7 +75,7 @@ fn k2j_rsp(rsp: KfkRsp, codecs: JrpCodecs) -> Result<JrpRspData<'static>, JrpkEr
 }
 
 #[inline]
-fn j2k_offset(offset: JrpOffset) -> KfkOffset {
+pub fn j2k_offset(offset: JrpOffset) -> KfkOffset {
     match offset {
         JrpOffset::Earliest => KfkOffset::Implicit(OffsetAt::Earliest),
         JrpOffset::Latest => KfkOffset::Implicit(OffsetAt::Latest),
@@ -236,9 +236,9 @@ async fn serve_jsonrpc(
     queue_size: usize,
     metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
-    
+
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
-    
+
     let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();

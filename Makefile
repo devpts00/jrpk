@@ -37,13 +37,13 @@ server-release: build-release
 		--metrics-bind=0.0.0.0:9090
 
 client-debug-consume: build-debug
-	./consume.sh debug result posts 32
+	./consume.sh debug result posts 1
 
 client-release-consume: build-release
 	./consume.sh release result posts 32
 
 client-debug-produce: build-debug
-	./produce.sh debug employees_1MB.json posts 32
+	./produce.sh debug people_40mb.json posts 32
 
 client-release-produce: build-release
 	./produce.sh release people_40mb.json posts 32

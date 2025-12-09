@@ -9,6 +9,7 @@ use hyper::http::uri::InvalidUri;
 use strum::IntoStaticStr;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
+use tokio::sync::oneshot::error::RecvError;
 use tokio::task::JoinError;
 use crate::kafka::RsKafkaError;
 
@@ -43,6 +44,9 @@ pub enum JrpkError {
 
     #[error("oneshot send")]
     OneshotSend,
+
+    #[error("oneshot receive")]
+    OneshotReceive(#[from] RecvError),
 
     #[error("rs kafka: {0}")]
     Rs(#[from] RsKafkaError),
