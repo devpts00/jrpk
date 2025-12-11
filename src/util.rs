@@ -67,7 +67,7 @@ impl Tap {
 
 impl Display for Tap {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}", self.topic, self.partition)
+        write!(f, "{}/{}", self.topic, self.partition)
     }
 }
 

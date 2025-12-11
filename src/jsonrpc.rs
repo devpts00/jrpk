@@ -151,7 +151,7 @@ async fn jsonrpc_req_reader(
                     //if request is semantically correct, send it to kafka pipeline
                     Ok(kfk_req) => {
                         let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
-                        let (kfk_req_id_snd, _) = cli_cache.lookup_kafka_senders(tap).await?;
+                        let kfk_req_id_snd = cli_cache.lookup_jsonrpc_sender(tap).await?;
                         kfk_req_id_snd.send(kfk_req_id).await?;
                     }
                     // if request is NOT semantically correct, send error directly to output pipeline

@@ -312,12 +312,29 @@ impl KfkClientCache {
     }
 
     #[instrument(level="debug", err, skip(self))]
-    pub async fn lookup_kafka_senders(&self, tap: Tap) -> Result<(KfkReqIdSender, KfkReqSender), JrpkError> {
+    pub async fn lookup_jsonrpc_sender(&self, tap: Tap) -> Result<KfkReqIdSender, JrpkError> {
         trace!("lookup: {}", tap);
-        let init = self.init_kafka_loop(tap.clone());
-        let senders = self.cache.try_get_with(tap, init).await?;
-        self.cache.run_pending_tasks().await;
-        //trace!("cached: {}", self.cache.entry_count());
-        Ok(senders)
+        if let Some((jsonrpc_snd, _)) = self.cache.get(&tap).await {
+            Ok(jsonrpc_snd)
+        } else {
+            let init = self.init_kafka_loop(tap.clone());
+            let (jsonrpc_snd, _) = self.cache.try_get_with(tap, init).await?;
+            self.cache.run_pending_tasks().await;
+            Ok(jsonrpc_snd)
+        }
     }
+
+    #[instrument(level="debug", err, skip(self))]
+    pub async fn lookup_http_sender(&self, tap: Tap) -> Result<KfkReqSender, JrpkError> {
+        trace!("lookup: {}", tap);
+        if let Some((_, http_snd)) = self.cache.get(&tap).await {
+            Ok(http_snd)
+        } else {
+            let init = self.init_kafka_loop(tap.clone());
+            let (_, http_snd) = self.cache.try_get_with(tap, init).await?;
+            self.cache.run_pending_tasks().await;
+            Ok(http_snd)
+        }
+    }
+    
 }

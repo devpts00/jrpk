@@ -166,19 +166,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-streams"
-version = "0.24.0"
+name = "axum-extra"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49debcb7f7400a7f2c96d590795c12372f4db7ad0f518d5a02286d8c8b8c691d"
+checksum = "dbfe9f610fe4e99cf0cfcd03ccf8c63c28c616fe714d80475ef731f3b13dd21b"
 dependencies = [
  "axum",
+ "axum-core",
  "bytes",
- "futures",
+ "futures-core",
+ "futures-util",
  "http",
  "http-body",
- "serde",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "serde_core",
  "serde_json",
+ "tokio",
  "tokio-stream",
+ "tokio-util",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -240,6 +250,9 @@ name = "bytesize"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3c8f83209414aacf0eeae3cf730b18d6981697fba62f200fcfb92b9f082acba"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cc"
@@ -820,6 +833,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humantime"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
+name = "humantime-serde"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57a3db5ea5923d99402c94e9feb261dc5ee9b4efa158b0315f788cf549cc200c"
+dependencies = [
+ "humantime",
+ "serde",
+]
+
+[[package]]
 name = "hyper"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1106,7 +1135,7 @@ name = "jrpk"
 version = "0.0.1"
 dependencies = [
  "axum",
- "axum-streams",
+ "axum-extra",
  "base64",
  "bytes",
  "bytesize",
@@ -1116,8 +1145,11 @@ dependencies = [
  "duration-human",
  "faststr",
  "futures",
+ "futures-util",
  "hex",
  "http-body-util",
+ "humantime",
+ "humantime-serde",
  "hyper",
  "hyper-util",
  "log",
@@ -1132,8 +1164,8 @@ dependencies = [
  "strum",
  "thiserror 2.0.15",
  "tokio",
+ "tokio-stream",
  "tokio-util",
- "tower-http",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2459,7 +2491,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
