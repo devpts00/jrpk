@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use faststr::FastStr;
 use hyper::StatusCode;
 use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue, LabelValueEncoder};
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 use crate::error::JrpkError;
 use crate::model::JrpMethod;
+use crate::size::Size;
 use crate::util::{CancellableHandle, Tap};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -105,6 +106,12 @@ impl JrpkMetrics {
         let latencies = Family::<Labels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
         r.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies.clone());
         JrpkMetrics { throughputs, latencies }
+    }
+    pub fn throughput<S: Size>(&self, labels: &Labels, data: &S) {
+        self.throughputs.get_or_create(labels).inc_by(data.size() as u64);
+    }
+    pub fn latency(&self, labels: &Labels, since: Instant) {
+        self.latencies.get_or_create(labels).observe(since.elapsed().as_secs_f64());
     }
 }
 

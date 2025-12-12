@@ -9,6 +9,7 @@ mod metrics;
 mod error;
 mod consume;
 mod http;
+mod size;
 
 use std::sync::{Arc, Mutex};
 use crate::jsonrpc::{listen_jsonrpc, JrpCtx};

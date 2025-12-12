@@ -3,6 +3,8 @@ use socket2::SockRef;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
+use std::marker::PhantomData;
+use std::mem;
 use std::str::from_utf8;
 use faststr::FastStr;
 use reqwest::Url;
@@ -10,6 +12,7 @@ use tokio::net::TcpStream;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::select;
 use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
@@ -53,6 +56,7 @@ pub fn init_tracing() {
         .init();
 }
 
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct Tap {
     pub topic: FastStr,
@@ -69,6 +73,52 @@ impl Display for Tap {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.topic, self.partition)
     }
+}
+
+pub struct Id<T>(usize, T);
+
+struct Send<T, U> {
+    _phantom: PhantomData<T>,
+    snd: Sender<U>,
+}
+
+impl <T: Into<U>, U, E> Send<Result<T, E>, Result<U, E>> {
+    async fn send(&self, res: Result<T, E>) -> Result<(), SendError<Result<U, E>>> {
+        self.snd.send(res.map(|x| x.into())).await
+    }
+}
+
+struct RequestId<T, U, W, E>(Id<T>, Send<Id<Result<U, E>>, Id<Result<W, E>>>);
+
+pub struct ResCtx<RSP, CTX, ERR: Error = JrpkError> {
+    pub res: Result<RSP, ERR>,
+    pub ctx: CTX
+}
+
+impl <RSP, CTX, ERR: Error> ResCtx<RSP, CTX, ERR> {
+    pub fn new(res: Result<RSP, ERR>, ctx: CTX) -> Self {
+        ResCtx { res, ctx }
+    }
+}
+
+pub struct ReqCtx<REQ, RSP, CTX, ERR: Error = JrpkError> {
+    pub req: REQ,
+    pub ctx: CTX,
+    pub snd: Sender<ResCtx<RSP, CTX, ERR>>,
+}
+
+impl <REQ, RSP, CTX, ERR: Error> ReqCtx<REQ, RSP, CTX, ERR> {
+    pub fn new(req: REQ, ctx: CTX, snd: Sender<ResCtx<RSP, CTX, ERR>>) -> Self {
+        ReqCtx { req, ctx, snd }
+    }
+}
+
+#[macro_export]
+macro_rules! request_response {
+    ($req_name:ident, $req:ty, $res_name:ident, $rsp:ty, $ctx:ident, $err:ty) => {
+        pub type $res_name<$ctx> = ResCtx<$rsp, $ctx, $err>;
+        pub type $req_name<$ctx> = ReqCtx<$req, $rsp, $ctx, $err>;
+    };
 }
 
 pub type BoundedSender<T> = tokio::sync::mpsc::Sender<T>;

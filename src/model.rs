@@ -98,10 +98,7 @@ impl <'a> JrpData<'a> {
             }
         }
     }
-
 }
-
-
 
 /// Fetch codec defines how to decode Kafka bytes to JSON
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
