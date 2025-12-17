@@ -202,8 +202,8 @@ impl FromStr for JrpOffset {
             Ok(JrpOffset::Latest)
         } else if let Ok(ts) = DateTime::<Utc>::from_str(s) {
             Ok(JrpOffset::Timestamp(ts))
-        } else if let Ok(pos) = i64::from_str(s) {
-            Ok(JrpOffset::Offset(pos))
+        // } else if let Ok(pos) = i64::from_str(s) {
+        //     Ok(JrpOffset::Offset(pos))
         } else {
             Err(JrpkError::Parse(format!("invalid offset: {}", s)))
         }

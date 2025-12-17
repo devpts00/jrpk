@@ -24,7 +24,7 @@ use tracing::{info, instrument};
 use tokio::io::AsyncBufReadExt;
 use crate::error::JrpkError;
 use crate::jsonrpc::j2k_offset;
-use crate::kafka::{KfkClientCache, KfkReq};
+use crate::kafka::{KfkClientCache, KfkIn};
 use crate::metrics::encode_registry;
 use crate::model::JrpOffset;
 use crate::util::{Req, Tap};
@@ -41,7 +41,7 @@ async fn get_kafka_offset(
 ) -> Result<String, JrpkError> {
     let tap = Tap::new(topic, partition);
     let http_snd = cache.lookup_http_sender(tap).await?;
-    let kfk_req = KfkReq::offset(j2k_offset(offset));
+    let kfk_req = KfkIn::offset(j2k_offset(offset));
     let (res_rsp_snd, res_rsp_rcv) = tokio::sync::oneshot::channel();
     let req = Req::new(kfk_req, res_rsp_snd);
     http_snd.send(req).await?;
@@ -78,7 +78,7 @@ async fn get_kafka_fetch(
 ) -> Result<impl IntoResponse, JrpkError> {
     let tap = Tap::new(topic, partition);
     let http_snd = cache.lookup_http_sender(tap).await?;
-    let kfk_req = KfkReq::fetch(
+    let kfk_req = KfkIn::fetch(
         j2k_offset(offset),
         min_size.as_u64() as i32..max_size.as_u64() as i32,
         max_wait.as_millis() as i32,
@@ -125,7 +125,7 @@ async fn post_kafka_send(
 
     while let Some(line) = lines.try_next().await? {
         if batch_size > batch_size_max - rec_size_max {
-            let req = KfkReq::send(records);
+            let req = KfkIn::send(records);
             
 
 

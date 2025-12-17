@@ -1,10 +1,8 @@
 use rskafka::record::Record;
 use socket2::SockRef;
-use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::marker::PhantomData;
-use std::mem;
 use std::str::from_utf8;
 use faststr::FastStr;
 use reqwest::Url;
@@ -75,134 +73,45 @@ impl Display for Tap {
     }
 }
 
-pub struct Id<T>(usize, T);
+pub struct Id<T>(pub usize, pub T);
 
-struct Send<T, U> {
-    _phantom: PhantomData<T>,
-    snd: Sender<U>,
-}
-
-impl <T: Into<U>, U, E> Send<Result<T, E>, Result<U, E>> {
-    async fn send(&self, res: Result<T, E>) -> Result<(), SendError<Result<U, E>>> {
-        self.snd.send(res.map(|x| x.into())).await
+impl <T> Id<T> {
+    pub fn new(id: usize, value: T) -> Self {
+        Id(id, value)
     }
 }
 
-struct RequestId<T, U, W, E>(Id<T>, Send<Id<Result<U, E>>, Id<Result<W, E>>>);
-
-pub struct ResCtx<RSP, CTX, ERR: Error = JrpkError> {
-    pub res: Result<RSP, ERR>,
-    pub ctx: CTX
+pub enum KfkPayload<S, F, O> {
+    Send(S),
+    Fetch(F),
+    Offset(O),
 }
 
-impl <RSP, CTX, ERR: Error> ResCtx<RSP, CTX, ERR> {
-    pub fn new(res: Result<RSP, ERR>, ctx: CTX) -> Self {
-        ResCtx { res, ctx }
+pub struct Ctx<C, T>(pub C, pub T);
+
+impl <C, T> Ctx<C, T> {
+    pub fn new(ctx: C, value: T) -> Self { Ctx(ctx, value) }
+}
+
+pub struct Response<T, U, E> {
+    snd: Sender<Id<Result<U, E>>>,
+    _phantom: PhantomData<T>
+}
+
+impl <T, U, E> Response<T, U, E> where U: From<T> {
+    pub fn new (snd: Sender<Id<Result<U, E>>>) -> Self {
+        Response { snd, _phantom: PhantomData }
+    }
+    pub async fn send(self, id: usize, res: Result<T, E>) -> Result<(), SendError<Id<Result<U, E>>>> {
+        self.snd.send(Id(id, res.map(|r|r.into()))).await
     }
 }
 
-pub struct ReqCtx<REQ, RSP, CTX, ERR: Error = JrpkError> {
-    pub req: REQ,
-    pub ctx: CTX,
-    pub snd: Sender<ResCtx<RSP, CTX, ERR>>,
-}
+pub struct Request<T, U, W: From<U>, E> ( pub Id<T>, pub Response<U, W, E> );
 
-impl <REQ, RSP, CTX, ERR: Error> ReqCtx<REQ, RSP, CTX, ERR> {
-    pub fn new(req: REQ, ctx: CTX, snd: Sender<ResCtx<RSP, CTX, ERR>>) -> Self {
-        ReqCtx { req, ctx, snd }
-    }
-}
-
-#[macro_export]
-macro_rules! request_response {
-    ($req_name:ident, $req:ty, $res_name:ident, $rsp:ty, $ctx:ident, $err:ty) => {
-        pub type $res_name<$ctx> = ResCtx<$rsp, $ctx, $err>;
-        pub type $req_name<$ctx> = ReqCtx<$req, $rsp, $ctx, $err>;
-    };
-}
-
-pub type BoundedSender<T> = tokio::sync::mpsc::Sender<T>;
-pub type BoundedReceiver<T> = tokio::sync::mpsc::Receiver<T>;
-pub type OneshotSender<T> = tokio::sync::oneshot::Sender<T>;
-pub type OneshotReceiver<T> = tokio::sync::mpsc::Receiver<T>;
-
-/*
-pub enum Respond<T> {
-    Bounded(BoundedSender<T>),
-    Oneshot(OneshotSender<T>),
-}
-
-impl <T> Respond<T> {
-    pub fn bounded(snd: tokio::sync::mpsc::Sender<T>) -> Self {
-        Respond::Bounded(snd)
-    }
-    pub fn oneshot(snd: tokio::sync::oneshot::Sender<T>) -> Self {
-        Respond::Oneshot(snd)
-    }
-    pub async fn respond(self, value: T) -> Result<(), SendError<T>> {
-        match self {
-            Respond::Bounded(snd) => {
-                snd.send(value).await
-            }
-            Respond::Oneshot(snd) => {
-                snd.send(value).map_err(|v| SendError(v))
-            }
-        }
-    }
-}
- */
-
-#[derive(Debug)]
-pub struct ResId<T, E> {
-    pub id: usize,
-    pub res: Result<T, E>,
-}
-
-impl <T, E> ResId<T, E> {
-    pub fn new(id: usize, res: Result<T, E>) -> Self {
-        ResId { id, res }
-    }
-    pub fn ok(id: usize, value: T) -> Self {
-        ResId { id, res: Ok(value) }
-    }
-    pub fn err(err: E) -> Self {
-        ResId { id: 0, res: Err(err) }
-    }
-}
-
-impl <T: Display, E: Error> Display for ResId<T, E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.res.as_ref() {
-            Ok(value) => {
-                write!(f, "id: {}, ok: {}", self.id, value)
-            }
-            Err(err) => {
-                write!(f, "id: {}, err: {}", self.id, err)
-            }
-        }
-    }
-}
-
-pub struct Req<T, U, E> {
-    pub req: T,
-    pub snd: OneshotSender<Result<U, E>>,
-}
-
-impl <T, U, E> Req<T, U, E> {
-    pub fn new(req: T, snd: OneshotSender<Result<U, E>>) -> Self {
-        Req { req, snd }
-    }
-}
-
-pub struct ReqId<T, U, E> {
-    pub id: usize,
-    pub req: T,
-    pub snd: BoundedSender<ResId<U, E>>,
-}
-
-impl <T, U, E> ReqId<T, U, E> {
-    pub fn new(id: usize, req: T, snd: BoundedSender<ResId<U, E>>) -> Self {
-        ReqId { id, req, snd }
+impl <T, U, W, E> Request<T, U, W, E> where W: From<U> {
+    pub fn new(id: usize, value: T, snd: Sender<Id<Result<W, E>>>) -> Self {
+        Request(Id::new(id, value), Response::new(snd))
     }
 }
 

@@ -1,9 +1,8 @@
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkReqOffset, KfkReqSend, KfkResIdReceiver, KfkResIdSender, KfkRsp};
-use crate::util::{set_buf_sizes, ReqId, ResId, Tap};
+use crate::kafka::{KfkClientCache, KfkOffset, KfkOut, KfkReq};
+use crate::util::{set_buf_sizes, Id, Request, Tap};
 use base64::DecodeError;
-use chrono::{DateTime, Utc};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rskafka::record::{Record, RecordAndOffset};
@@ -13,6 +12,7 @@ use std::ops::Range;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use chrono::Utc;
 use moka::future::Cache;
 use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
@@ -23,37 +23,57 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::{Framed};
 use tracing::{info, instrument, trace, warn};
 use crate::error::JrpkError;
-use crate::metrics::{JrpkMetrics, Labels, LblTier, LblTraffic};
+use crate::metrics::{JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
 
+enum JrpCtx
 
-struct JrpBasicCtx {
+#[derive(Debug, Clone)]
+struct JrpCtx<E> {
     id: usize,
     ts: Instant,
+    tap: Tap,
+    extra: E
 }
 
-impl JrpBasicCtx {
-    fn new(id: usize) -> Self {
-        Self { id, ts: Instant::now() }
+impl JrpCtxBasic {
+    fn new(tap: Tap) -> Self { Self { ts: Instant::now(), tap } }
+}
+
+type JrpCtxSend = JrpCtxBasic;
+type JrpCtxOffset = JrpCtxBasic;
+
+#[derive(Debug, Clone)]
+struct JrpCtxFetch {
+    ts: Instant,
+    tap: Tap,
+    codecs: JrpCodecs,
+}
+
+impl JrpCtxFetch {
+    fn new(tap: Tap, codecs: JrpCodecs) -> Self { Self { ts: Instant::now(), tap, codecs } }
+}
+
+struct JrpCtxCache {
+    send: Cache<usize, JrpCtxSend>,
+    offset: Cache<usize, JrpCtxOffset>,
+    fetch: Cache<usize, JrpCtxFetch>
+}
+
+impl JrpCtxCache {
+    fn new(queue_size: usize) -> Self {
+        Self {
+            send: Cache::new(2 * queue_size as u64),
+            offset: Cache::new(2 * queue_size as u64),
+            fetch: Cache::new(2 * queue_size as u64)
+        }
     }
 }
 
-struct JrpFetchCtx {
-    id: usize,
-    ts: Instant,
-    codecs: JrpCodecs
-}
-
-impl JrpFetchCtx {
-    fn new(id: usize, codecs: JrpCodecs) -> Self {
-        Self { id, codecs, ts: Instant::now() }
-    }
-}
-
-impl <'a> TryInto<Record> for JrpRecSend<'a> {
-    type Error = DecodeError;
-    fn try_into(self) -> Result<Record, Self::Error> {
-        let key: Option<Vec<u8>> = self.key.map(|k| k.into_bytes()).transpose()?;
-        let value: Option<Vec<u8>> = self.value.map(|v| v.into_bytes()).transpose()?;
+impl <'a> TryFrom<JrpRecSend<'a>> for Record {
+    type Error = JrpkError;
+    fn try_from(value: JrpRecSend) -> Result<Self, Self::Error> {
+        let key: Option<Vec<u8>> = value.key.map(|k| k.into_bytes()).transpose()?;
+        let value: Option<Vec<u8>> = value.value.map(|v| v.into_bytes()).transpose()?;
         Ok(Record { key, value, headers: BTreeMap::new(), timestamp: Utc::now() })
     }
 }
@@ -69,116 +89,92 @@ fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, codecs: &JrpCodecs) -> Result<
 }
 
 #[inline]
-fn k2j_rsp(rsp: KfkRsp, codecs: JrpCodecs) -> Result<JrpRspData<'static>, JrpkError> {
+fn k2j_rsp(rsp: KfkOut, codecs: Option<JrpCodecs>) -> Result<JrpRspData<'static>, JrpkError> {
     match rsp {
-        KfkRsp::Send { offsets } => {
+        KfkOut::Send(offsets) => {
             Ok(JrpRspData::send(offsets))
         }
-        KfkRsp::Fetch { recs_and_offsets, high_watermark} => {
+        KfkOut::Fetch(recs_and_offsets, high_watermark) => {
+            // TODO: take care of codecs
+            let codecs = codecs.unwrap_or_default();
             let res: Result<Vec<JrpRecFetch>, JrpkError> = recs_and_offsets.into_iter()
                 .map(|ro| { k2j_rec_fetch(ro, &codecs) }).collect();
             let records = res?;
             Ok(JrpRspData::fetch(records, high_watermark))
         }
-        KfkRsp::Offset(offset) => {
+        KfkOut::Offset(offset) => {
             Ok(JrpRspData::Offset(offset))
         }
     }
 }
 
-#[inline]
-pub fn j2k_offset(offset: JrpOffset) -> KfkOffset {
-    match offset {
-        JrpOffset::Earliest => KfkOffset::Implicit(OffsetAt::Earliest),
-        JrpOffset::Latest => KfkOffset::Implicit(OffsetAt::Latest),
-        JrpOffset::Timestamp(ts) => KfkOffset::Implicit(OffsetAt::Timestamp(ts)),
-        JrpOffset::Offset(pos) => KfkOffset::Explicit(pos)
-    }
-}
-
-impl <'a> TryFrom<JrpReq<'a>> for KfkReqOffset<JrpBasicCtx> {
-    type Error = JrpkError;
-    fn try_from(req: JrpReq<'a>) -> Result<Self, Self::Error> {
-        if req.method != JrpMethod::Offset {
-            return JrpkError::Unexpected("")
+impl Into<KfkOffset> for JrpOffset {
+    fn into(self) -> KfkOffset {
+        match self {
+            JrpOffset::Earliest => KfkOffset::At(OffsetAt::Earliest),
+            JrpOffset::Latest => KfkOffset::At(OffsetAt::Latest),
+            JrpOffset::Timestamp(ts) => KfkOffset::At(OffsetAt::Timestamp(ts)),
+            JrpOffset::Offset(pos) => KfkOffset::Pos(pos)
         }
     }
 }
 
-#[inline]
-fn j2k_req(
-    method: JrpMethod,
-    offset: Option<JrpOffset>,
-    records: Option<Vec<JrpRecSend>>,
-    bytes: Option<Range<i32>>,
-    max_wait_ms: Option<i32>,
-) -> Result<KfkReq, JrpkError> {
-    match method {
+
+async fn j2k_req<'a>(
+    jrp_req: JrpReq<'a>,
+    ctx_cache: Arc<JrpCtxCache>,
+    kfk_rsp_snd: Sender<Id<Result<KfkOut, JrpkError>>>,
+    metrics: &JrpkMetrics,
+    labels: &mut Labels,
+    length: u64,
+) -> Result<(Tap, KfkReq), JrpkError> {
+    let id = jrp_req.id;
+    let params = jrp_req.params;
+    let tap = Tap::new(params.topic, params.partition);
+    let labels = labels.tap(tap.clone());
+    let kfk_req = match jrp_req.method {
         JrpMethod::Send => {
-            let jrp_records = records
-                .ok_or(JrpkError::Syntax("records is missing"))?;
-            let records: Result<Vec<Record>, DecodeError> = jrp_records.into_iter()
-                .map(|jrs| j2k_rec_send(jrs))
-                .collect();
-            let kfk_req = KfkReq::send(records?);
-            Ok(kfk_req)
+            let labels = labels.method(LblMethod::Send);
+            metrics.throughputs.get_or_create(&labels).inc_by(length);
+            let records = params.records
+                .ok_or(JrpkError::Syntax("records is missing"))?
+                .into_iter()
+                .map(|jrs| Record::try_from(jrs))
+                .collect::<Result<Vec<Record>, JrpkError>>()?;
+            let ctx = JrpCtxSend::new(tap.clone());
+            ctx_cache.send.insert(id, ctx).await;
+            KfkReq::Send(Request::new(id, records, kfk_rsp_snd))
         }
         JrpMethod::Fetch => {
-            let offset = offset.ok_or(JrpkError::Syntax("offset is missing"))?;
-            let bytes = bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
-            let max_wait_ms = max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
-            let kfk_req = KfkReq::fetch(j2k_offset(offset), bytes, max_wait_ms);
-            Ok(kfk_req)
+            let labels = labels.method(LblMethod::Fetch);
+            metrics.throughputs.get_or_create(&labels).inc_by(length);
+            let offset: KfkOffset = params.offset.ok_or(JrpkError::Syntax("offset is missing")).map(|o| o.into())?;
+            let bytes = params.bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
+            let max_wait_ms = params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
+            let codecs = params.codecs.ok_or(JrpkError::Syntax("codecs are missing"))?;
+            let ctx = JrpCtxFetch::new(tap.clone(), codecs);
+            ctx_cache.fetch.insert(id, ctx).await;
+            KfkReq::Fetch(Request::new(id, (offset, bytes, max_wait_ms), kfk_rsp_snd))
         }
         JrpMethod::Offset => {
-            let offset = offset.ok_or(JrpkError::Syntax("offset is missing"))?;
-            let kfk_req = KfkReq::offset(j2k_offset(offset));
-            Ok(kfk_req)
+            let labels = labels.method(LblMethod::Offset);
+            metrics.throughputs.get_or_create(&labels).inc_by(length);
+            let offset = params.offset.ok_or(JrpkError::Syntax("offset is missing"))
+                .map(|o| o.into())?;
+            let ctx = JrpCtxOffset::new(tap.clone());
+            ctx_cache.offset.insert(id, ctx).await;
+            KfkReq::Offset(Request::new(id, offset, kfk_rsp_snd))
         }
-    }
+    };
+    Ok((tap, kfk_req))
 }
 
-type JrpKfkReq = KfkReq<JrpBasicCtx, JrpFetchCtx, JrpBasicCtx>;
-
-type JrpKfkClientCache = KfkClientCache<JrpKfkReq>;
-
-impl <'a> TryFrom<JrpReq<'a>> for JrpKfkReq {
-    type Error = JrpkError;
-    fn try_from(jrp_req: JrpReq<'a>) -> Result<Self, Self::Error> {
-        match jrp_req.method {
-            JrpMethod::Send => {
-                let ctx = JrpBasicCtx::new(jrp_req.id);
-                let records: Vec<Record> = jrp_req.params.records
-                    .ok_or(JrpkError::Syntax("records is missing"))?
-                    .into_iter()
-                    .map(|jrs| jrs.try_into())
-                    .collect()?;
-                let kfk_req = JrpKfkReq::Send(KfkReqSend::new(records, ctx));
-
-                let kfk_req = KfkReq::send(records?);
-                Ok(kfk_req)
-            }
-            JrpMethod::Fetch => {
-                let offset = offset.ok_or(JrpkError::Syntax("offset is missing"))?;
-                let bytes = bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
-                let max_wait_ms = max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
-                let kfk_req = KfkReq::fetch(j2k_offset(offset), bytes, max_wait_ms);
-                Ok(kfk_req)
-            }
-            JrpMethod::Offset => {
-                let offset = offset.ok_or(JrpkError::Syntax("offset is missing"))?;
-                let kfk_req = KfkReq::offset(j2k_offset(offset));
-                Ok(kfk_req)
-            }
-        }
-    }
-}
-
-#[instrument(ret, err, skip(tcp_stream, cli_cache, kfk_req_send_snd, kfk_req_fetch_snd, kfk_req_offset_snd, jrp_err_snd, metrics))]
+#[instrument(ret, err, skip(tcp_stream, cli_cache, ctx_cache, kfk_rsp_snd, jrp_err_snd, metrics))]
 async fn jsonrpc_req_reader(
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
-    cli_cache: Arc<JrpKfkClientCache>,
-    kfk_req_snd: Sender<JrpKfkReq>,
+    cli_cache: Arc<KfkClientCache<KfkReq>>,
+    ctx_cache: Arc<JrpCtxCache>,
+    kfk_rsp_snd: Sender<Id<Result<KfkOut, JrpkError>>>,
     jrp_err_snd: JrpErrSnd,
     metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
@@ -194,35 +190,13 @@ async fn jsonrpc_req_reader(
             Ok(jrp_req) => {
                 trace!("request: {:?}", jrp_req);
                 let id = jrp_req.id;
-                let method = jrp_req.method;
-                let params = jrp_req.params;
-                let tap = Tap::new(params.topic, params.partition);
-                let labels = labels.method(method).tap(tap);
-                metrics.throughput(labels, &bytes);
-                // TODO: use codecs to encode
-                match method {
-                    JrpMethod::Send => {
-
+                match j2k_req(jrp_req, ctx_cache.clone(), kfk_rsp_snd.clone(), &metrics, &mut labels, length).await {
+                    Ok((tap, kfk_req)) => {
+                        let kfk_req_snd = cli_cache.lookup_sender(tap).await?;
+                        kfk_req_snd.send(kfk_req).await?;
                     }
-                    JrpMethod::Fetch => {
-
-                    }
-                    JrpMethod::Offset => {
-
-                    }
-                }
-
-
-                match j2k_req(jrp_req.method, params.offset, params.records, params.bytes, params.max_wait_ms) {
-                    //if request is semantically correct, send it to kafka pipeline
-                    Ok(kfk_req) => {
-                        let kfk_req_id = ReqId::new(id, kfk_req, kfk_res_id_snd.clone());
-                        let kfk_req_id_snd = cli_cache.lookup_jsonrpc_sender(tap).await?;
-                        kfk_req_id_snd.send(kfk_req_id).await?;
-                    }
-                    // if request is NOT semantically correct, send error directly to output pipeline
-                    Err(err) => {
-                        jrp_err_snd.send((id, err)).await?;
+                    Err(error) => {
+                        jrp_err_snd.send((id, error)).await?;
                     }
                 }
             }
@@ -246,21 +220,25 @@ async fn jsonrpc_req_reader(
 
 type JrpRspMeteredItem = MeteredItem<JrpRsp<'static>>;
 
-#[instrument(ret, err, skip(tcp_sink, kfk_res_id_rcv, jrp_err_rcv, ctx_cache, metrics))]
+#[instrument(ret, err, skip(tcp_sink, kfk_rsp_rcv, jrp_err_rcv, ctx_cache, metrics))]
 async fn jsonrpc_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRspMeteredItem>,
-    mut kfk_res_id_rcv: KfkResIdReceiver,
+    mut kfk_rsp_rcv: Receiver<Id<Result<KfkOut, JrpkError>>>,
     mut jrp_err_rcv: JrpErrRcv,
-    ctx_cache: Arc<Cache<usize, JrpCtx>>,
+    ctx_cache: Arc<JrpCtxCache>,
     metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
     loop {
         select! {
             biased;
-            Some(ResId { id, res }) = kfk_res_id_rcv.recv() => {
+            Some(Id(id, res)) = kfk_rsp_rcv.recv() => {
                 trace!("response, id: {}, res: {:?}", id, res);
                 // panic if lookup fails - means something is logically broken
-                let JrpCtx { tap, method, codecs, ts } = ctx_cache.remove(&id).await.unwrap();
+
+                let x = res;
+
+
+                let JrpCtx { ts, codecs } = ctx_cache.remove(&id).await.unwrap();
                 let codecs = codecs.unwrap_or_default();
                 let mut labels = Labels::new(LblTier::Server).method(method).tap(tap).build();
                 metrics.latencies.get_or_create(&labels)
@@ -308,7 +286,7 @@ async fn serve_jsonrpc(
     let codec = JsonCodec::new(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
-    let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<ResId<KfkRsp, JrpkError>>(queue_size);
+    let (kfk_res_id_snd, kfk_res_id_rcv) = mpsc::channel::<ResId<KfkOut, JrpkError>>(queue_size);
     let (jrp_err_snd, jrp_err_rcv) = mpsc::channel::<(usize, JrpkError)>(queue_size);
     let ctx_cache = Arc::new(Cache::new(queue_size as u64));
 
