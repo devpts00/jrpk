@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::oneshot::error::RecvError;
 use tokio::task::JoinError;
-use crate::kafka::RsKafkaError;
+use crate::kafka::KfkError;
 
 #[derive(Error, Debug, IntoStaticStr)]
 pub enum JrpkError {
@@ -49,7 +49,7 @@ pub enum JrpkError {
     OneshotReceive(#[from] RecvError),
 
     #[error("rs kafka: {0}")]
-    Rs(#[from] RsKafkaError),
+    Rs(#[from] KfkError),
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),

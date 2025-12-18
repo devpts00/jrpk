@@ -358,6 +358,9 @@ impl <'a> JrpRspData<'a> {
     pub fn fetch(records: Vec<JrpRecFetch<'a>>, high_watermark: i64) -> Self {
         JrpRspData::Fetch { records, high_watermark }
     }
+    pub fn offset(&self, offset: i64) -> Self {
+        JrpRspData::Offset(offset)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

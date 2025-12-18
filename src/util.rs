@@ -1,3 +1,4 @@
+use std::error::Error;
 use rskafka::record::Record;
 use socket2::SockRef;
 use std::fmt::{Debug, Display, Formatter};
@@ -73,45 +74,17 @@ impl Display for Tap {
     }
 }
 
-pub struct Id<T>(pub usize, pub T);
-
-impl <T> Id<T> {
-    pub fn new(id: usize, value: T) -> Self {
-        Id(id, value)
-    }
-}
-
-pub enum KfkPayload<S, F, O> {
-    Send(S),
-    Fetch(F),
-    Offset(O),
-}
-
 pub struct Ctx<C, T>(pub C, pub T);
 
 impl <C, T> Ctx<C, T> {
     pub fn new(ctx: C, value: T) -> Self { Ctx(ctx, value) }
 }
 
-pub struct Response<T, U, E> {
-    snd: Sender<Id<Result<U, E>>>,
-    _phantom: PhantomData<T>
-}
+pub struct Request<C, T, K> (pub Ctx<C, T>, pub Sender<K> );
 
-impl <T, U, E> Response<T, U, E> where U: From<T> {
-    pub fn new (snd: Sender<Id<Result<U, E>>>) -> Self {
-        Response { snd, _phantom: PhantomData }
-    }
-    pub async fn send(self, id: usize, res: Result<T, E>) -> Result<(), SendError<Id<Result<U, E>>>> {
-        self.snd.send(Id(id, res.map(|r|r.into()))).await
-    }
-}
-
-pub struct Request<T, U, W: From<U>, E> ( pub Id<T>, pub Response<U, W, E> );
-
-impl <T, U, W, E> Request<T, U, W, E> where W: From<U> {
-    pub fn new(id: usize, value: T, snd: Sender<Id<Result<W, E>>>) -> Self {
-        Request(Id::new(id, value), Response::new(snd))
+impl <C, T, K> Request<C, T, K> {
+    pub fn new(ctx: C, value: T, snd: Sender<K>) -> Self {
+        Request(Ctx::new(ctx, value), snd)
     }
 }
 
