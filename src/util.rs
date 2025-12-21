@@ -1,17 +1,15 @@
-use std::error::Error;
+use crate::error::JrpkError;
+use faststr::FastStr;
+use reqwest::Url;
 use rskafka::record::Record;
 use socket2::SockRef;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
-use std::marker::PhantomData;
 use std::str::from_utf8;
-use faststr::FastStr;
-use reqwest::Url;
 use tokio::net::TcpStream;
-use tokio::task::{JoinError, JoinHandle};
 use tokio::select;
-use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Sender;
+use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
@@ -19,7 +17,6 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
-use crate::error::JrpkError;
 
 #[macro_export]
 macro_rules! async_clean_return {

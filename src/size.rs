@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
-use std::mem;
-use std::ops::Range;
 use bytes::Bytes;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, TimeZone};
 use faststr::FastStr;
 use rskafka::client::partition::OffsetAt;
 use rskafka::record::{Record, RecordAndOffset};
+use std::collections::BTreeMap;
+use std::mem;
+use std::ops::Range;
 
 #[macro_export]
 macro_rules! size {

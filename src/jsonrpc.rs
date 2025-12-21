@@ -1,31 +1,29 @@
 use crate::codec::{JsonCodec, MeteredItem};
-use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpParams, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::kafka::{KfkClientCache, KfkOffset, KfkRsp, KfkReq, KfkTypes, KfkError};
+use crate::error::JrpkError;
+use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
+use crate::metrics::{JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
+use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::util::{set_buf_sizes, Ctx, Request, Tap};
+use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
+use prometheus_client::registry::Registry;
+use rskafka::client::partition::OffsetAt;
 use rskafka::record::{Record, RecordAndOffset};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::ops::Range;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use chrono::Utc;
-use moka::future::Cache;
-use prometheus_client::registry::Registry;
-use rskafka::client::partition::OffsetAt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::{select, spawn, try_join};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio_util::codec::{Framed};
+use tokio::{select, spawn, try_join};
+use tokio_util::codec::Framed;
 use tracing::{info, instrument, trace, warn};
-use crate::error::JrpkError;
-use crate::metrics::{JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
 
 #[derive(Debug, Clone)]
-struct JrpCtx<E: Clone> {
+pub struct JrpCtx<E: Clone> {
     id: usize,
     ts: Instant,
     tap: Tap,
@@ -38,16 +36,16 @@ impl <E: Clone> JrpCtx<E> {
     }
 }
 
-struct JrpCtxTypes;
+pub struct JrpCtxTypes;
 
 impl JrpCtxTypes {
-    fn send(id: usize, tap: Tap) -> JrpCtx<()> {
+    pub fn send(id: usize, tap: Tap) -> JrpCtx<()> {
         JrpCtx::new(id, tap, ())
     }
-    fn fetch(id: usize, tap: Tap, codecs: JrpCodecs) -> JrpCtx<JrpCodecs> {
+    pub fn fetch(id: usize, tap: Tap, codecs: JrpCodecs) -> JrpCtx<JrpCodecs> {
         JrpCtx::new(id, tap, codecs)
     }
-    fn offset(id: usize, tap: Tap) -> JrpCtx<()> {
+    pub fn offset(id: usize, tap: Tap) -> JrpCtx<()> {
         JrpCtx::new(id, tap, ())
     }
 }

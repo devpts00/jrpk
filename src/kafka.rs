@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::error::Error;
 use crate::error::JrpkError;
 use crate::util::{Ctx, Request, Tap};
@@ -19,9 +20,52 @@ use crate::size::Size;
 
 pub type KfkError = rskafka::client::error::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KfkOffset {
     At(OffsetAt),
     Pos(i64)
+}
+
+#[inline]
+fn cmp_offset_at(x: &OffsetAt, y: &OffsetAt) -> Ordering {
+   match (x, y) {
+       (OffsetAt::Earliest, OffsetAt::Earliest) => Ordering::Equal,
+       (OffsetAt::Earliest, _) => Ordering::Less,
+       (OffsetAt::Latest, OffsetAt::Latest) => Ordering::Equal,
+       (OffsetAt::Latest, _) => Ordering::Greater,
+       (OffsetAt::Timestamp(tsx), OffsetAt::Timestamp(tsy)) => tsx.cmp(&tsy),
+       (_, OffsetAt::Latest) => Ordering::Less,
+       (_, OffsetAt::Earliest) => Ordering::Greater,
+   }
+}
+
+#[inline]
+fn cmp_offset_at_2_record_and_offset(oa: &OffsetAt, ro: &RecordAndOffset) -> Ordering {
+    match oa {
+        OffsetAt::Earliest => Ordering::Less,
+        OffsetAt::Latest => Ordering::Greater,
+        OffsetAt::Timestamp(ts) => ts.cmp(&ro.record.timestamp)
+    }
+}
+
+#[inline]
+fn cmp_kfk_offset_2_record_and_offset(ko: &KfkOffset, ro: &RecordAndOffset) -> Ordering {
+    match ko {
+        KfkOffset::At(at) => cmp_offset_at_2_record_and_offset(at, ro),
+        KfkOffset::Pos(pos) => pos.cmp(&ro.offset)
+    }
+}
+
+impl PartialEq<RecordAndOffset> for KfkOffset {
+    fn eq(&self, other: &RecordAndOffset) -> bool {
+        cmp_kfk_offset_2_record_and_offset(self, other) == Ordering::Equal
+    }
+}
+
+impl PartialOrd<RecordAndOffset> for KfkOffset {
+    fn partial_cmp(&self, other: &RecordAndOffset) -> Option<Ordering> {
+        Some(cmp_kfk_offset_2_record_and_offset(self, other))
+    }
 }
 
 pub trait KfkTypes {
@@ -36,7 +80,32 @@ pub enum KfkData<T: KfkTypes> {
     Offset(T::O),
 }
 
-struct KfkTypesIn;
+impl <T: KfkTypes> KfkData<T> {
+
+    pub fn send_or<E>(self, err: E) -> Result<T::S, E> {
+        if let KfkData::Send(value) = self {
+            Ok(value)
+        } else {
+            Err(err)
+        }
+    }
+    pub fn fetch_or<E>(self, err: E) -> Result<T::F, E> {
+        if let KfkData::Fetch(value) = self {
+            Ok(value)
+        } else {
+            Err(err)
+        }
+    }
+    pub fn offset_or<E>(self, err: E) -> Result<T::O, E> {
+        if let KfkData::Offset(value) = self {
+            Ok(value)
+        } else {
+            Err(err)
+        }
+    }
+}
+
+pub struct KfkTypesIn;
 
 impl KfkTypes for KfkTypesIn {
     type S = Vec<Record>;
@@ -44,7 +113,7 @@ impl KfkTypes for KfkTypesIn {
     type O = KfkOffset;
 }
 
-struct KfkTypesRsp;
+pub struct KfkTypesRsp;
 
 impl KfkTypes for KfkTypesRsp {
     type S = Vec<i64>;
@@ -52,7 +121,7 @@ impl KfkTypes for KfkTypesRsp {
     type O = i64;
 }
 
-struct KfkResTypes<T, E>(PhantomData<T>, PhantomData<E>);
+pub struct KfkResTypes<T, E>(PhantomData<T>, PhantomData<E>);
 
 impl <T: KfkTypes, E: Error> KfkTypes for KfkResTypes<T, E> {
     type S = Result<T::S, E>;
@@ -60,7 +129,7 @@ impl <T: KfkTypes, E: Error> KfkTypes for KfkResTypes<T, E> {
     type O = Result<T::O, E>;
 }
 
-struct KfkCtxTypes<C, T>(PhantomData<C>, PhantomData<T>);
+pub struct KfkCtxTypes<C, T>(PhantomData<C>, PhantomData<T>);
 
 impl <C: KfkTypes, T: KfkTypes> KfkTypes for KfkCtxTypes<C, T> {
     type S = Ctx<C::S, T::S>;
@@ -72,7 +141,7 @@ pub type KfkIn<C: KfkTypes> = KfkData<KfkCtxTypes<C, KfkTypesIn>>;
 
 pub type KfkRsp<C: KfkTypes> = KfkData<KfkCtxTypes<C, KfkResTypes<KfkTypesRsp, KfkError>>>;
 
-struct KfkCtxReqTypes<C, T, U, E, K>(PhantomData<C>, PhantomData<T>, PhantomData<U>, PhantomData<E>, PhantomData<K>);
+pub struct KfkCtxReqTypes<C, T, U, E, K>(PhantomData<C>, PhantomData<T>, PhantomData<U>, PhantomData<E>, PhantomData<K>);
 
 impl <C: KfkTypes, T: KfkTypes, U: KfkTypes, E: Error, K> KfkTypes for KfkCtxReqTypes<C, T, U, E, K> {
     type S = Request<C::S, T::S, K>;

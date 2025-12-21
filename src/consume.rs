@@ -19,7 +19,7 @@ use tracing::{error, instrument, trace};
 use crate::args::Offset;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
-use crate::model::{JrpCodec, JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
+use crate::model::{JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
 use crate::util::{url_append_tap, Tap};
 

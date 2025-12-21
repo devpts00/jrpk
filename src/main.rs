@@ -11,24 +11,23 @@ mod consume;
 mod http;
 mod size;
 
-use std::sync::{Arc, Mutex};
-use crate::jsonrpc::{listen_jsonrpc, JrpCtx};
-use crate::util::{init_tracing, join_with_signal, Tap};
-use clap::Parser;
-use std::time::Duration;
-use futures::future::join_all;
-use prometheus_client::registry::Registry;
-use rskafka::client::ClientBuilder;
-use tokio;
-use tokio::spawn;
-use tracing::info;
 use crate::args::{Command, Mode};
 use crate::consume::consume;
 use crate::http::listen_http;
-use crate::kafka::KfkClientCache;
+use crate::jsonrpc::{listen_jsonrpc, JrpCtxTypes};
+use crate::kafka::{KfkClientCache, KfkReq};
 use crate::metrics::JrpkMetrics;
-use crate::model::JrpCodecs;
 use crate::produce::produce;
+use crate::util::{init_tracing, join_with_signal, Tap};
+use clap::Parser;
+use futures::future::join_all;
+use prometheus_client::registry::Registry;
+use rskafka::client::ClientBuilder;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio;
+use tokio::spawn;
+use tracing::info;
 
 async fn run(args: args::Args) {
 
@@ -50,7 +49,7 @@ async fn run(args: args::Args) {
             info!("connect: {}", brokers.join(","));
             // TODO: handle error
             let kafka_client = ClientBuilder::new(brokers).build().await.unwrap();
-            let kafka_clients: Arc<KfkClientCache> = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_size, metrics.clone()));
+            let kafka_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>> = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_size, metrics.clone()));
 
             let jh = spawn(
                 listen_jsonrpc(

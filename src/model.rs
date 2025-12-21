@@ -112,7 +112,7 @@ pub enum JrpCodec {
     Base64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct JrpCodecs {
     pub key: JrpCodec,
     pub value: JrpCodec,
