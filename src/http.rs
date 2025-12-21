@@ -50,11 +50,6 @@ async fn get_kafka_offset(
     Ok(offset.to_string())
 }
 
-#[inline]
-fn add_new_line(b: Bytes) -> impl Iterator<Item = Bytes> {
-    [b, Bytes::from_static(b"\n")].into_iter()
-}
-
 #[derive(Deserialize)]
 struct HttpFetchPath {
     topic: FastStr,
@@ -137,7 +132,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
                 let next = KfkFetchState::next(id + 1, tap, codecs, offset, until, min_max_bytes, max_wait_ms, req_snd, rsp_snd, rsp_rcv);
                 Ok(Some((frame, next)))
             } else {
-                Ok(None)
+                Ok(Some((frame, KfkFetchState::Done)))
             }
         },
         KfkFetchState::Done => {

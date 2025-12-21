@@ -26,18 +26,18 @@ pub enum KfkOffset {
     Pos(i64)
 }
 
-#[inline]
-fn cmp_offset_at(x: &OffsetAt, y: &OffsetAt) -> Ordering {
-   match (x, y) {
-       (OffsetAt::Earliest, OffsetAt::Earliest) => Ordering::Equal,
-       (OffsetAt::Earliest, _) => Ordering::Less,
-       (OffsetAt::Latest, OffsetAt::Latest) => Ordering::Equal,
-       (OffsetAt::Latest, _) => Ordering::Greater,
-       (OffsetAt::Timestamp(tsx), OffsetAt::Timestamp(tsy)) => tsx.cmp(&tsy),
-       (_, OffsetAt::Latest) => Ordering::Less,
-       (_, OffsetAt::Earliest) => Ordering::Greater,
-   }
-}
+// #[inline]
+// fn cmp_offset_at(x: &OffsetAt, y: &OffsetAt) -> Ordering {
+//    match (x, y) {
+//        (OffsetAt::Earliest, OffsetAt::Earliest) => Ordering::Equal,
+//        (OffsetAt::Earliest, _) => Ordering::Less,
+//        (OffsetAt::Latest, OffsetAt::Latest) => Ordering::Equal,
+//        (OffsetAt::Latest, _) => Ordering::Greater,
+//        (OffsetAt::Timestamp(tsx), OffsetAt::Timestamp(tsy)) => tsx.cmp(&tsy),
+//        (_, OffsetAt::Latest) => Ordering::Less,
+//        (_, OffsetAt::Earliest) => Ordering::Greater,
+//    }
+// }
 
 #[inline]
 fn cmp_offset_at_2_record_and_offset(oa: &OffsetAt, ro: &RecordAndOffset) -> Ordering {
@@ -137,9 +137,9 @@ impl <C: KfkTypes, T: KfkTypes> KfkTypes for KfkCtxTypes<C, T> {
     type O = Ctx<C::O, T::O>;
 }
 
-pub type KfkIn<C: KfkTypes> = KfkData<KfkCtxTypes<C, KfkTypesIn>>;
+// pub type KfkIn<C> = KfkData<KfkCtxTypes<C, KfkTypesIn>>;
 
-pub type KfkRsp<C: KfkTypes> = KfkData<KfkCtxTypes<C, KfkResTypes<KfkTypesRsp, KfkError>>>;
+pub type KfkRsp<C> = KfkData<KfkCtxTypes<C, KfkResTypes<KfkTypesRsp, KfkError>>>;
 
 pub struct KfkCtxReqTypes<C, T, U, E, K>(PhantomData<C>, PhantomData<T>, PhantomData<U>, PhantomData<E>, PhantomData<K>);
 
@@ -149,7 +149,7 @@ impl <C: KfkTypes, T: KfkTypes, U: KfkTypes, E: Error, K> KfkTypes for KfkCtxReq
     type O = Request<C::O, T::O, K>;
 }
 
-pub type KfkReq<C: KfkTypes> = KfkData<KfkCtxReqTypes<C, KfkTypesIn, KfkTypesRsp, KfkError, KfkRsp<C>>>;
+pub type KfkReq<C> = KfkData<KfkCtxReqTypes<C, KfkTypesIn, KfkTypesRsp, KfkError, KfkRsp<C>>>;
 
 /// Helper function to encapsulate cumbersome metrics manipulations
 async fn meter<IN, OUT, ERR, FUT, FUN>(
