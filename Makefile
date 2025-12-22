@@ -48,6 +48,10 @@ client-debug-produce: build-debug
 client-release-produce: build-release
 	./produce.sh release people_40mb.json posts 32
 
+http-fetch:
+	time curl --output result.json "localhost:9999/kafka/fetch/posts/0?from=earliest&until=latest&min_size=1kib&max_size=16kib&max_wait=50ms"
+	rm result.json
+
 trace:
 	docker compose run --rm -it --rm --use-aliases --remove-orphans trc
 

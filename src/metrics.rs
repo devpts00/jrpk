@@ -37,7 +37,10 @@ impl EncodeLabelValue for FastStrExt {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
 pub enum LblTier {
-    Kafka, Server, Client
+    Kafka,
+    Jsonrpc,
+    Http,
+    Client
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
@@ -61,7 +64,7 @@ pub enum LblTraffic {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct Labels {
+pub struct JrpkLabels {
     tier: LblTier,
     method: Option<LblMethod>,
     traffic: Option<LblTraffic>,
@@ -69,9 +72,9 @@ pub struct Labels {
     partition: Option<i32>,
 }
 
-impl Labels {
+impl JrpkLabels {
     pub fn new(tier: LblTier) -> Self {
-        Labels { tier, method: None, traffic: None, topic: None, partition: None }
+        JrpkLabels { tier, method: None, traffic: None, topic: None, partition: None }
     }
     pub fn method<M: Into<LblMethod>>(&mut self, method: M) -> &mut Self {
         self.method = Some(method.into());
@@ -93,24 +96,24 @@ impl Labels {
 
 #[derive(Clone, Debug)]
 pub struct JrpkMetrics {
-    pub throughputs: Family<Labels, Counter>,
-    pub latencies: Family<Labels, Histogram>,
+    pub throughputs: Family<JrpkLabels, Counter>,
+    pub latencies: Family<JrpkLabels, Histogram>,
 }
 
 impl JrpkMetrics {
     pub fn new(registry: Arc<Mutex<Registry>>) -> Self {
         let mut r = registry.lock().unwrap();
-        let throughputs = Family::<Labels, Counter>::default();
+        let throughputs = Family::<JrpkLabels, Counter>::default();
         let x = throughputs.clone();
         r.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, x);
-        let latencies = Family::<Labels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
+        let latencies = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
         r.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies.clone());
         JrpkMetrics { throughputs, latencies }
     }
-    pub fn throughput<S: Size>(&self, labels: &Labels, data: &S) {
+    pub fn throughput<S: Size>(&self, labels: &JrpkLabels, data: &S) {
         self.throughputs.get_or_create(labels).inc_by(data.size() as u64);
     }
-    pub fn latency(&self, labels: &Labels, since: Instant) {
+    pub fn latency(&self, labels: &JrpkLabels, since: Instant) {
         self.latencies.get_or_create(labels).observe(since.elapsed().as_secs_f64());
     }
 }

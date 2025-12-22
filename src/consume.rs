@@ -20,7 +20,7 @@ use crate::args::Offset;
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::model::{JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
 use crate::util::{url_append_tap, Tap};
 
 type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
@@ -83,7 +83,7 @@ async fn consumer_req_writer<'a>(
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
-    let labels = Labels::new(LblTier::Client)
+    let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Fetch)
         .traffic(LblTraffic::Out)
         .tap(tap.clone())
@@ -117,7 +117,7 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
 ) -> Result<(), JrpkError> {
-    let labels = Labels::new(LblTier::Client)
+    let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Fetch)
         .traffic(LblTraffic::In)
         .tap(tap)

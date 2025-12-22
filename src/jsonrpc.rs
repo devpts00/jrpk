@@ -1,7 +1,7 @@
 use crate::codec::{JsonCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
-use crate::metrics::{JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
 use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::util::{set_buf_sizes, Ctx, Request, Tap};
 use chrono::Utc;
@@ -111,7 +111,7 @@ async fn j2k_req<'a>(
     jrp_req: JrpReq<'a>,
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     metrics: &JrpkMetrics,
-    labels: &mut Labels,
+    labels: &mut JrpkLabels,
     length: u64,
 ) -> Result<(Tap, KfkReq<JrpCtxTypes>), JrpkError> {
     let id = jrp_req.id;
@@ -164,7 +164,7 @@ async fn jsonrpc_req_reader(
         let bytes = result?;
         let length = bytes.len() as u64;
         trace!("json: {}", from_utf8(bytes.as_ref())?);
-        let mut labels = Labels::new(LblTier::Server).traffic(LblTraffic::In).build();
+        let mut labels = JrpkLabels::new(LblTier::Jsonrpc).traffic(LblTraffic::In).build();
         // we are optimistic and expect most requests to be well-formed
         match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
             // if request is syntactically correct, we proceed
@@ -209,7 +209,7 @@ async fn jsonrpc_rsp_writer(
     metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
     loop {
-        let mut labels = Labels::new(LblTier::Server).traffic(LblTraffic::Out).build();
+        let mut labels = JrpkLabels::new(LblTier::Jsonrpc).traffic(LblTraffic::Out).build();
         select! {
             biased;
             Some(kfk_rsp) = kfk_rsp_rcv.recv() => {
@@ -233,7 +233,7 @@ async fn jsonrpc_rsp_writer(
             }
             Some((id, jrp_err)) = jrp_err_rcv.recv() => {
                 let jrp_rsp = JrpRsp::err(id, jrp_err.into());
-                let labels = Labels::new(LblTier::Server).traffic(LblTraffic::Out).build();
+                let labels = JrpkLabels::new(LblTier::Jsonrpc).traffic(LblTraffic::Out).build();
                 let throughput = metrics.throughputs.get_or_create_owned(&labels);
                 let item = MeteredItem::new(jrp_rsp, throughput);
                 tcp_sink.send(item).await?;

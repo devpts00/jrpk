@@ -15,7 +15,7 @@ use tokio::{spawn};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tracing::{instrument, trace};
-use crate::metrics::{JrpkMetrics, Labels, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
 use crate::size::Size;
 
 pub type KfkError = rskafka::client::error::Error;
@@ -155,7 +155,7 @@ pub type KfkReq<C> = KfkData<KfkCtxReqTypes<C, KfkTypesIn, KfkTypesRsp, KfkError
 async fn meter<IN, OUT, ERR, FUT, FUN>(
     input: IN,
     metrics: &JrpkMetrics,
-    labels: &mut Labels,
+    labels: &mut JrpkLabels,
     func: FUN) -> Result<OUT, ERR>
 where
     IN: Size,
@@ -186,7 +186,7 @@ where
 async fn kafka_send(
     cli: &PartitionClient,
     metrics: &JrpkMetrics,
-    labels: &mut Labels,
+    labels: &mut JrpkLabels,
     records: Vec<Record>
 ) -> Result<Vec<i64>, KfkError> {
     let labels = labels.method(LblMethod::Send);
@@ -198,7 +198,7 @@ async fn kafka_send(
 async fn kafka_fetch(
     cli: &PartitionClient,
     metrics: &JrpkMetrics,
-    labels: &mut Labels,
+    labels: &mut JrpkLabels,
     offset: KfkOffset,
     bytes: Range<i32>,
     max_wait_ms: i32
@@ -213,7 +213,7 @@ async fn kafka_fetch(
 async fn kafka_offset(
     cli: &PartitionClient,
     metrics: &JrpkMetrics,
-    labels: &mut Labels,
+    labels: &mut JrpkLabels,
     offset: KfkOffset
 ) -> Result<i64, KfkError> {
     match offset {
@@ -235,7 +235,7 @@ async fn kafka_loop<C: KfkTypes>(
     metrics: JrpkMetrics,
     mut rcv: Receiver<KfkReq<C>>,
 ) -> Result<(), SendError<KfkRsp<C>>> {
-    let mut labels = Labels::new(LblTier::Kafka).tap(tap).build();
+    let mut labels = JrpkLabels::new(LblTier::Kafka).tap(tap).build();
     while let Some(req) = rcv.recv().await {
         match req {
             KfkReq::Send(Request(Ctx(ctx, records), rsp)) => {
