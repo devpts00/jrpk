@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::error::Error;
 use crate::error::JrpkError;
-use crate::util::{Ctx, Request, Tap};
+use crate::util::{Ctx, Req, Tap};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
@@ -137,16 +137,16 @@ impl <C: KfkTypes, T: KfkTypes> KfkTypes for KfkCtxTypes<C, T> {
     type O = Ctx<C::O, T::O>;
 }
 
-// pub type KfkIn<C> = KfkData<KfkCtxTypes<C, KfkTypesIn>>;
+pub type KfkIn<C> = KfkData<KfkCtxTypes<C, KfkTypesIn>>;
 
 pub type KfkRsp<C> = KfkData<KfkCtxTypes<C, KfkResTypes<KfkTypesRsp, KfkError>>>;
 
 pub struct KfkCtxReqTypes<C, T, U, E, K>(PhantomData<C>, PhantomData<T>, PhantomData<U>, PhantomData<E>, PhantomData<K>);
 
 impl <C: KfkTypes, T: KfkTypes, U: KfkTypes, E: Error, K> KfkTypes for KfkCtxReqTypes<C, T, U, E, K> {
-    type S = Request<C::S, T::S, K>;
-    type F = Request<C::F, T::F, K>;
-    type O = Request<C::O, T::O, K>;
+    type S = Req<C::S, T::S, K>;
+    type F = Req<C::F, T::F, K>;
+    type O = Req<C::O, T::O, K>;
 }
 
 pub type KfkReq<C> = KfkData<KfkCtxReqTypes<C, KfkTypesIn, KfkTypesRsp, KfkError, KfkRsp<C>>>;
@@ -238,15 +238,15 @@ async fn kafka_loop<C: KfkTypes>(
     let mut labels = JrpkLabels::new(LblTier::Kafka).tap(tap).build();
     while let Some(req) = rcv.recv().await {
         match req {
-            KfkReq::Send(Request(Ctx(ctx, records), rsp)) => {
+            KfkReq::Send(Req(Ctx(ctx, records), rsp)) => {
                 let res = kafka_send(&cli, &metrics, &mut labels, records).await;
                 rsp.send(KfkRsp::Send(Ctx::new(ctx, res))).await?
             }
-            KfkReq::Fetch(Request(Ctx(ctx, (offset, bytes, max_wait_ms)), rsp)) => {
+            KfkReq::Fetch(Req(Ctx(ctx, (offset, bytes, max_wait_ms)), rsp)) => {
                 let res = kafka_fetch(&cli, &metrics, &mut labels, offset, bytes, max_wait_ms).await;
                 rsp.send(KfkRsp::Fetch(Ctx::new(ctx, res))).await?
             }
-            KfkReq::Offset(Request(Ctx(ctx, offset), rsp)) => {
+            KfkReq::Offset(Req(Ctx(ctx, offset), rsp)) => {
                 let res = kafka_offset(&cli, &metrics, &mut labels, offset).await;
                 rsp.send(KfkRsp::Offset(Ctx::new(ctx, res))).await?
             }

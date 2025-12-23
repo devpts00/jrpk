@@ -3,7 +3,7 @@ use crate::error::JrpkError;
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
 use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
-use crate::util::{set_buf_sizes, Ctx, Request, Tap};
+use crate::util::{set_buf_sizes, Ctx, Req, Tap};
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -128,7 +128,7 @@ async fn j2k_req<'a>(
                 .map(|jrs| Record::try_from(jrs))
                 .collect::<Result<Vec<Record>, JrpkError>>()?;
             let ctx = JrpCtxTypes::send(id, tap.clone());
-            Ok((tap, KfkReq::Send(Request(Ctx(ctx, records), kfk_rsp_snd))))
+            Ok((tap, KfkReq::Send(Req(Ctx(ctx, records), kfk_rsp_snd))))
         }
         JrpMethod::Fetch => {
             let labels = labels.method(LblMethod::Fetch);
@@ -138,7 +138,7 @@ async fn j2k_req<'a>(
             let max_wait_ms = params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
             let codecs = params.codecs.ok_or(JrpkError::Syntax("codecs are missing"))?;
             let ctx = JrpCtxTypes::fetch(id, tap.clone(), codecs);
-            Ok((tap, KfkReq::Fetch(Request(Ctx(ctx, (offset, bytes, max_wait_ms)), kfk_rsp_snd))))
+            Ok((tap, KfkReq::Fetch(Req(Ctx(ctx, (offset, bytes, max_wait_ms)), kfk_rsp_snd))))
         }
         JrpMethod::Offset => {
             let labels = labels.method(LblMethod::Offset);
@@ -146,7 +146,7 @@ async fn j2k_req<'a>(
             let offset = params.offset.ok_or(JrpkError::Syntax("offset is missing"))
                 .map(|o| o.into())?;
             let ctx = JrpCtxTypes::offset(id, tap.clone());
-            Ok((tap, KfkReq::Offset(Request(Ctx(ctx, offset), kfk_rsp_snd))))
+            Ok((tap, KfkReq::Offset(Req(Ctx(ctx, offset), kfk_rsp_snd))))
         }
     }
 }

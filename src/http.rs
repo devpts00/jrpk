@@ -1,14 +1,15 @@
+use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use crate::error::JrpkError;
 use crate::jsonrpc::JrpCtxTypes;
-use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
+use crate::kafka::{KfkClientCache, KfkIn, KfkOffset, KfkReq, KfkRsp};
 use crate::metrics::{encode_registry, JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
 use crate::model::{JrpCodecs, JrpOffset};
 use crate::size::Size;
-use crate::util::{Ctx, Request, Tap};
+use crate::util::{Ctx, Req, Tap};
 use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
-use axum::http::Response;
+use axum::http::{Request, Response};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
@@ -24,10 +25,17 @@ use std::net::SocketAddr;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use axum::body::Body;
+use chrono::Utc;
+use futures_util::TryStreamExt;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::histogram::Histogram;
+use rskafka::record::Record;
+use tokio::io::AsyncBufReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio_stream::wrappers::LinesStream;
+use tokio_util::io::StreamReader;
 use tracing::instrument;
 
 #[instrument(level="trace", ret, err, skip(registry))]
@@ -66,7 +74,7 @@ async fn get_kafka_offset(
     let req_snd = clients.lookup_sender(tap.clone()).await?;
     let at = at.into();
     let (rsp_snd, mut rsp_rcv) = tokio::sync::mpsc::channel(1);
-    let kfk_req = KfkReq::Offset(Request(Ctx(ctx, at), rsp_snd));
+    let kfk_req = KfkReq::Offset(Req(Ctx(ctx, at), rsp_snd));
     req_snd.send(kfk_req).await?;
     let kfk_rsp = rsp_rcv.recv().await.ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
     let Ctx(_, kfk_offset_res) = kfk_rsp.offset_or(JrpkError::Unexpected("kafka client wrong response"))?;
@@ -168,7 +176,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
     match state {
         KfkFetchState::Next { id, ts, tap, codecs, from, until, min_max_bytes, max_wait_ms, req_snd, rsp_snd, mut rsp_rcv, throughput, latency } => {
             let ctx = JrpCtxTypes::fetch(id, tap.clone(), codecs);
-            let kfk_req = KfkReq::Fetch(Request(Ctx(ctx, (from, min_max_bytes.clone(), max_wait_ms)), rsp_snd.clone()));
+            let kfk_req = KfkReq::Fetch(Req(Ctx(ctx, (from, min_max_bytes.clone(), max_wait_ms)), rsp_snd.clone()));
             req_snd.send(kfk_req).await?;
             let kfk_rsp = rsp_rcv.recv().await.ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
             let Ctx(_, kfk_res) = kfk_rsp.fetch_or(JrpkError::Unexpected("kafka response wrong type"))?;
@@ -234,19 +242,24 @@ async fn get_kafka_fetch(
     Ok(response)
 }
 
-/*
-#[instrument(level = "debug", err, skip(cache))]
-async fn post_kafka_send(
-    State(cache): State<Arc<KfkClientCache>>,
-    Path(HttpFetchPath { topic, partition, offset }): Path<HttpFetchPath>,
-    request: Request,
-) -> Result<(), JrpkError> {
+#[derive(Deserialize)]
+struct HttpSendQuery {
+    max_batch_size: usize,
+}
 
+/*
+#[instrument(level = "debug", err, skip(state))]
+async fn post_kafka_send(
+    State(state): State<HttpState>,
+    Path(HttpFetchPath { topic, partition }): Path<HttpFetchPath>,
+    Query(HttpSendQuery { max_batch_size }): Query<HttpSendQuery>,
+    request: Request<Body>,
+) -> Result<(), JrpkError> {
+    let HttpState { clients, metrics } = state;
     let tap = Tap::new(topic, partition);
-    let http_snd = cache.lookup_http_sender(tap).await?;
-    let mut rec_size_max: usize = 0;
+    let req_snd = clients.lookup_sender(tap).await?;
+    let mut max_rec_size: usize = 0;
     let mut batch_size: usize = 0;
-    let batch_size_max: usize = ByteSize::mib(1).as_u64() as usize;
     let mut records: Vec<Record> = Vec::with_capacity(1024);
 
     let body = request.into_body();
@@ -256,12 +269,19 @@ async fn post_kafka_send(
     let mut lines = LinesStream::new(reader.lines());
 
     while let Some(line) = lines.try_next().await? {
-        if batch_size > batch_size_max - rec_size_max {
-            let req = KfkIn::send(records);
+        batch_size += line.len();
+        max_rec_size = max_rec_size.max(line.len());
+        let record = Record { key: None, value: Some(line.into_bytes()), headers: BTreeMap::default(), timestamp: Utc::now() };
+        records.push(record);
+        if batch_size > max_batch_size - max_rec_size {
+
+
+
             
 
 
-            records = Vec::with_capacity(rec_size_max);
+            batch_size = 0;
+            records = Vec::with_capacity(max_rec_size);
         }
 
 

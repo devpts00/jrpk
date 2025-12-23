@@ -77,7 +77,7 @@ impl <C, T> Ctx<C, T> {
     pub fn new(ctx: C, value: T) -> Self { Ctx(ctx, value) }
 }
 
-pub struct Request<C, T, K> (pub Ctx<C, T>, pub Sender<K> );
+pub struct Req<C, T, K> (pub Ctx<C, T>, pub Sender<K> );
 
 pub async fn join_with_signal<F: Future>(f: F) {
     select! {
