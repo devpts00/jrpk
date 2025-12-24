@@ -24,29 +24,29 @@ use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct JrpCtx<E: Clone> {
-    id: usize,
-    ts: Instant,
-    tap: Tap,
-    extra: E
+    pub id: usize,
+    pub ts: Instant,
+    pub tap: Tap,
+    pub extra: E
 }
 
 impl <E: Clone> JrpCtx<E> {
-    fn new(id: usize, tap: Tap, extra: E) -> Self {
-        JrpCtx { id, ts: Instant::now(), tap, extra }
+    pub fn new(id: usize, ts: Instant, tap: Tap, extra: E) -> Self {
+        JrpCtx { id, ts, tap, extra }
     }
 }
 
 pub struct JrpCtxTypes;
 
 impl JrpCtxTypes {
-    pub fn send(id: usize, tap: Tap) -> JrpCtx<()> {
-        JrpCtx::new(id, tap, ())
+    pub fn send(id: usize, ts: Instant, tap: Tap) -> JrpCtx<()> {
+        JrpCtx::new(id, ts, tap, ())
     }
-    pub fn fetch(id: usize, tap: Tap, codecs: JrpCodecs) -> JrpCtx<JrpCodecs> {
-        JrpCtx::new(id, tap, codecs)
+    pub fn fetch(id: usize, ts: Instant, tap: Tap, codecs: JrpCodecs) -> JrpCtx<JrpCodecs> {
+        JrpCtx::new(id, ts, tap, codecs)
     }
-    pub fn offset(id: usize, tap: Tap) -> JrpCtx<()> {
-        JrpCtx::new(id, tap, ())
+    pub fn offset(id: usize, ts: Instant, tap: Tap) -> JrpCtx<()> {
+        JrpCtx::new(id, ts, tap, ())
     }
 }
 
@@ -127,7 +127,7 @@ async fn j2k_req<'a>(
                 .into_iter()
                 .map(|jrs| Record::try_from(jrs))
                 .collect::<Result<Vec<Record>, JrpkError>>()?;
-            let ctx = JrpCtxTypes::send(id, tap.clone());
+            let ctx = JrpCtxTypes::send(id, Instant::now(), tap.clone());
             Ok((tap, KfkReq::Send(Req(Ctx(ctx, records), kfk_rsp_snd))))
         }
         JrpMethod::Fetch => {
@@ -137,7 +137,7 @@ async fn j2k_req<'a>(
             let bytes = params.bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
             let max_wait_ms = params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
             let codecs = params.codecs.ok_or(JrpkError::Syntax("codecs are missing"))?;
-            let ctx = JrpCtxTypes::fetch(id, tap.clone(), codecs);
+            let ctx = JrpCtxTypes::fetch(id, Instant::now(), tap.clone(), codecs);
             Ok((tap, KfkReq::Fetch(Req(Ctx(ctx, (offset, bytes, max_wait_ms)), kfk_rsp_snd))))
         }
         JrpMethod::Offset => {
@@ -145,7 +145,7 @@ async fn j2k_req<'a>(
             metrics.throughputs.get_or_create(&labels).inc_by(length);
             let offset = params.offset.ok_or(JrpkError::Syntax("offset is missing"))
                 .map(|o| o.into())?;
-            let ctx = JrpCtxTypes::offset(id, tap.clone());
+            let ctx = JrpCtxTypes::offset(id, Instant::now(), tap.clone());
             Ok((tap, KfkReq::Offset(Req(Ctx(ctx, offset), kfk_rsp_snd))))
         }
     }
