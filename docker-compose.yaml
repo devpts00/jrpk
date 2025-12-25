@@ -57,7 +57,7 @@ services:
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
-      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml
+      - ./scripts/prometheus.yaml:/etc/prometheus/prometheus.yaml
     command:
       - --config.file=/etc/prometheus/prometheus.yaml
 
@@ -74,7 +74,7 @@ services:
       - "127.0.0.1:3000:3000"
     volumes:
       - grafana:/var/lib/grafana
-      - ./datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./scripts/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
 
   rst:
     profiles:
@@ -88,7 +88,6 @@ services:
       - cargo:/usr/local/cargo
       - target:/jrpk/target
       - ./json:/jrpk/json
-      - ./out:/jrpk/out
       - ./src:/jrpk/src
       - ./Cargo.toml:/jrpk/Cargo.toml
       - ./Cargo.lock:/jrpk/Cargo.lock

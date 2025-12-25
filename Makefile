@@ -37,16 +37,16 @@ server-release: build-release
 		--metrics-bind=0.0.0.0:9090
 
 client-debug-consume: build-debug
-	./consume.sh debug result posts 1
+	./scripts/jsonrpc-consume.sh debug result posts 1
 
 client-release-consume: build-release
-	./consume.sh release result posts 32
+	./scripts/jsonrpc-consume.sh release result posts 32
 
 client-debug-produce: build-debug
-	./produce.sh debug people_40mb.json posts 32
+	./scripts/jsonrpc-produce.sh debug people_40mb.json posts 32
 
 client-release-produce: build-release
-	./produce.sh release people_40mb.json posts 32
+	./scripts/jsonrpc-produce.sh release people_40mb.json posts 32
 
 http-fetch:
 	time curl -v --output ./json/result.json "localhost:9999/kafka/fetch/posts/0?from=earliest&until=latest&max_rec_count=10&max_bytes_size=1kib"
