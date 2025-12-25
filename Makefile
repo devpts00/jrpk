@@ -49,10 +49,10 @@ client-release-produce: build-release
 	./scripts/jsonrpc-produce.sh release people_40mb.json posts 32
 
 http-fetch:
-	time curl -v --output ./json/result.json "localhost:9999/kafka/fetch/posts/0?from=earliest&until=latest&max_rec_count=10&max_bytes_size=1kib"
+	./scripts/http-consume.sh result posts 32 1000000 100mib
 
 http-send:
-	time curl -v -X POST --data-binary "@./json/result.json" "localhost:9999/kafka/send/posts/0?max_batch_size=1mib"
+	./scripts/http-produce.sh result posts 32
 
 trace:
 	docker compose run --rm -it --rm --use-aliases --remove-orphans trc
