@@ -208,18 +208,19 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
             let mut done = false;
             let mut buf = BytesMut::with_capacity(records_and_offsets.size() + records_and_offsets.len());
             let mut pos = 0;
-            for ro in records_and_offsets {
-                if until > ro && ro.offset < high_watermark && rec_count_budget > 0 && byte_size_budget > 0 {
-                    pos = ro.offset;
-                    if let Some(value) = ro.record.value {
+            for mut ro in records_and_offsets {
+                pos = ro.offset;
+                if let Some(value) = ro.record.value.take() {
+                    let size = value.len() + 1;
+                    if until > ro && ro.offset < high_watermark && rec_count_budget > 0 && byte_size_budget > size {
                         rec_count_budget -= 1;
-                        byte_size_budget -= value.len() + 1;
+                        byte_size_budget -= size;
                         buf.put_slice(&value);
                         buf.put_slice(b"\n");
+                    } else {
+                        done = true;
+                        break;
                     }
-                } else {
-                    done = true;
-                    break;
                 }
             }
             let bytes = buf.freeze();
