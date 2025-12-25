@@ -65,6 +65,8 @@ services:
     profiles:
       - env
     image: prom/pushgateway
+    ports:
+      - "127.0.0.1:9091:9091"
 
   grf:
     profiles:
@@ -80,6 +82,9 @@ services:
     profiles:
       - jrpk
     build: .
+    ports:
+      - "127.0.0.1:1133:1133"
+      - "127.0.0.1:1134:1134"
     environment:
       #- RUST_BACKTRACE=full
       #- TOKIO_CONSOLE_BIND=0.0.0.0:6669

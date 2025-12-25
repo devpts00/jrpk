@@ -23,18 +23,16 @@ build-release:
 	docker compose run --rm rst cargo build --release
 
 server-debug: build-debug
-	docker compose run --rm -it --remove-orphans -p 127.0.0.1:9999:9090 --name jrpk rst ./target/debug/jrpk \
-		server \
-		--brokers=kfk:9092 \
-		--bind=0.0.0.0:1133 \
-		--metrics-bind=0.0.0.0:9090
+	docker compose run --rm -it --remove-orphans \
+		-p 127.0.0.1:9999:9090 -p 127.0.0.1:1133:1133 -p 127.0.0.1:1134:1134 \
+		--name jrpk rst ./target/debug/jrpk \
+		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
 
 server-release: build-release
-	docker compose run --rm -it --remove-orphans -p 127.0.0.1:9999:9090 --name jrpk rst ./target/release/jrpk \
-		server \
-		--brokers=kfk:9092 \
-		--bind=0.0.0.0:1133 \
-		--metrics-bind=0.0.0.0:9090
+	docker compose run --rm -it --remove-orphans \
+		-p 127.0.0.1:9999:9090 -p 127.0.0.1:1133:1133 -p 127.0.0.1:1134:1134 \
+		--name jrpk rst ./target/release/jrpk \
+		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
 
 client-debug-consume: build-debug
 	./scripts/jsonrpc-consume.sh debug result posts 1

@@ -8,8 +8,8 @@ export MAX_BYTE_SIZE=$5
 
 for ((p = 0; p < $PARTITIONS; p++))
 do
-  curl -v --output ./json/${FILE}-${p}.json "localhost:9999/kafka/fetch/posts/${p}?from=earliest&until=latest&max_rec_count=${MAX_REC_COUNT}&max_bytes_size=${MAX_BYTE_SIZE}" &
-	sleep 0.1
+  curl -v --output ./json/${FILE}-${p}.json "localhost:1134/kafka/fetch/posts/${p}?from=earliest&until=latest&max_rec_count=${MAX_REC_COUNT}&max_bytes_size=${MAX_BYTE_SIZE}" &
+	#sleep 0.1
 done
 
 wait

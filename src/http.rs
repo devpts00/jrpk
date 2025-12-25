@@ -372,13 +372,13 @@ async fn post_kafka_send(
 
 #[instrument(ret, err, skip(kafka_clients, prometheus_registry))]
 pub async fn listen_http(
-    addr: SocketAddr,
+    bind: SocketAddr,
     kafka_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     prometheus_registry: Arc<Mutex<Registry>>
 ) -> Result<(), JrpkError> {
     let jrpk_metrics = JrpkMetrics::new(prometheus_registry.clone());
     let state = HttpState::new(kafka_clients, jrpk_metrics);
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(bind).await?;
     let metrics = Router::new()
         .route("/", get(get_prometheus_metrics))
         .with_state(prometheus_registry);

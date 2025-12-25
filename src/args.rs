@@ -79,8 +79,10 @@ pub enum Mode {
     Server {
         #[arg(long, value_delimiter = ',')]
         brokers: Vec<String>,
-        #[arg(long)]
-        bind: SocketAddr,
+        #[arg(long, default_value = "1133")]
+        jsonrpc_bind: SocketAddr,
+        #[arg(long, default_value = "1134")]
+        http_bind: SocketAddr,
         #[arg(long, default_value = "1MiB")]
         max_frame_byte_size: ByteSize,
         #[arg(long, default_value = "32KiB")]
@@ -89,8 +91,6 @@ pub enum Mode {
         recv_buffer_byte_size: ByteSize,
         #[arg(long, default_value_t = 32)]
         queue_len: usize,
-        #[arg(long)]
-        metrics_bind: SocketAddr,
     },
     Client {
         #[arg(long)]

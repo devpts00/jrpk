@@ -36,12 +36,12 @@ async fn run(args: args::Args) {
     match args.mode {
         Mode::Server {
             brokers,
-            bind,
+            jsonrpc_bind: bind,
             max_frame_byte_size,
             send_buffer_byte_size,
             recv_buffer_byte_size,
             queue_len: queue_size,
-            metrics_bind,
+            http_bind: metrics_bind,
         } => {
 
             let metrics = JrpkMetrics::new(registry.clone());
