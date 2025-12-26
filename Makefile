@@ -34,23 +34,23 @@ server-release: build-release
 		--name jrpk rst ./target/release/jrpk \
 		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
 
-client-debug-consume: build-debug
-	./scripts/jsonrpc-consume.sh debug result posts 1
+jsonrpc-debug-consume: build-debug
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1
 
-client-release-consume: build-release
-	./scripts/jsonrpc-consume.sh release result posts 32
+jsonrpc-release-consume: build-release
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 32
 
-client-debug-produce: build-debug
-	./scripts/jsonrpc-produce.sh debug people_40mb.json posts 32
+jsonrpc-debug-produce: build-debug
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh debug result posts 1
 
-client-release-produce: build-release
-	./scripts/jsonrpc-produce.sh release people_40mb.json posts 32
+jsonrpc-release-produce: build-release
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh release result posts 32
 
-http-fetch:
-	./scripts/http-consume.sh result posts 32 1000000 100mib
+http-consume:
+	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 32 1000000 100mib
 
-http-send:
-	./scripts/http-produce.sh result posts 32
+http-produce:
+	docker compose run --rm -it --remove-orphans rst ./scripts/http-produce.sh result posts 32
 
 trace:
 	docker compose run --rm -it --rm --use-aliases --remove-orphans trc

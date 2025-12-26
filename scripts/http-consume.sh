@@ -6,12 +6,18 @@ export PARTITIONS=$3
 export MAX_REC_COUNT=$4
 export MAX_BYTE_SIZE=$5
 
+START_TIME=$EPOCHREALTIME
+
 for ((p = 0; p < $PARTITIONS; p++))
 do
-  curl -v --output ./json/${FILE}-${p}.json "localhost:1134/kafka/fetch/posts/${p}?from=earliest&until=latest&max_rec_count=${MAX_REC_COUNT}&max_bytes_size=${MAX_BYTE_SIZE}" &
-	#sleep 0.1
+  curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}?from=earliest&until=latest" &
+	sleep 0.1
 done
 
 wait
+
+END_TIME=$EPOCHREALTIME
+DIFF_TIME=$(echo "$END_TIME - $START_TIME" | bc)
+echo "Runtime: $DIFF_TIME seconds"
 
 rm -f ./json/${FILE}-*.json

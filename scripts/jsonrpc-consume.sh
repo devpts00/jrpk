@@ -5,9 +5,11 @@ export FILE=$2
 export TOPIC=$3
 export PARTITIONS=$4
 
+START_TIME=$EPOCHREALTIME
+
 for ((p = 0; p < $PARTITIONS; p++))
 do
-	docker compose run --rm --remove-orphans rst ./target/${BUILD}/jrpk \
+	./target/${BUILD}/jrpk \
 		client \
 		--path=./json/${FILE}-${p}.json \
 		--address=jrpk:1133 \
@@ -24,5 +26,9 @@ do
 done
 
 wait
+
+END_TIME=$EPOCHREALTIME
+DIFF_TIME=$(echo "$END_TIME - $START_TIME" | bc)
+echo "Runtime: $DIFF_TIME seconds"
 
 rm -f ./json/${FILE}-*.json

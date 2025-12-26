@@ -113,14 +113,6 @@ const fn default_max_wait() -> Duration {
     Duration::from_millis(100)
 }
 
-const fn default_max_rec_count() -> usize {
-    ByteSize::mib(1).as_u64() as usize
-}
-
-const fn default_max_bytes_size() -> ByteSize {
-    ByteSize::gib(1)
-}
-
 #[derive(Deserialize)]
 struct HttpFetchQuery {
     #[serde(default = "default_from")]
@@ -133,10 +125,10 @@ struct HttpFetchQuery {
     max_batch_size: ByteSize,
     #[serde(default = "default_max_wait", with = "humantime_serde")]
     max_wait_duration: Duration,
-    #[serde(default = "default_max_rec_count")]
-    max_rec_count: usize,
-    #[serde(default = "default_max_bytes_size")]
-    max_bytes_size: ByteSize,
+    #[serde(default)]
+    max_rec_count: Option<usize>,
+    #[serde(default)]
+    max_bytes_size: Option<ByteSize>,
 }
 
 enum KfkFetchState {
@@ -261,8 +253,8 @@ async fn get_kafka_fetch(
     let until = until.into();
     let min_max_bytes = min_batch_size.as_u64() as i32 .. max_batch_size.as_u64() as i32;
     let max_wait_ms = max_wait_duration.as_millis() as i32;
-    let rec_count_budget = max_rec_count;
-    let byte_size_budget = max_bytes_size.as_u64() as usize;
+    let rec_count_budget = max_rec_count.unwrap_or(usize::MAX);
+    let byte_size_budget = max_bytes_size.map(|s|s.as_u64() as usize).unwrap_or(usize::MAX);
     let (rsp_snd, rsp_rcv) = tokio::sync::mpsc::channel(1);
 
     let ctx = JrpCtxTypes::fetch(0, Instant::now(), tap, JrpCodecs::default());

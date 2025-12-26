@@ -93,10 +93,15 @@ services:
       - cargo:/usr/local/cargo
       - target:/jrpk/target
       - ./json:/jrpk/json
-      - ./src:/jrpk/src
+      - ./src:/jrpk/src:r
+      - ./scripts:/jrpk/scripts:r
       - ./Cargo.toml:/jrpk/Cargo.toml
       - ./Cargo.lock:/jrpk/Cargo.lock
     working_dir: /jrpk
+    deploy:
+      resources:
+        limits:
+          memory: 4g
 
   trc:
     profiles:

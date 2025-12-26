@@ -4,11 +4,13 @@ export FILE=$2
 export TOPIC=$3
 export PARTITIONS=$4
 
+START_TIME=$EPOCHREALTIME
+
 for ((p = 0; p < $PARTITIONS; p++))
 do
-  docker compose run --rm --remove-orphans rst ./target/${BUILD}/jrpk \
+  ./target/${BUILD}/jrpk \
     client \
-    --path=/jrpk/json/${FILE} \
+    --path=./json/${FILE}.json \
     --address=jrpk:1133 \
     --topic=${TOPIC} \
     --partition=${p} \
@@ -16,6 +18,11 @@ do
     --metrics-uri=http://pmg:9091/metrics/job/jrpk \
     --metrics-period=1s \
     produce &
+    sleep 0.1
 done
 
 wait
+
+END_TIME=$EPOCHREALTIME
+DIFF_TIME=$(echo "$END_TIME - $START_TIME" | bc)
+echo "Runtime: $DIFF_TIME seconds"
