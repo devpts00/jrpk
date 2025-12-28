@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::cmp::min;
 use std::str::{from_utf8, from_utf8_unchecked};
 use prometheus_client::metrics::counter::Counter;
-use tokio_util::codec::{Decoder, Encoder};
+use tokio_util::codec::{Decoder, Encoder, LinesCodec, LinesCodecError};
 use tracing::{enabled, instrument, trace, Level};
 
 #[derive(Debug)]
@@ -125,7 +125,25 @@ impl <T> MeteredItem<T> {
     }
 }
 
-impl <T: Serialize> Encoder<MeteredItem<T>> for JsonCodec {
+pub struct LinesCodec2(LinesCodec);
+
+impl LinesCodec2 {
+    pub fn new_with_max_length(max_length: usize) -> Self {
+        LinesCodec2(LinesCodec::new_with_max_length(max_length))
+    }
+}
+
+impl Decoder for LinesCodec2 {
+    type Item = String;
+    type Error = JrpkError;
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let LinesCodec2(inner) = self;
+        let item = inner.decode(src)?;
+        Ok(item)
+    }
+}
+
+impl <T: Serialize> Encoder<MeteredItem<T>> for LinesCodec2 {
     type Error = JrpkError;
     fn encode(&mut self, metered_item: MeteredItem<T>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let MeteredItem { item, throughput } = metered_item;

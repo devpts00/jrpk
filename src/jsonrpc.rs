@@ -1,4 +1,4 @@
-use crate::codec::{JsonCodec, MeteredItem};
+use crate::codec::{JsonCodec, LinesCodec2, MeteredItem};
 use crate::error::JrpkError;
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
@@ -18,7 +18,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::{select, spawn, try_join};
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Framed, LinesCodec};
 use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -152,7 +152,7 @@ async fn j2k_req<'a>(
 
 #[instrument(ret, err, skip(tcp_stream, cli_cache, kfk_rsp_snd, jrp_err_snd, metrics))]
 async fn jsonrpc_req_reader(
-    mut tcp_stream: SplitStream<Framed<TcpStream, JsonCodec>>,
+    mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec2>>,
     cli_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     jrp_err_snd: JrpErrSnd,
@@ -160,12 +160,12 @@ async fn jsonrpc_req_reader(
 ) -> Result<(), JrpkError> {
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
-        let bytes = result?;
-        let length = bytes.len() as u64;
-        trace!("json: {}", from_utf8(bytes.as_ref())?);
+        let line = result?;
+        let length = line.len() as u64;
+        trace!("json: {}", from_utf8(line.as_ref())?);
         let mut labels = JrpkLabels::new(LblTier::Jsonrpc).traffic(LblTraffic::In).build();
         // we are optimistic and expect most requests to be well-formed
-        match serde_json::from_slice::<JrpReq>(bytes.as_ref()) {
+        match serde_json::from_slice::<JrpReq>(line.as_ref()) {
             // if request is syntactically correct, we proceed
             Ok(jrp_req) => {
                 trace!("request: {:?}", jrp_req);
@@ -188,7 +188,7 @@ async fn jsonrpc_req_reader(
                 metrics.throughputs
                     .get_or_create(&labels)
                     .inc_by(length);
-                let jrp_id = serde_json::from_slice::<JrpId>(bytes.as_ref())?;
+                let jrp_id = serde_json::from_slice::<JrpId>(line.as_ref())?;
                 let id = jrp_id.id;
                 let jrp_err = JrpkError::Internal(format!("jsonrpc decode error: {}", err));
                 jrp_err_snd.send((id, jrp_err)).await?;
@@ -202,7 +202,7 @@ type JrpRspMeteredItem = MeteredItem<JrpRsp<'static>>;
 
 #[instrument(ret, err, skip(tcp_sink, kfk_rsp_rcv, jrp_err_rcv, metrics))]
 async fn jsonrpc_rsp_writer(
-    mut tcp_sink: SplitSink<Framed<TcpStream, JsonCodec>, JrpRspMeteredItem>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec2>, JrpRspMeteredItem>,
     mut kfk_rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
     mut jrp_err_rcv: JrpErrRcv,
     metrics: JrpkMetrics,
@@ -262,7 +262,7 @@ async fn serve_jsonrpc(
 
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
 
-    let codec = JsonCodec::new(max_frame_size);
+    let codec = LinesCodec2::new_with_max_length(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (kfk_rsp_snd, kfk_rsp_rcv) = mpsc::channel::<KfkRsp<JrpCtxTypes>>(queue_size);

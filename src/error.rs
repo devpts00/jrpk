@@ -11,6 +11,7 @@ use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::oneshot::error::RecvError;
 use tokio::task::JoinError;
+use tokio_util::codec::LinesCodecError;
 use crate::kafka::KfkError;
 
 #[derive(Error, Debug, IntoStaticStr)]
@@ -30,6 +31,9 @@ pub enum JrpkError {
     #[error("frame too big: {0}")]
     FrameTooBig(usize),
 
+    #[error("codec: {0}")]
+    Codec(#[from] LinesCodecError),
+    
     #[error("utf8: {0}")]
     Utf8(#[from] Utf8Error),
 
