@@ -143,7 +143,8 @@ fn main() {
     let args = args::Args::parse();
     info!("args: {:?}", args);
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
+        .enable_time()
+        .enable_io()
         .build()
         .unwrap();
     rt.block_on(run(args));
