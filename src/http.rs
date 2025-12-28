@@ -37,7 +37,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::{spawn, try_join};
 use tokio_stream::wrappers::LinesStream;
 use tokio_util::io::StreamReader;
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
 #[instrument(level="trace", ret, err, skip(registry))]
 async fn get_prometheus_metrics(State(registry): State<Arc<Mutex<Registry>>>) -> Result<String, JrpkError> {
@@ -362,18 +362,18 @@ async fn post_kafka_send(
     Ok(())
 }
 
-#[instrument(ret, err, skip(kafka_clients, prometheus_registry))]
+#[instrument(ret, err, skip(clients, metrics))]
 pub async fn listen_http(
     bind: SocketAddr,
-    kafka_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
-    prometheus_registry: Arc<Mutex<Registry>>
+    clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
-    let jrpk_metrics = JrpkMetrics::new(prometheus_registry.clone());
-    let state = HttpState::new(kafka_clients, jrpk_metrics);
+    let registry = metrics.registry.clone();
+    let state = HttpState::new(clients, metrics);
     let listener = TcpListener::bind(bind).await?;
     let metrics = Router::new()
         .route("/", get(get_prometheus_metrics))
-        .with_state(prometheus_registry);
+        .with_state(registry);
     let kafka = Router::new()
         .route("/offset/{topic}/{partition}", get(get_kafka_offset))
         .route("/fetch/{topic}/{partition}", get(get_kafka_fetch))

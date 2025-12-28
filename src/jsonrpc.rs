@@ -7,13 +7,12 @@ use crate::util::{set_buf_sizes, Ctx, Req, Tap};
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use prometheus_client::registry::Registry;
 use rskafka::client::partition::OffsetAt;
 use rskafka::record::{Record, RecordAndOffset};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::str::from_utf8;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -290,18 +289,16 @@ async fn serve_jsonrpc(
     Ok(())
 }
 
-#[instrument(ret, err, skip(cli_cache, prometheus_registry))]
+#[instrument(ret, err, skip(cache, metrics))]
 pub async fn listen_jsonrpc(
     bind: SocketAddr,
     max_frame_size: usize,
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    cli_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
-    prometheus_registry: Arc<Mutex<Registry>>,
+    cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    metrics: JrpkMetrics,
 ) -> Result<(), JrpkError> {
-
-    let metrics = JrpkMetrics::new(prometheus_registry);
 
     info!("bind: {:?}", bind);
     let listener = TcpListener::bind(bind).await?;
@@ -311,7 +308,7 @@ pub async fn listen_jsonrpc(
         spawn(
             serve_jsonrpc(
                 tcp_stream,
-                cli_cache.clone(),
+                cache.clone(),
                 max_frame_size,
                 send_buf_size,
                 recv_buf_size,

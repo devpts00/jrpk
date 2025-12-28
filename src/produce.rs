@@ -7,10 +7,9 @@ use crate::util::{url_append_tap, Tap};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use prometheus_client::registry::Registry;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use faststr::FastStr;
 use moka::future::Cache;
@@ -127,18 +126,17 @@ pub async fn produce(
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_byte_size: usize,
+    metrics: JrpkMetrics,
     mut metrics_url: Url,
     metrics_period: Duration,
 ) -> Result<(), JrpkError> {
 
     url_append_tap(&mut metrics_url, &tap)?;
-    let registry = Arc::new(Mutex::new(Registry::default()));
-    let metrics = JrpkMetrics::new(registry.clone());
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
     let ph = spawn_push_prometheus(
         metrics_url,
         metrics_period,
-        registry
+        metrics.registry.clone()
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;

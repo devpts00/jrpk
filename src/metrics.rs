@@ -96,23 +96,31 @@ impl JrpkLabels {
 
 #[derive(Clone, Debug)]
 pub struct JrpkMetrics {
+    pub registry: Arc<Mutex<Registry>>,
     pub throughputs: Family<JrpkLabels, Counter>,
     pub latencies: Family<JrpkLabels, Histogram>,
 }
 
 impl JrpkMetrics {
-    pub fn new(registry: Arc<Mutex<Registry>>) -> Self {
-        let mut r = registry.lock().unwrap();
-        let throughputs = Family::<JrpkLabels, Counter>::default();
-        let x = throughputs.clone();
-        r.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, x);
-        let latencies = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
-        r.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies.clone());
-        JrpkMetrics { throughputs, latencies }
+
+    fn register(registry: &Mutex<Registry>, throughputs: Family<JrpkLabels, Counter>, latencies: Family<JrpkLabels, Histogram>) {
+        let mut registry = registry.lock().unwrap();
+        registry.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, throughputs);
+        registry.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies);
     }
+
+    pub fn new() -> Self {
+        let registry = Arc::new(Mutex::new(Registry::default()));
+        let throughputs = Family::<JrpkLabels, Counter>::default();
+        let latencies = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
+        JrpkMetrics::register(&registry, throughputs.clone(), latencies.clone());
+        JrpkMetrics { registry, throughputs, latencies }
+    }
+
     pub fn throughput<S: Size>(&self, labels: &JrpkLabels, data: &S) {
         self.throughputs.get_or_create(labels).inc_by(data.size() as u64);
     }
+
     pub fn latency(&self, labels: &JrpkLabels, since: Instant) {
         self.latencies.get_or_create(labels).observe(since.elapsed().as_secs_f64());
     }

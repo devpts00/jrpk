@@ -1,13 +1,12 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use faststr::FastStr;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use log::warn;
 use moka::future::Cache;
-use prometheus_client::registry::Registry;
 use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
@@ -185,17 +184,17 @@ pub async fn consume(
     max_batch_size: i32,
     max_wait_ms: i32,
     max_frame_size: usize,
+    metrics: JrpkMetrics,
     mut metrics_url: Url,
     metrics_period: Duration,
+
 ) -> Result<(), JrpkError> {
 
     url_append_tap(&mut metrics_url, &tap)?;
-    let registry = Arc::new(Mutex::new(Registry::default()));
-    let metrics = JrpkMetrics::new(registry.clone());
     let ph = spawn_push_prometheus(
         metrics_url,
         metrics_period,
-        registry
+        metrics.registry.clone(),
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;
