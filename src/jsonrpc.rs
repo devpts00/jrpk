@@ -1,4 +1,4 @@
-use crate::codec::{JsonCodec, LinesCodec2, MeteredItem};
+use crate::codec::{LinesCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
@@ -18,7 +18,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::{select, spawn, try_join};
-use tokio_util::codec::{Framed, LinesCodec};
+use tokio_util::codec::Framed;
 use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -152,7 +152,7 @@ async fn j2k_req<'a>(
 
 #[instrument(ret, err, skip(tcp_stream, cli_cache, kfk_rsp_snd, jrp_err_snd, metrics))]
 async fn jsonrpc_req_reader(
-    mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec2>>,
+    mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
     cli_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     jrp_err_snd: JrpErrSnd,
@@ -202,7 +202,7 @@ type JrpRspMeteredItem = MeteredItem<JrpRsp<'static>>;
 
 #[instrument(ret, err, skip(tcp_sink, kfk_rsp_rcv, jrp_err_rcv, metrics))]
 async fn jsonrpc_rsp_writer(
-    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec2>, JrpRspMeteredItem>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpRspMeteredItem>,
     mut kfk_rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
     mut jrp_err_rcv: JrpErrRcv,
     metrics: JrpkMetrics,
@@ -262,7 +262,7 @@ async fn serve_jsonrpc(
 
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
 
-    let codec = LinesCodec2::new_with_max_length(max_frame_size);
+    let codec = LinesCodec::new_with_max_length(max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (kfk_rsp_snd, kfk_rsp_rcv) = mpsc::channel::<KfkRsp<JrpCtxTypes>>(queue_size);

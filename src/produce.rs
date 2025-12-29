@@ -1,5 +1,5 @@
 use crate::async_clean_return;
-use crate::codec::{JsonCodec, LinesCodec2, MeteredItem};
+use crate::codec::{LinesCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::model::{JrpBytes, JrpData, JrpRecSend, JrpReq, JrpRsp};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
@@ -31,7 +31,7 @@ pub async fn producer_req_writer(
     max_rec_size: usize,
     metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
-    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec2>, JrpkMeteredProdReq<'_>>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Send)
@@ -41,7 +41,7 @@ pub async fn producer_req_writer(
     let throughput = metrics.throughputs.get_or_create_owned(&labels);
     let file = async_clean_return!(tokio::fs::File::open(path.as_str()).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
-    let codec = JsonCodec::new(max_frame_size);
+    let codec = LinesCodec::new_with_max_length(max_frame_size);
     let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
     let mut id: usize = 0;
     let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
@@ -87,7 +87,7 @@ pub async fn producer_rsp_reader(
     tap: Tap,
     metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
-    mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec2>>,
+    mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
 ) -> Result<(), JrpkError> {
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Send)
@@ -140,7 +140,7 @@ pub async fn produce(
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;
-    let codec = LinesCodec2::new_with_max_length(max_frame_size);
+    let codec = LinesCodec::new_with_max_length(max_frame_size);
     let framed = Framed::with_capacity(stream, codec, max_frame_size);
     let (tcp_sink, tcp_stream) = framed.split();
     let wh = tokio::spawn(

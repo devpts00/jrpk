@@ -16,7 +16,7 @@ use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
 use tracing::{error, instrument, trace};
 use crate::args::Offset;
-use crate::codec::{JsonCodec, LinesCodec2, MeteredItem};
+use crate::codec::{LinesCodec, MeteredItem};
 use crate::error::JrpkError;
 use crate::model::{JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
@@ -80,7 +80,7 @@ async fn consumer_req_writer<'a>(
     metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     mut offset_rcv: Receiver<Offset>,
-    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec2>, JrpkMeteredConsReq<'a>>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpkMeteredConsReq<'a>>,
 ) -> Result<(), JrpkError> {
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Fetch)
@@ -114,7 +114,7 @@ async fn consumer_rsp_reader(
     metrics: JrpkMetrics,
     times: Arc<Cache<usize, Instant>>,
     offset_snd: Sender<Offset>,
-    mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec2>>,
+    mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
 ) -> Result<(), JrpkError> {
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Fetch)
@@ -198,7 +198,7 @@ pub async fn consume(
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;
-    let codec = LinesCodec2::new_with_max_length(max_frame_size);
+    let codec = LinesCodec::new_with_max_length(max_frame_size);
     let framed = Framed::new(stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
