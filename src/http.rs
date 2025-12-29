@@ -3,7 +3,7 @@ use std::fmt::{Debug, Formatter};
 use crate::error::JrpkError;
 use crate::jsonrpc::{JrpCtx, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
-use crate::metrics::{encode_registry, JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
 use crate::model::{JrpCodecs, JrpOffset};
 use crate::size::Size;
 use crate::util::{Ctx, Req, Tap};
@@ -39,20 +39,20 @@ use tokio_stream::wrappers::LinesStream;
 use tokio_util::io::StreamReader;
 use tracing::{debug, instrument};
 
-#[instrument(level="trace", ret, err, skip(registry))]
-async fn get_prometheus_metrics(State(registry): State<Arc<Mutex<Registry>>>) -> Result<String, JrpkError> {
-    let text = encode_registry(registry)?;
-    Ok(text)
+#[instrument(level="trace", ret, err, skip(metrics))]
+async fn get_prometheus_metrics(State(metrics): State<Arc<JrpkMetrics>>) -> Result<String, JrpkError> {
+    let buf = metrics.encode()?;
+    Ok(buf)
 }
 
 #[derive(Clone)]
 struct HttpState {
     clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
 }
 
 impl HttpState {
-    fn new(clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>, metrics: JrpkMetrics) -> Self {
+    fn new(clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>, metrics: Arc<JrpkMetrics>) -> Self {
         HttpState { clients, metrics }
     }
 }
@@ -82,8 +82,8 @@ async fn get_kafka_offset(
     let offset = kfk_offset_res?;
     let body = offset.to_string();
     let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Offset).traffic(LblTraffic::Out).tap(tap).build();
-    metrics.throughput(&labels, &body);
-    metrics.latency(&labels, ts);
+    metrics.size(&labels, &body);
+    metrics.time(&labels, ts);
     Ok(offset.to_string())
 }
 
@@ -141,12 +141,13 @@ enum KfkFetchState {
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
         rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
-        throughput: Counter,
-        latency: Histogram,
+        metrics: Arc<JrpkMetrics>,
+        labels: JrpkLabels,
     },
     Done {
         ts: Instant,
-        latency: Histogram,
+        metrics: Arc<JrpkMetrics>,
+        labels: JrpkLabels,
     },
 }
 
@@ -160,13 +161,17 @@ impl KfkFetchState {
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
         rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
-        throughput: Counter,
-        latency: Histogram,
+        metrics: Arc<JrpkMetrics>,
+        labels: JrpkLabels,
     ) -> Self {
-        KfkFetchState::Next { until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, throughput, latency }
+        KfkFetchState::Next { until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, metrics, labels }
     }
-    fn done(ts: Instant, latency: Histogram) -> KfkFetchState {
-        KfkFetchState::Done { ts, latency }
+    fn done(
+        ts: Instant,
+        metrics: Arc<JrpkMetrics>,
+        labels: JrpkLabels,
+    ) -> KfkFetchState {
+        KfkFetchState::Done { ts, metrics, labels }
     }
 }
 
@@ -192,7 +197,7 @@ impl Debug for KfkFetchState {
 #[instrument(level = "debug", err)]
 async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Bytes>, KfkFetchState)>, JrpkError> {
     match state {
-        KfkFetchState::Next { until, min_max_bytes, max_wait_ms, mut rec_count_budget, mut byte_size_budget, req_snd, rsp_snd, mut rsp_rcv, throughput, latency } => {
+        KfkFetchState::Next { until, min_max_bytes, max_wait_ms, mut rec_count_budget, mut byte_size_budget, req_snd, rsp_snd, mut rsp_rcv, metrics, labels } => {
             let kfk_rsp = rsp_rcv.recv().await.ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
             let Ctx(ctx, kfk_res) = kfk_rsp.fetch_or(JrpkError::Unexpected("kafka response wrong type"))?;
             let JrpCtx { id, ts, tap, extra } = ctx;
@@ -216,7 +221,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
                 }
             }
             let bytes = buf.freeze();
-            throughput.inc_by(bytes.len() as u64);
+            metrics.size(&labels, &bytes);
             let frame = Frame::data(bytes);
             let pos = pos + 1;
             if !done && pos < high_watermark {
@@ -224,14 +229,14 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
                 let ctx = JrpCtx::new(id + 1, ts, tap, extra);
                 let req = KfkReq::Fetch(Req(Ctx(ctx, (from, min_max_bytes.clone(), max_wait_ms)), rsp_snd.clone()));
                 req_snd.send(req).await?;
-                let next = KfkFetchState::next(until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, throughput, latency);
+                let next = KfkFetchState::next(until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, metrics, labels);
                 Ok(Some((frame, next)))
             } else {
-                Ok(Some((frame, KfkFetchState::done(ts, latency))))
+                Ok(Some((frame, KfkFetchState::done(ts, metrics, labels))))
             }
         },
-        KfkFetchState::Done { ts, latency } => {
-            latency.observe(ts.elapsed().as_secs_f64());
+        KfkFetchState::Done { ts, metrics, labels } => {
+            metrics.time(&labels, ts);
             Ok(None)
         }
     }
@@ -246,8 +251,6 @@ async fn get_kafka_fetch(
     let HttpState { clients, metrics } = state;
     let tap = Tap::new(topic, partition);
     let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Fetch).traffic(LblTraffic::Out).tap(tap.clone()).build();
-    let throughput = metrics.throughputs.get_or_create_owned(&labels);
-    let latency = metrics.latencies.get_or_create_owned(&labels);
     let req_snd = clients.lookup_sender(tap.clone()).await?;
     let from = from.into();
     let until = until.into();
@@ -261,7 +264,7 @@ async fn get_kafka_fetch(
     let req = KfkReq::Fetch(Req(Ctx(ctx, (from, min_max_bytes.clone(), max_wait_ms)), rsp_snd.clone()));
     req_snd.send(req).await?;
 
-    let state = KfkFetchState::next(until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, throughput, latency);
+    let state = KfkFetchState::next(until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, metrics, labels);
     let stream = try_unfold(state, get_kafka_fetch_chunk);
     let body = StreamBody::new(stream);
     let response = Response::builder()
@@ -276,14 +279,15 @@ struct HttpSendQuery {
     max_batch_size: ByteSize,
 }
 
-#[instrument(err, skip(stream))]
-async fn post_kafka_send_send_requests(
+#[instrument(err, skip(stream, metrics, labels))]
+async fn post_kafka_send_proc_requests(
     stream: BodyDataStream,
     req_snd: Sender<KfkReq<JrpCtxTypes>>,
     rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     tap: Tap,
     max_batch_size: usize,
-    throughput: Counter,
+    metrics: Arc<JrpkMetrics>,
+    labels: JrpkLabels,
 ) -> Result<(), JrpkError> {
     let mut max_rec_size: usize = 0;
     let mut batch_size: usize = 0;
@@ -298,7 +302,7 @@ async fn post_kafka_send_send_requests(
         let record = Record { key: None, value: Some(line.into_bytes()), headers: BTreeMap::default(), timestamp: Utc::now() };
         records.push(record);
         if batch_size > max_batch_size - max_rec_size {
-            throughput.inc_by(batch_size as u64);
+            metrics.size_by_value(&labels, batch_size);
             let recs_count = records.len();
             let ctx = JrpCtxTypes::send(id, Instant::now(), tap.clone());
             let req = KfkReq::Send(Req(Ctx(ctx, records), rsp_snd.clone()));
@@ -310,7 +314,7 @@ async fn post_kafka_send_send_requests(
     }
 
     if !records.is_empty() {
-        throughput.inc_by(batch_size as u64);
+        metrics.size_by_value(&labels, batch_size);
         let ctx = JrpCtxTypes::send(id, Instant::now(), tap.clone());
         let req = KfkReq::Send(Req(Ctx(ctx, records), rsp_snd.clone()));
         req_snd.send(req).await?;
@@ -319,11 +323,11 @@ async fn post_kafka_send_send_requests(
     Ok(())
 }
 
-#[instrument(err, skip(rsp_rcv))]
+#[instrument(err, skip(rsp_rcv, metrics, labels))]
 async fn post_kafka_send_proc_responses(
     mut rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
-    throughput: Counter,
-    latency: Histogram,
+    metrics: Arc<JrpkMetrics>,
+    labels: JrpkLabels,
 ) -> Result<(), JrpkError> {
     let ts = Instant::now();
     while let Some(rsp) = rsp_rcv.recv().await {
@@ -331,9 +335,9 @@ async fn post_kafka_send_proc_responses(
         let JrpCtx { id, ts, tap, .. } = ctx;
         debug!("response, id: {}, tap: {}, duration: {} ms", id, tap, ts.elapsed().as_millis());
         let offsets = res?;
-        throughput.inc_by(offsets.size() as u64);
+        metrics.size(&labels, &offsets);
     }
-    latency.observe(ts.elapsed().as_secs_f64());
+    metrics.time(&labels, ts);
     Ok(())
 }
 
@@ -347,17 +351,14 @@ async fn post_kafka_send(
     let HttpState { clients, metrics } = state;
     let tap = Tap::new(topic, partition);
     let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(tap.clone()).build();
-    let latency = metrics.latencies.get_or_create_owned(&labels);
-    let throughput_in = metrics.throughputs.get_or_create_owned(&labels);
-    let labels = labels.traffic(LblTraffic::Out);
-    let throughput_out = metrics.throughputs.get_or_create_owned(&labels);
     let max_batch_size = max_batch_size.as_u64() as usize;
     let req_snd = clients.lookup_sender(tap.clone()).await?;
     let (rsp_snd, rsp_rcv) = tokio::sync::mpsc::channel::<KfkRsp<JrpCtxTypes>>(1024);
     let body = request.into_body();
     let stream = body.into_data_stream();
-    let rsp_h = spawn(post_kafka_send_proc_responses(rsp_rcv, throughput_out, latency));
-    let req_h = spawn(post_kafka_send_send_requests(stream, req_snd, rsp_snd, tap, max_batch_size, throughput_in));
+    let rsp_h = spawn(post_kafka_send_proc_responses(rsp_rcv, metrics.clone(), labels.clone()));
+    let labels = labels.traffic(LblTraffic::Out).build();
+    let req_h = spawn(post_kafka_send_proc_requests(stream, req_snd, rsp_snd, tap, max_batch_size, metrics, labels));
     let _ = try_join!(req_h, rsp_h)?;
     Ok(())
 }
@@ -366,14 +367,13 @@ async fn post_kafka_send(
 pub async fn listen_http(
     bind: SocketAddr,
     clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
-    let registry = metrics.registry.clone();
-    let state = HttpState::new(clients, metrics);
+    let state = HttpState::new(clients, metrics.clone());
     let listener = TcpListener::bind(bind).await?;
     let metrics = Router::new()
         .route("/", get(get_prometheus_metrics))
-        .with_state(registry);
+        .with_state(metrics);
     let kafka = Router::new()
         .route("/offset/{topic}/{partition}", get(get_kafka_offset))
         .route("/fetch/{topic}/{partition}", get(get_kafka_fetch))

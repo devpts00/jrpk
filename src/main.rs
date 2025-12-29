@@ -31,8 +31,9 @@ use faststr::FastStr;
 use reqwest::Url;
 use tokio;
 use tokio::spawn;
-use tracing::info;
+use tracing::{info, instrument};
 
+#[instrument]
 async fn server(
     brokers: Vec<String>,
     jsonrpc_bind: SocketAddr,
@@ -45,8 +46,8 @@ async fn server(
     info!("connect: {}", brokers.join(","));
     // TODO: handle error
     let kafka_client = ClientBuilder::new(brokers).build().await.unwrap();
-    let metrics = JrpkMetrics::new();
-    let kafka_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>> = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_len, metrics.clone()));
+    let metrics = Arc::new(JrpkMetrics::new());
+    let kafka_clients = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_len, metrics.clone()));
 
     let jh = spawn(
         listen_jsonrpc(
@@ -73,18 +74,18 @@ async fn server(
     ).await
 }
 
+#[instrument(skip(metrics_url))]
 async fn client(
     path: FastStr,
     address: FastStr,
     topic: FastStr,
     partition: i32,
     max_frame_byte_size: ByteSize,
-    metrics_uri: Url,
+    metrics_url: Url,
     metrics_period: DurationHuman,
     command: Command,
-
 ) {
-    let metrics = JrpkMetrics::new();
+    let metrics = Arc::new(JrpkMetrics::new());
     let tap = Tap::new(topic, partition);
 
     match command {
@@ -100,7 +101,7 @@ async fn client(
                         max_batch_byte_size.as_u64() as usize,
                         max_rec_byte_size.as_u64() as usize,
                         metrics,
-                        metrics_uri,
+                        metrics_url,
                         Duration::from(&metrics_period),
 
                     )
@@ -120,7 +121,7 @@ async fn client(
                         max_wait_ms,
                         max_frame_byte_size.as_u64() as usize,
                         metrics,
-                        metrics_uri,
+                        metrics_url,
                         Duration::from(&metrics_period),
                     )
                 )

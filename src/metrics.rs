@@ -8,7 +8,7 @@ use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue, LabelValueEn
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
-use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
+use prometheus_client::metrics::histogram::{exponential_buckets, linear_buckets, Histogram};
 use prometheus_client::registry::{Registry, Unit};
 use reqwest::{Client, Url};
 use reqwest::header::HOST;
@@ -19,6 +19,10 @@ use crate::error::JrpkError;
 use crate::model::JrpMethod;
 use crate::size::Size;
 use crate::util::{CancellableHandle, Tap};
+
+pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
+pub static IO_OP_SIZE: &str = "io_op_size";
+pub static IO_OP_LATENCY: &str = "io_op_latency";
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct FastStrExt(FastStr);
@@ -94,58 +98,80 @@ impl JrpkLabels {
     }
 }
 
-#[derive(Clone, Debug)]
 pub struct JrpkMetrics {
-    pub registry: Arc<Mutex<Registry>>,
-    pub throughputs: Family<JrpkLabels, Counter>,
-    pub latencies: Family<JrpkLabels, Histogram>,
+    registry: Mutex<Registry>,
+    throughputs: Family<JrpkLabels, Counter>,
+    sizes: Family<JrpkLabels, Histogram>,
+    latencies: Family<JrpkLabels, Histogram>,
 }
 
 impl JrpkMetrics {
 
-    fn register(registry: &Mutex<Registry>, throughputs: Family<JrpkLabels, Counter>, latencies: Family<JrpkLabels, Histogram>) {
+    fn register(
+        registry: &Mutex<Registry>,
+        throughputs: Family<JrpkLabels, Counter>,
+        sizes: Family<JrpkLabels, Histogram>,
+        latencies: Family<JrpkLabels, Histogram>
+    ) {
         let mut registry = registry.lock().unwrap();
         registry.register_with_unit(IO_OP_THROUGHPUT, "i/o operation throughput", Unit::Bytes, throughputs);
+        registry.register_with_unit(IO_OP_SIZE, "i/o operation size", Unit::Bytes, sizes);
         registry.register_with_unit(IO_OP_LATENCY, "i/o operation latency", Unit::Seconds, latencies);
     }
 
     pub fn new() -> Self {
-        let registry = Arc::new(Mutex::new(Registry::default()));
+        let registry = Mutex::new(Registry::default());
         let throughputs = Family::<JrpkLabels, Counter>::default();
+        let sizes = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(1024.0, 1.6, 20)) });
         let latencies = Family::<JrpkLabels, Histogram>::new_with_constructor(|| { Histogram::new(exponential_buckets(0.001, 2.0, 20)) });
-        JrpkMetrics::register(&registry, throughputs.clone(), latencies.clone());
-        JrpkMetrics { registry, throughputs, latencies }
+        JrpkMetrics::register(&registry, throughputs.clone(), sizes.clone(), latencies.clone());
+        JrpkMetrics { registry, throughputs, sizes, latencies }
     }
 
-    pub fn throughput<S: Size>(&self, labels: &JrpkLabels, data: &S) {
-        self.throughputs.get_or_create(labels).inc_by(data.size() as u64);
+    pub fn size_by_value(&self, labels: &JrpkLabels, value: usize)  {
+        let size = value as u64;
+        self.throughputs.get_or_create(labels).inc_by(size);
+        self.sizes.get_or_create(labels).observe(size as f64);
     }
 
-    pub fn latency(&self, labels: &JrpkLabels, since: Instant) {
+    pub fn size<S: Size>(&self, labels: &JrpkLabels, data: &S) {
+        self.size_by_value(labels, data.size())
+    }
+
+    pub fn time(&self, labels: &JrpkLabels, since: Instant) {
         self.latencies.get_or_create(labels).observe(since.elapsed().as_secs_f64());
     }
+
+    pub fn encode(&self) -> Result<String, std::fmt::Error> {
+        let mut buf = String::with_capacity(64 * 1024);
+        let registry = self.registry.lock().unwrap();
+        encode(&mut buf, &registry)?;
+        trace!("metrics:\n{}", buf);
+        Ok(buf)
+    }
 }
 
-pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
-pub static IO_OP_LATENCY: &str = "io_op_latency";
-
-pub fn encode_registry(registry: Arc<Mutex<Registry>>) -> Result<String, std::fmt::Error> {
-    let mut buf = String::with_capacity(64 * 1024);
-    let rg = registry.lock().unwrap();
-    encode(&mut buf, &rg)?;
-    trace!("metrics:\n{}", buf);
-    Ok(buf)
+pub struct MeteredItem<T> {
+    pub item: T,
+    pub metrics: Arc<JrpkMetrics>,
+    pub labels: JrpkLabels,
 }
 
-#[instrument(level="debug", ret, err, skip(url, cli, registry))]
+impl <T> MeteredItem<T> {
+    pub fn new(item: T, metrics: Arc<JrpkMetrics>, labels: JrpkLabels) -> Self {
+        MeteredItem { item, metrics, labels }
+    }
+}
+
+#[instrument(level="debug", ret, err, skip(url, cli, metrics))]
 async fn push_prometheus(
     url: Url,
     auth: FastStr,
     cli: &Client,
-    registry: Arc<Mutex<Registry>>
+    metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
 
-    let buf = encode_registry(registry)?;
+    let buf = metrics.encode()?;
     let res = cli.post(url)
         .header(HOST, auth.as_str())
         .body(buf)
@@ -164,11 +190,11 @@ async fn push_prometheus(
     Ok(())
 }
 
-#[instrument(ret, err, skip(url, registry, cancel))]
+#[instrument(ret, err, skip(url, metrics, cancel))]
 async fn loop_push_prometheus(
     url: Url,
     period: Duration,
-    registry: Arc<Mutex<Registry>>,
+    metrics: Arc<JrpkMetrics>,
     cancel: CancellationToken,
 ) -> Result<(), JrpkError> {
     let cli = Client::new();
@@ -179,21 +205,21 @@ async fn loop_push_prometheus(
                 break
             },
             Err(_) => {
-                push_prometheus(url.clone(), auth.clone(), &cli, registry.clone()).await?;
+                push_prometheus(url.clone(), auth.clone(), &cli, metrics.clone()).await?;
             }
         }
     }
-    push_prometheus(url.clone(), auth.clone(), &cli, registry).await?;
+    push_prometheus(url.clone(), auth.clone(), &cli, metrics.clone()).await?;
     Ok(())
 }
 
-#[instrument(skip(url, registry))]
+#[instrument(skip(url, metrics))]
 pub fn spawn_push_prometheus(
     url: Url,
     period: Duration,
-    registry: Arc<Mutex<Registry>>,
+    metrics: Arc<JrpkMetrics>,
 ) -> CancellableHandle<Result<(), JrpkError>> {
     let cancel = CancellationToken::new();
-    let handle = spawn(loop_push_prometheus(url, period, registry, cancel.clone()));
+    let handle = spawn(loop_push_prometheus(url, period, metrics, cancel.clone()));
     CancellableHandle::new(cancel, handle)
 }

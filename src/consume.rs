@@ -16,10 +16,10 @@ use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
 use tracing::{error, instrument, trace};
 use crate::args::Offset;
-use crate::codec::{LinesCodec, MeteredItem};
+use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::model::{JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
-use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{url_append_tap, Tap};
 
 type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
@@ -72,12 +72,12 @@ async fn write_records<'a>(
     })
 }
 
-#[instrument(ret, err, skip(metrics, offset_rcv, tcp_sink))]
+#[instrument(ret, err, skip(metrics, times, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     tap: Tap,
     max_batch_size: i32,
     max_wait_ms: i32,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     mut offset_rcv: Receiver<Offset>,
     mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpkMeteredConsReq<'a>>,
@@ -87,7 +87,6 @@ async fn consumer_req_writer<'a>(
         .traffic(LblTraffic::Out)
         .tap(tap.clone())
         .build();
-    let throughput = metrics.throughputs.get_or_create_owned(&labels);
     let mut id = 0;
     while let Some(offset) = offset_rcv.recv().await {
         let tap = tap.clone();
@@ -95,7 +94,7 @@ async fn consumer_req_writer<'a>(
         let codecs = JrpCodecs::default();
         let bytes = 1..max_batch_size;
         let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, codecs);
-        let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, throughput.clone());
+        let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, metrics.clone(), labels.clone());
         times.insert(id, Instant::now()).await;
         tcp_sink.send(metered_item).await?;
         id = id + 1;
@@ -105,13 +104,13 @@ async fn consumer_req_writer<'a>(
 }
 
 
-#[instrument(ret, err, skip(metrics, offset_snd, tcp_stream))]
+#[instrument(ret, err, skip(metrics, times, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     tap: Tap,
     path: FastStr,
     from: Offset,
     until: Offset,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     offset_snd: Sender<Offset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
@@ -121,23 +120,21 @@ async fn consumer_rsp_reader(
         .traffic(LblTraffic::In)
         .tap(tap)
         .build();
-    let throughput = metrics.throughputs.get_or_create_owned(&labels);
-    let latency = metrics.latencies.get_or_create_owned(&labels);
     let file = File::create(path.as_str())?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
-        let length = frame.len() as u64;
+        let length = frame.len();
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
         match jrp_rsp.take_result() {
             Ok(jrp_rsp_data) => {
                 match jrp_rsp_data {
                     JrpRspData::Fetch { high_watermark, mut records } => {
-                        throughput.inc_by(length);
+                        metrics.size(&labels, &frame);
                         if let Some(ts) = times.remove(&id).await {
-                            latency.observe(ts.elapsed().as_secs_f64())
+                            metrics.time(&labels, ts);
                         }
                         records.sort_by_key(|r| r.offset);
                         let mut done = true;
@@ -174,7 +171,7 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
-#[instrument(ret, err)]
+#[instrument(ret, err, skip(metrics, metrics_url))]
 pub async fn consume(
     address: FastStr,
     tap: Tap,
@@ -184,7 +181,7 @@ pub async fn consume(
     max_batch_size: i32,
     max_wait_ms: i32,
     max_frame_size: usize,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
     mut metrics_url: Url,
     metrics_period: Duration,
 
@@ -194,7 +191,7 @@ pub async fn consume(
     let ph = spawn_push_prometheus(
         metrics_url,
         metrics_period,
-        metrics.registry.clone(),
+        metrics.clone(),
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;
@@ -222,8 +219,8 @@ pub async fn consume(
             path,
             from,
             until,
-            metrics.clone(),
-            times.clone(),
+            metrics,
+            times,
             offset_snd,
             tcp_stream,
         )

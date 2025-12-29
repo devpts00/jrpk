@@ -1,19 +1,8 @@
 use crate::error::JrpkError;
 use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
-use prometheus_client::metrics::counter::Counter;
 use tokio_util::codec::{Decoder, Encoder};
-
-pub struct MeteredItem<T> {
-    item: T,
-    throughput: Counter,
-}
-
-impl <T> MeteredItem<T> {
-    pub fn new(item: T, throughput: Counter) -> Self {
-        MeteredItem { item, throughput }
-    }
-}
+use crate::metrics::MeteredItem;
 
 pub struct LinesCodec {
     max_length: usize,
@@ -23,11 +12,11 @@ pub struct LinesCodec {
 impl <T: Serialize> Encoder<MeteredItem<T>> for LinesCodec {
     type Error = JrpkError;
     fn encode(&mut self, metered_item: MeteredItem<T>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let MeteredItem { item, throughput } = metered_item;
+        let MeteredItem { item, metrics, labels } = metered_item;
         let length = dst.len();
         serde_json::to_writer(dst.writer(), &item)?;
         dst.put_u8(b'\n');
-        throughput.inc_by((dst.len() - length) as u64);
+        metrics.size_by_value(&labels, dst.len() - length);
         Ok(())
     }
 }
