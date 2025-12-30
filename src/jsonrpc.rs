@@ -1,7 +1,7 @@
-use crate::codec::{LinesCodec, MeteredItem};
+use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
-use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::util::{set_buf_sizes, Ctx, Req, Tap};
 use chrono::Utc;
@@ -111,7 +111,7 @@ async fn j2k_req<'a>(
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     metrics: &JrpkMetrics,
     labels: &mut JrpkLabels,
-    length: u64,
+    length: usize,
 ) -> Result<(Tap, KfkReq<JrpCtxTypes>), JrpkError> {
     let id = jrp_req.id;
     let params = jrp_req.params;
@@ -120,7 +120,7 @@ async fn j2k_req<'a>(
     match jrp_req.method {
         JrpMethod::Send => {
             let labels = labels.method(LblMethod::Send);
-            metrics.throughputs.get_or_create(&labels).inc_by(length);
+            metrics.size_by_value(&labels, length);
             let records = params.records
                 .ok_or(JrpkError::Syntax("records is missing"))?
                 .into_iter()
@@ -131,7 +131,7 @@ async fn j2k_req<'a>(
         }
         JrpMethod::Fetch => {
             let labels = labels.method(LblMethod::Fetch);
-            metrics.throughputs.get_or_create(&labels).inc_by(length);
+            metrics.size_by_value(&labels, length);
             let offset: KfkOffset = params.offset.ok_or(JrpkError::Syntax("offset is missing")).map(|o| o.into())?;
             let bytes = params.bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
             let max_wait_ms = params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
@@ -141,7 +141,7 @@ async fn j2k_req<'a>(
         }
         JrpMethod::Offset => {
             let labels = labels.method(LblMethod::Offset);
-            metrics.throughputs.get_or_create(&labels).inc_by(length);
+            metrics.size_by_value(&labels, length);
             let offset = params.offset.ok_or(JrpkError::Syntax("offset is missing"))
                 .map(|o| o.into())?;
             let ctx = JrpCtxTypes::offset(id, Instant::now(), tap.clone());
@@ -156,12 +156,12 @@ async fn jsonrpc_req_reader(
     cli_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     jrp_err_snd: JrpErrSnd,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
     while let Some(result) = tcp_stream.next().await {
         // if we cannot even decode frame - we disconnect
         let line = result?;
-        let length = line.len() as u64;
+        let length = line.len();
         trace!("json: {}", from_utf8(line.as_ref())?);
         let mut labels = JrpkLabels::new(LblTier::Jsonrpc).traffic(LblTraffic::In).build();
         // we are optimistic and expect most requests to be well-formed
@@ -185,9 +185,7 @@ async fn jsonrpc_req_reader(
             Err(err) => {
                 warn!("jsonrpc decode error: {}", err);
                 // if even an id is absent we give up and disconnect
-                metrics.throughputs
-                    .get_or_create(&labels)
-                    .inc_by(length);
+                metrics.size_by_value(&labels, length);
                 let jrp_id = serde_json::from_slice::<JrpId>(line.as_ref())?;
                 let id = jrp_id.id;
                 let jrp_err = JrpkError::Internal(format!("jsonrpc decode error: {}", err));
@@ -205,7 +203,7 @@ async fn jsonrpc_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpRspMeteredItem>,
     mut kfk_rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
     mut jrp_err_rcv: JrpErrRcv,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
     loop {
         let mut labels = JrpkLabels::new(LblTier::Jsonrpc).traffic(LblTraffic::Out).build();
@@ -214,27 +212,25 @@ async fn jsonrpc_rsp_writer(
             Some(kfk_rsp) = kfk_rsp_rcv.recv() => {
                 let jrp_rsp = match kfk_rsp {
                     KfkRsp::Send(Ctx(ctx, offsets)) => {
-                        metrics.latency(&labels.method(LblMethod::Send).tap(ctx.tap), ctx.ts);
+                        metrics.time(&labels.method(LblMethod::Send).tap(ctx.tap), ctx.ts);
                          JrpRsp::res(ctx.id, k2j_rsp_send(offsets))
                     }
                     KfkRsp::Fetch(Ctx(ctx, records_and_offsets)) => {
-                        metrics.latency(&labels.method(LblMethod::Fetch).tap(ctx.tap), ctx.ts);
+                        metrics.time(&labels.method(LblMethod::Fetch).tap(ctx.tap), ctx.ts);
                         JrpRsp::res(ctx.id, k2j_rsp_fetch(records_and_offsets, &ctx.extra))
                     }
                     KfkRsp::Offset(Ctx(ctx, offset)) => {
-                        metrics.latency(&labels.method(LblMethod::Offset).tap(ctx.tap), ctx.ts);
+                        metrics.time(&labels.method(LblMethod::Offset).tap(ctx.tap), ctx.ts);
                         JrpRsp::res(ctx.id, k2j_rsp_offset(offset))
                     }
                 };
-                let throughput = metrics.throughputs.get_or_create_owned(&labels);
-                let item = MeteredItem::new(jrp_rsp, throughput);
+                let item = MeteredItem::new(jrp_rsp, metrics.clone(), labels.clone());
                 tcp_sink.send(item).await?;
             }
             Some((id, jrp_err)) = jrp_err_rcv.recv() => {
                 let jrp_rsp = JrpRsp::err(id, jrp_err.into());
                 let labels = JrpkLabels::new(LblTier::Jsonrpc).traffic(LblTraffic::Out).build();
-                let throughput = metrics.throughputs.get_or_create_owned(&labels);
-                let item = MeteredItem::new(jrp_rsp, throughput);
+                let item = MeteredItem::new(jrp_rsp, metrics.clone(), labels);
                 tcp_sink.send(item).await?;
             }
             else => {
@@ -257,7 +253,7 @@ async fn serve_jsonrpc(
     send_buf_size: usize,
     recv_buf_size: usize,
     queue_size: usize,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
 
     set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
@@ -297,7 +293,7 @@ pub async fn listen_jsonrpc(
     recv_buf_size: usize,
     queue_size: usize,
     cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
 
     info!("bind: {:?}", bind);

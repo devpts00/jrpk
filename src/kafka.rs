@@ -9,6 +9,7 @@ use rskafka::record::{Record, RecordAndOffset};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::Instant;
 use log::info;
 use tokio::{spawn};
@@ -165,19 +166,19 @@ where
     FUN: FnOnce(IN) -> FUT {
 
     let labels = labels.traffic(LblTraffic::In);
-    metrics.throughput(labels, &input);
+    metrics.size(labels, &input);
     let timestamp = Instant::now();
     let res = func(input).await;
     let labels = labels.traffic(LblTraffic::Out);
     // TODO: add error label
     match res {
         Ok(output) => {
-            metrics.latency(labels, timestamp);
-            metrics.throughput(labels, &output);
+            metrics.time(labels, timestamp);
+            metrics.size(labels, &output);
             Ok(output)
         },
         Err(error) => {
-            metrics.latency(labels, timestamp);
+            metrics.time(labels, timestamp);
             Err(error)
         }
     }
@@ -232,7 +233,7 @@ async fn kafka_offset(
 async fn kafka_loop<C: KfkTypes>(
     tap: Tap,
     cli: PartitionClient,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
     mut rcv: Receiver<KfkReq<C>>,
 ) -> Result<(), SendError<KfkRsp<C>>> {
     let mut labels = JrpkLabels::new(LblTier::Kafka).tap(tap).build();
@@ -259,13 +260,13 @@ pub struct KfkClientCache<REQ> {
     client: Client,
     cache: Cache<Tap, Sender<REQ>>,
     queue_size: usize,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
 }
 
 impl <C: KfkTypes> KfkClientCache<KfkReq<C>>
 where C::S: Send + Sync, C::F: Send + Sync, C::O: Send + Sync, C: 'static {
 
-    pub fn new(client: Client, capacity: u64, queue_size: usize, metrics: JrpkMetrics) -> Self {
+    pub fn new(client: Client, capacity: u64, queue_size: usize, metrics: Arc<JrpkMetrics>) -> Self {
         Self { client, cache: Cache::new(capacity), queue_size, metrics }
     }
 

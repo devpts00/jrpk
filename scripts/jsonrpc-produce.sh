@@ -14,10 +14,12 @@ do
     --address=jrpk:1133 \
     --topic=${TOPIC} \
     --partition=${p} \
-    --max-frame-byte-size=1m \
+    --max-frame-byte-size=32kib \
     --metrics-uri=http://pmg:9091/metrics/job/jrpk \
     --metrics-period=1s \
-    produce &
+    produce \
+    --max-batch-byte-size=16kib \
+    --max-rec-byte-size=2kib &
     sleep 0.1
 done
 

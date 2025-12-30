@@ -94,6 +94,7 @@ services:
       - target:/jrpk/target
       - ./json:/jrpk/json
       - ./src:/jrpk/src:r
+      - ./out:/jrpk/out
       - ./scripts:/jrpk/scripts:r
       - ./Cargo.toml:/jrpk/Cargo.toml
       - ./Cargo.lock:/jrpk/Cargo.lock

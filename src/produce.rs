@@ -1,8 +1,8 @@
 use crate::async_clean_return;
-use crate::codec::{LinesCodec, MeteredItem};
+use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::model::{JrpBytes, JrpData, JrpRecSend, JrpReq, JrpRsp};
-use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
+use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{url_append_tap, Tap};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
@@ -17,11 +17,11 @@ use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio::try_join;
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, info, instrument};
 
 type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>>;
 
-#[instrument(ret, skip(metrics, tcp_sink))]
+#[instrument(ret, skip(metrics, times, tcp_sink))]
 pub async fn producer_req_writer(
     tap: Tap,
     path: FastStr,
@@ -29,7 +29,7 @@ pub async fn producer_req_writer(
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_size: usize,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpkMeteredProdReq<'_>>,
 ) -> Result<(), JrpkError> {
@@ -38,34 +38,34 @@ pub async fn producer_req_writer(
         .traffic(LblTraffic::Out)
         .tap(tap.clone())
         .build();
-    let throughput = metrics.throughputs.get_or_create_owned(&labels);
     let file = async_clean_return!(tokio::fs::File::open(path.as_str()).await, tcp_sink.close().await);
-    let reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
+    let reader = tokio::io::BufReader::with_capacity(max_frame_size, file);
     let codec = LinesCodec::new_with_max_length(max_frame_size);
     let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
     let mut id: usize = 0;
     let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
     let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
-    let mut size: usize = 0;
+    let mut batch_size: usize = 0;
     while let Some(result) = file_stream.next().await {
         let tap = tap.clone();
         let frame = result?;
         let json: &RawValue = unsafe { async_clean_return!( JrpBytes::from_bytes(&frame), tcp_sink.close().await) };
         let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
         let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
-        size += frame.len();
+        batch_size += frame.len();
         frames.push(frame);
         records.push(jrp_rec);
-        if size > max_batch_size - max_rec_size || records.len() >= max_batch_rec_count {
+        if batch_size > max_batch_size - max_rec_size || records.len() >= max_batch_rec_count {
+            info!("produce, batch-size: {}, max-rec-size: {}", batch_size, max_rec_size);
             let jrp_req = JrpReq::send(id, tap.topic, tap.partition, records);
             records = Vec::with_capacity(max_batch_rec_count);
             let jrp_bytes = JrpBytes::new(jrp_req, frames);
             frames = Vec::with_capacity(max_batch_rec_count);
             times.insert(id, Instant::now()).await;
-            let metered_item = JrpkMeteredProdReq::new(jrp_bytes, throughput.clone());
+            let metered_item = JrpkMeteredProdReq::new(jrp_bytes, metrics.clone(), labels.clone());
             async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
             id += 1;
-            size = 0;
+            batch_size = 0;
         }
     }
 
@@ -73,7 +73,7 @@ pub async fn producer_req_writer(
         let jrp_req = JrpReq::send(id, tap.topic, tap.partition, records);
         let jrp_bytes = JrpBytes::new(jrp_req, frames);
         times.insert(id, Instant::now()).await;
-        let metered_item = JrpkMeteredProdReq::new(jrp_bytes, throughput);
+        let metered_item = JrpkMeteredProdReq::new(jrp_bytes, metrics, labels);
         async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
     }
 
@@ -82,10 +82,10 @@ pub async fn producer_req_writer(
     Ok(())
 }
 
-#[instrument(ret, skip(metrics, tcp_stream))]
+#[instrument(ret, skip(metrics, times, tcp_stream))]
 pub async fn producer_rsp_reader(
     tap: Tap,
-    metrics: JrpkMetrics,
+    metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
 ) -> Result<(), JrpkError> {
@@ -94,16 +94,13 @@ pub async fn producer_rsp_reader(
         .traffic(LblTraffic::In)
         .tap(tap)
         .build();
-    let throughput = metrics.throughputs.get_or_create_owned(&labels);
-    let latency = metrics.latencies.get_or_create_owned(&labels);
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
-        let length = frame.len() as u64;
+        metrics.size(&labels, &frame);
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
-        throughput.inc_by(length);
         if let Some(ts) = times.remove(&id).await {
-            latency.observe(ts.elapsed().as_secs_f64());
+            metrics.time(&labels, ts);
         }
         match jrp_rsp.take_result() {
             Ok(data) => {
@@ -117,7 +114,7 @@ pub async fn producer_rsp_reader(
     Ok(())
 }
 
-#[instrument(ret, err)]
+#[instrument(ret, err, skip(metrics, metrics_url))]
 pub async fn produce(
     address: FastStr,
     tap: Tap,
@@ -125,8 +122,8 @@ pub async fn produce(
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,
-    max_rec_byte_size: usize,
-    metrics: JrpkMetrics,
+    max_rec_size: usize,
+    metrics: Arc<JrpkMetrics>,
     mut metrics_url: Url,
     metrics_period: Duration,
 ) -> Result<(), JrpkError> {
@@ -136,7 +133,7 @@ pub async fn produce(
     let ph = spawn_push_prometheus(
         metrics_url,
         metrics_period,
-        metrics.registry.clone()
+        metrics.clone()
     );
 
     let stream = TcpStream::connect(address.as_str()).await?;
@@ -150,7 +147,7 @@ pub async fn produce(
             max_frame_size,
             max_batch_rec_count,
             max_batch_size,
-            max_rec_byte_size,
+            max_rec_size,
             metrics.clone(),
             times.clone(),
             tcp_sink
