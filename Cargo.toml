@@ -38,3 +38,4 @@ strum = { version = "0.27.2", features = ["derive"] }
 axum = { version = "0.8.7", features = ["http1", "tokio", "query"] }
 axum-extra = { version = "0.12.2", features = ["json-lines"] }
 reqwest = "0.12.24"
+console = "0.16.2"

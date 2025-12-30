@@ -6,12 +6,14 @@ use socket2::SockRef;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::str::from_utf8;
+use console::Term;
+use futures_util::future::err;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
@@ -85,6 +87,16 @@ pub async fn join_with_signal<F: Future>(f: F) {
         },
         _ = tokio::signal::ctrl_c() => {
             info!("signal, exiting...");
+        }
+    }
+}
+
+pub async fn join_with_quit<F: Future>(f: F) {
+    select! {
+        _ = f => {
+        },
+        _ = quit() => {
+            info!("quit...");
         }
     }
 }
@@ -202,4 +214,12 @@ pub fn url_append_tap(url: &mut Url, tap: &Tap) -> Result<(), JrpkError> {
             Err(JrpkError::Url)
         }
     }
+}
+
+pub async fn quit() -> Result<(), std::io::Error> {
+    tokio::task::spawn_blocking(|| {
+        let term = Term::stdout();
+        while term.read_char()? != 'q' {};
+        Ok(())
+    }).await?
 }

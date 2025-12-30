@@ -19,7 +19,7 @@ use crate::jsonrpc::{listen_jsonrpc, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkReq};
 use crate::metrics::JrpkMetrics;
 use crate::produce::produce;
-use crate::util::{init_tracing, join_with_signal, Tap};
+use crate::util::{init_tracing, join_with_quit, join_with_signal, Tap};
 use clap::Parser;
 use futures::future::join_all;
 use rskafka::client::ClientBuilder;
@@ -69,7 +69,7 @@ async fn server(
         )
     );
 
-    join_with_signal(
+    join_with_quit(
         join_all(vec!(jh, hh))
     ).await
 }

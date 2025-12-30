@@ -33,8 +33,7 @@ heaptrack-server-debug: build-debug
 		-p 127.0.0.1:9999:9090 -p 127.0.0.1:1133:1133 -p 127.0.0.1:1134:1134 \
 		--name jrpk rst heaptrack --output ./out/heap ./target/debug/jrpk \
 		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
-	#echo 123
-	#heaptrack --analyze ./out/heap.gz
+	heaptrack --analyze ./out/heap.gz &
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans \
