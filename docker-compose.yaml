@@ -50,6 +50,22 @@ services:
       kfk-init:
         condition: service_completed_successfully
 
+  cad:
+    image: ghcr.io/google/cadvisor
+    privileged: true
+    profiles:
+      - env
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+
   pms:
     profiles:
       - env
