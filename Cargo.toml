@@ -22,6 +22,7 @@ tokio-stream = "0.1.17"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.142", features = ["raw_value"] }
 serde_valid = "2.0.0"
+serde-tuple-vec-map = "1.0.1"
 rskafka = "0.6.0"
 moka = { version = "0.12.10", features = ["future", "async-lock", "sync"] }
 hex = "0.4.3"

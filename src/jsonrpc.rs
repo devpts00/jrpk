@@ -2,7 +2,7 @@ use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
-use crate::model::{JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::model::{JrpCodec, JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
 use crate::util::{set_buf_sizes, Ctx, Req, Tap};
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
@@ -65,13 +65,25 @@ impl <'a> TryFrom<JrpRecSend<'a>> for Record {
 }
 
 #[inline]
+fn k2j_rec_headers(mut headers: BTreeMap<String, Vec<u8>>, codecs: &Vec<(String, JrpCodec)>) -> Result<Vec<(String, JrpData<'static>)>, JrpkError> {
+    codecs.iter()
+        .filter_map(|(key, codec)| {
+            headers.remove_entry(key).map(|(key, bytes)| {
+                JrpData::from_bytes(bytes, codec).map(|d| (key, d))
+            })
+        })
+        .collect()
+}
+
+#[inline]
 fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, codecs: &JrpCodecs) -> Result<JrpRecFetch<'static>, JrpkError> {
     let offset = rec_and_offset.offset;
     let record = rec_and_offset.record;
     let timestamp = record.timestamp;
-    let key = record.key.map(|k|JrpData::from_bytes(k, codecs.key)).transpose()?;
-    let value = record.value.map(|v|JrpData::from_bytes(v, codecs.value)).transpose()?;
-    Ok(JrpRecFetch::new(offset, timestamp, key, value))
+    let headers = k2j_rec_headers(record.headers, &codecs.headers)?;
+    let key = record.key.map(|k|JrpData::from_bytes(k, &codecs.key)).transpose()?;
+    let value = record.value.map(|v|JrpData::from_bytes(v, &codecs.value)).transpose()?;
+    Ok(JrpRecFetch::new(offset, timestamp, headers, key, value))
 }
 
 #[inline]

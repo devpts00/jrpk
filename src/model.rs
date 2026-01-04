@@ -8,12 +8,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_valid::Validate;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::slice::from_raw_parts;
 use std::str::FromStr;
 use faststr::FastStr;
-use crate::size::Size;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -79,7 +79,7 @@ impl <'a> JrpData<'a> {
         }
     }
 
-    pub fn from_bytes(bytes: Vec<u8>, codec: JrpCodec) -> Result<Self, JrpkError> {
+    pub fn from_bytes(bytes: Vec<u8>, codec: &JrpCodec) -> Result<Self, JrpkError> {
         match codec {
             JrpCodec::Json => {
                 let string = String::from_utf8(bytes)?;
@@ -113,21 +113,22 @@ pub enum JrpCodec {
     Base64,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct JrpCodecs {
     pub key: JrpCodec,
     pub value: JrpCodec,
+    pub headers: Vec<(String, JrpCodec)>,
 }
 
 impl Default for JrpCodecs {
     fn default() -> Self {
-        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json }
+        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json, headers: Vec::new() }
     }
 }
 
 impl JrpCodecs {
-    pub fn new(key: JrpCodec, value: JrpCodec) -> Self {
-        JrpCodecs { key, value }
+    pub fn new(key: JrpCodec, value: JrpCodec, headers: Vec<(String, JrpCodec)>) -> Self {
+        JrpCodecs { key, value, headers }
     }
 }
 
@@ -152,8 +153,13 @@ impl<'a> JrpRecSend<'a> {
 pub struct JrpRecFetch<'a> {
     pub offset: i64,
     pub timestamp: DateTime<Utc>,
+
+    #[serde(with = "tuple_vec_map", skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, JrpData<'a>)>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<JrpData<'a>>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<JrpData<'a>>,
 }
@@ -161,8 +167,14 @@ pub struct JrpRecFetch<'a> {
 /// JSONRPC output record can fail to be created from Kafka record.
 /// Kafka bytes might not be UTF-8 or JSON.
 impl <'a> JrpRecFetch<'a> {
-    pub fn new (offset: i64, timestamp: DateTime<Utc>, key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
-        JrpRecFetch { offset, timestamp, key, value }
+    pub fn new (
+        offset: i64,
+        timestamp: DateTime<Utc>,
+        headers: Vec<(String, JrpData<'a>)>,
+        key: Option<JrpData<'a>>,
+        value: Option<JrpData<'a>>,
+    ) -> Self {
+        JrpRecFetch { offset, timestamp, headers, key, value }
     }
 }
 
