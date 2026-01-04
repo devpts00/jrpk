@@ -23,26 +23,23 @@ build-release:
 	docker compose run --rm rst cargo build --release
 
 server-debug: build-debug
-	docker compose run --rm -it --remove-orphans \
-		-p 127.0.0.1:9999:9090 -p 127.0.0.1:1133:1133 -p 127.0.0.1:1134:1134 \
+	docker compose run --rm -it --remove-orphans -e HEAPPROFILE=/jrpk/out/heap \
 		--name jrpk rst ./target/debug/jrpk \
 		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
 
 heaptrack-server-debug: build-debug
 	docker compose run --rm -it --remove-orphans \
-		-p 127.0.0.1:9999:9090 -p 127.0.0.1:1133:1133 -p 127.0.0.1:1134:1134 \
 		--name jrpk rst heaptrack --output ./out/heap ./target/debug/jrpk \
 		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
 	heaptrack --analyze ./out/heap.gz &
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans \
-		-p 127.0.0.1:9999:9090 -p 127.0.0.1:1133:1133 -p 127.0.0.1:1134:1134 \
 		--name jrpk rst ./target/release/jrpk \
 		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134 --max-frame-byte-size=32kib
 
 client-debug-consume: build-debug
-	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 32
 
 client-release-consume: build-release
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 32
@@ -71,3 +68,5 @@ version:
 bash:
 	docker compose run --rm rst bash
 
+pprof:
+	docker compose run --rm --remove-orphans -p 127.0.0.1:8888:8080 rst /root/go/bin/pprof -http=0.0.0.0:8080 /jrpk/target/debug/jrpk /jrpk/out/heap.0001.heap

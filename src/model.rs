@@ -13,6 +13,7 @@ use std::ops::Range;
 use std::slice::from_raw_parts;
 use std::str::FromStr;
 use faststr::FastStr;
+use crate::size::Size;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

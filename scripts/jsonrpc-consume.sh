@@ -22,7 +22,7 @@ do
       consume \
       --from=earliest \
       --until=latest \
-      --max-batch-byte-size=128KiB \
+      --max-batch-byte-size=32KiB \
       --max-wait-ms=50 &
     sleep 0.1
   done
