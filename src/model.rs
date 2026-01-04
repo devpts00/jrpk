@@ -154,7 +154,7 @@ pub struct JrpRecFetch<'a> {
     pub offset: i64,
     pub timestamp: DateTime<Utc>,
 
-    #[serde(with = "tuple_vec_map", skip_serializing_if = "Vec::is_empty")]
+    #[serde(with = "tuple_vec_map", skip_serializing_if = "Vec::is_empty", default)]
     pub headers: Vec<(String, JrpData<'a>)>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
