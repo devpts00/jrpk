@@ -92,7 +92,7 @@ async fn consumer_req_writer<'a>(
         let tap = tap.clone();
         // TODO: support all codecs
         let codecs = JrpCodecs::default();
-        let codecs = JrpCodecs::new(JrpCodec::Base64, JrpCodec::Base64, Vec::new());
+        //let codecs = JrpCodecs::new(JrpCodec::Base64, JrpCodec::Base64, Vec::new());
         let bytes = 1..max_batch_size;
         let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, codecs);
         let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, metrics.clone(), labels.clone());

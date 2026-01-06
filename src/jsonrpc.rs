@@ -14,6 +14,7 @@ use std::net::SocketAddr;
 use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::Instant;
+use base64::DecodeError;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -57,22 +58,29 @@ impl KfkTypes for JrpCtxTypes {
 
 impl <'a> TryFrom<JrpRecSend<'a>> for Record {
     type Error = JrpkError;
-    fn try_from(value: JrpRecSend) -> Result<Self, Self::Error> {
-        let key: Option<Vec<u8>> = value.key.map(|k| k.into_bytes()).transpose()?;
-        let value: Option<Vec<u8>> = value.value.map(|v| v.into_bytes()).transpose()?;
-        Ok(Record { key, value, headers: BTreeMap::new(), timestamp: Utc::now() })
+    fn try_from(jrp_rec_snd: JrpRecSend) -> Result<Self, Self::Error> {
+        let headers = jrp_rec_snd.headers.into_iter()
+            .map(|(k, v)|
+                v.into_bytes().map(|b| (k, b))
+            )
+            .collect::<Result<BTreeMap<String, Vec<u8>>, DecodeError>>();
+        let headers = headers?;
+        let key: Option<Vec<u8>> = jrp_rec_snd.key
+            .map(|k| k.into_bytes())
+            .transpose()?;
+        let value: Option<Vec<u8>> = jrp_rec_snd.value
+            .map(|v| v.into_bytes())
+            .transpose()?;
+        Ok(Record { key, value, headers, timestamp: Utc::now() })
     }
 }
 
 #[inline]
-fn k2j_rec_headers(mut headers: BTreeMap<String, Vec<u8>>, codecs: &Vec<(String, JrpCodec)>) -> Result<Vec<(String, JrpData<'static>)>, JrpkError> {
-    codecs.iter()
-        .filter_map(|(key, codec)| {
-            headers.remove_entry(key).map(|(key, bytes)| {
-                JrpData::from_bytes(bytes, codec).map(|d| (key, d))
-            })
-        })
-        .collect()
+fn k2j_rec_headers(headers: BTreeMap<String, Vec<u8>>, codecs: &BTreeMap<String, JrpCodec>) -> Result<Vec<(String, JrpData<'static>)>, JrpkError> {
+    headers.into_iter().map(|(header, bytes)| {
+        let codec = codecs.get(&header).unwrap_or(&JrpCodec::Base64);
+        JrpData::from_bytes(bytes, codec).map(|data| (header, data))
+    }).collect()
 }
 
 #[inline]

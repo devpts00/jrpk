@@ -51,7 +51,7 @@ pub async fn producer_req_writer(
         let frame = result?;
         let json: &RawValue = unsafe { async_clean_return!( JrpBytes::from_bytes(&frame), tcp_sink.close().await) };
         let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
-        let jrp_rec = JrpRecSend::new(None, Some(jrp_data));
+        let jrp_rec = JrpRecSend::new(Vec::new(), None, Some(jrp_data));
         batch_size += frame.len();
         frames.push(frame);
         records.push(jrp_rec);

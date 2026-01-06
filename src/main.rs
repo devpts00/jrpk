@@ -91,7 +91,6 @@ async fn client(
 
     match command {
         Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size} => {
-            /*
             join_with_signal(
                 spawn(
                     produce(
@@ -108,7 +107,6 @@ async fn client(
                     )
                 )
             ).await
-             */
         }
         Command::Consume { from, until, max_batch_byte_size, max_wait_ms} => {
             join_with_signal(

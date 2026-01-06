@@ -10,10 +10,9 @@ use serde_valid::Validate;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::ops::{Deref, Range};
+use std::ops::Range;
 use std::slice::from_raw_parts;
 use std::str::FromStr;
-use clap::ValueEnum;
 use faststr::FastStr;
 use strum::EnumString;
 
@@ -134,18 +133,18 @@ pub enum JrpCodec {
 pub struct JrpCodecs {
     pub key: JrpCodec,
     pub value: JrpCodec,
-    pub headers: Vec<(String, JrpCodec)>,
+    pub headers: BTreeMap<String, JrpCodec>,
 }
 
 impl JrpCodecs {
-    pub fn new(key: JrpCodec, value: JrpCodec, headers: Vec<(String, JrpCodec)>) -> Self {
+    pub fn new(key: JrpCodec, value: JrpCodec, headers: BTreeMap<String, JrpCodec>) -> Self {
         JrpCodecs { key, value, headers }
     }
 }
 
 impl Default for JrpCodecs {
     fn default() -> Self {
-        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json, headers: Vec::new() }
+        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json, headers: BTreeMap::new() }
     }
 }
 
@@ -154,13 +153,14 @@ impl Default for JrpCodecs {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(bound(deserialize = "'de: 'a"))]
 pub struct JrpRecSend<'a> {
+    pub headers: Vec<(String, JrpData<'a>)>,
     pub key: Option<JrpData<'a>>,
     pub value: Option<JrpData<'a>>,
 }
 
 impl<'a> JrpRecSend<'a> {
-    pub fn new(key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
-        Self { key, value }
+    pub fn new(headers: Vec<(String, JrpData<'a>)>,  key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
+        Self { headers, key, value }
     }
 }
 
