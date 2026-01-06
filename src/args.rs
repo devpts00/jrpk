@@ -58,7 +58,7 @@ impl FromStr for Offset {
     }
 }
 
-#[derive(Debug, Clone, EnumString)]
+#[derive(Debug, Clone, Copy, EnumString)]
 #[strum(serialize_all = "lowercase")]
 pub enum Format {
     Value,

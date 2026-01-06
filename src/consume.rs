@@ -15,7 +15,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
 use tracing::{error, info, instrument, trace};
-use crate::args::Offset;
+use crate::args::{Format, Offset};
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::model::{JrpCodec, JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
@@ -49,32 +49,41 @@ async fn write_records<'a>(
     id: usize,
     records: Vec<JrpRecFetch<'a>>,
     until: Offset,
-    writer: &mut BufWriter<File>,
-) -> Result<(), JrpkError> {
+    format: Format,
+    mut writer: BufWriter<File>,
+) -> Result<BufWriter<File>, JrpkError> {
     block_in_place(|| {
         for record in records {
             if less_record_offset(&record, until) {
-                match record.value {
-                    Some(data) => {
-                        trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
-                        // TODO: differentiate between binary and text data
-                        let buf = data.as_text()?;
-                        writer.write_all(buf.as_bytes())?;
-                        writer.write_all(b"\n")?;
+                trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
+                match format {
+                    Format::Value => {
+                        match record.value {
+                            Some(data) => {
+                                let buf = data.as_text()?;
+                                writer.write_all(buf.as_bytes())?;
+                                writer.write_all(b"\n")?;
+                            }
+                            None => {
+                                warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
+                            }
+                        }
                     }
-                    None => {
-                        warn!("record, id: {}, offset: {} - EMPTY", id, record.offset);
+                    Format::Record => {
+                        serde_json::to_writer(&mut writer, &record)?;
+                        writer.write_all(b"\n")?;
                     }
                 }
             }
         }
-        Ok(())
+        Ok(writer)
     })
 }
 
 #[instrument(ret, err, skip(metrics, times, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     tap: Tap,
+    codecs: JrpCodecs,
     max_batch_size: i32,
     max_wait_ms: i32,
     metrics: Arc<JrpkMetrics>,
@@ -90,11 +99,8 @@ async fn consumer_req_writer<'a>(
     let mut id = 0;
     while let Some(offset) = offset_rcv.recv().await {
         let tap = tap.clone();
-        // TODO: support all codecs
-        let codecs = JrpCodecs::default();
-        //let codecs = JrpCodecs::new(JrpCodec::Base64, JrpCodec::Base64, Vec::new());
         let bytes = 1..max_batch_size;
-        let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, codecs);
+        let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, codecs.clone());
         let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, metrics.clone(), labels.clone());
         times.insert(id, Instant::now()).await;
         tcp_sink.send(metered_item).await?;
@@ -111,6 +117,7 @@ async fn consumer_rsp_reader(
     path: FastStr,
     from: Offset,
     until: Offset,
+    format: Format,
     metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     offset_snd: Sender<Offset>,
@@ -146,7 +153,7 @@ async fn consumer_rsp_reader(
                                 offset_snd.send(Offset::Offset(last.offset + 1)).await?;
                             }
                         }
-                        write_records(id, records, until, &mut writer).await?;
+                        writer = write_records(id, records, until, format, writer).await?;
                         if done {
                             break;
                         }
@@ -178,13 +185,14 @@ pub async fn consume(
     path: FastStr,
     from: Offset,
     until: Offset,
+    format: Format,
+    codecs: JrpCodecs,
     max_batch_size: i32,
     max_wait_ms: i32,
     max_frame_size: usize,
     metrics: Arc<JrpkMetrics>,
     mut metrics_url: Url,
     metrics_period: Duration,
-
 ) -> Result<(), JrpkError> {
 
     url_append_tap(&mut metrics_url, &tap)?;
@@ -204,6 +212,7 @@ pub async fn consume(
     let wh = spawn(
         consumer_req_writer(
             tap.clone(),
+            codecs,
             max_batch_size,
             max_wait_ms,
             metrics.clone(),
@@ -219,6 +228,7 @@ pub async fn consume(
             path,
             from,
             until,
+            format,
             metrics,
             times,
             offset_snd,

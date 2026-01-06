@@ -32,6 +32,7 @@ use reqwest::Url;
 use tokio;
 use tokio::spawn;
 use tracing::{info, instrument};
+use crate::model::JrpCodecs;
 
 #[instrument]
 async fn server(
@@ -84,6 +85,7 @@ async fn client(
     metrics_url: Url,
     metrics_period: DurationHuman,
     format: Format,
+    codecs: JrpCodecs,
     command: Command,
 ) {
     let metrics = Arc::new(JrpkMetrics::new());
@@ -117,6 +119,8 @@ async fn client(
                         path,
                         from,
                         until,
+                        format,
+                        codecs,
                         max_batch_byte_size.as_u64() as i32,
                         max_wait_ms,
                         max_frame_byte_size.as_u64() as usize,
@@ -191,6 +195,8 @@ fn main() {
                 .build()
                 .unwrap();
 
+            let codecs = JrpCodecs::new(key_codec, value_codec, header_codecs);
+
             rt.block_on(
                 client(
                     path,
@@ -201,6 +207,7 @@ fn main() {
                     metrics_uri,
                     metrics_period,
                     format,
+                    codecs,
                     command
                 )
             );

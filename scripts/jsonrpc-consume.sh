@@ -19,6 +19,10 @@ do
       --partition=${p} \
       --metrics-uri=http://pmg:9091/metrics/job/jrpk \
       --metrics-period=1s \
+      --format record \
+      --header-codecs abc:json,xyz:base64 \
+      --key-codec str \
+      --value-codec str \
       consume \
       --from=earliest \
       --until=latest \

@@ -1,7 +1,7 @@
 use crate::async_clean_return;
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
-use crate::model::{JrpBytes, JrpData, JrpRecSend, JrpReq, JrpRsp};
+use crate::model::{JrpBytes, JrpCodecs, JrpData, JrpRecSend, JrpReq, JrpRsp};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{url_append_tap, Tap};
 use bytes::Bytes;
@@ -18,6 +18,7 @@ use tokio::net::TcpStream;
 use tokio::try_join;
 use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, info, instrument};
+use crate::args::Format;
 
 type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>>;
 
