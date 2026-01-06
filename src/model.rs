@@ -10,10 +10,12 @@ use serde_valid::Validate;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::ops::Range;
+use std::ops::{Deref, Range};
 use std::slice::from_raw_parts;
 use std::str::FromStr;
+use clap::ValueEnum;
 use faststr::FastStr;
+use strum::EnumString;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -38,6 +40,20 @@ impl <'a> JrpData<'a> {
     }
     pub fn base64(str: String) -> Self {
         JrpData::Base64(Cow::Owned(str))
+    }
+
+    pub fn as_text(self: &'a JrpData<'a>) -> Result<Cow<'a, str>, JrpkError> {
+        match self {
+            JrpData::Json(json) => {
+                Ok(Cow::Borrowed(json.get()))
+            }
+            JrpData::Str(text) => {
+                Ok(Cow::Borrowed(text.as_ref()))
+            }
+            JrpData::Base64(text) => {
+                Ok(Cow::Borrowed(text.as_ref()))
+            }
+        }
     }
 
     /// Returns byte slice of parsed JSON fragment
@@ -102,8 +118,9 @@ impl <'a> JrpData<'a> {
 }
 
 /// Fetch codec defines how to decode Kafka bytes to JSON
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, EnumString)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum JrpCodec {
     /// bytes will be interpreted as utf-8 and output as they are, assuming valid JSON fragment
     Json,
@@ -120,15 +137,15 @@ pub struct JrpCodecs {
     pub headers: Vec<(String, JrpCodec)>,
 }
 
-impl Default for JrpCodecs {
-    fn default() -> Self {
-        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json, headers: Vec::new() }
-    }
-}
-
 impl JrpCodecs {
     pub fn new(key: JrpCodec, value: JrpCodec, headers: Vec<(String, JrpCodec)>) -> Self {
         JrpCodecs { key, value, headers }
+    }
+}
+
+impl Default for JrpCodecs {
+    fn default() -> Self {
+        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json, headers: Vec::new() }
     }
 }
 

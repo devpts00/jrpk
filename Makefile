@@ -39,7 +39,7 @@ server-release: build-release
 		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134 --max-frame-byte-size=32kib
 
 client-debug-consume: build-debug
-	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 32
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1
 
 client-release-consume: build-release
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 32

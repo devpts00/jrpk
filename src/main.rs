@@ -12,7 +12,7 @@ mod http;
 mod size;
 
 use std::net::SocketAddr;
-use crate::args::{Command, Mode};
+use crate::args::{Command, Format, Mode};
 use crate::consume::consume;
 use crate::http::listen_http;
 use crate::jsonrpc::{listen_jsonrpc, JrpCtxTypes};
@@ -83,6 +83,7 @@ async fn client(
     max_frame_byte_size: ByteSize,
     metrics_url: Url,
     metrics_period: DurationHuman,
+    format: Format,
     command: Command,
 ) {
     let metrics = Arc::new(JrpkMetrics::new());
@@ -90,6 +91,7 @@ async fn client(
 
     match command {
         Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size} => {
+            /*
             join_with_signal(
                 spawn(
                     produce(
@@ -103,10 +105,10 @@ async fn client(
                         metrics,
                         metrics_url,
                         Duration::from(&metrics_period),
-
                     )
                 )
             ).await
+             */
         }
         Command::Consume { from, until, max_batch_byte_size, max_wait_ms} => {
             join_with_signal(
@@ -177,9 +179,12 @@ fn main() {
             max_frame_byte_size,
             metrics_uri,
             metrics_period,
+            format,
+            value_codec,
+            key_codec,
+            header_codecs,
             command
         } => {
-            info!("client, address: {}, topic: {}, partition: {:?}, path: {:?}, command: {:?}", address, topic, partition, path, command);
 
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
@@ -197,6 +202,7 @@ fn main() {
                     max_frame_byte_size,
                     metrics_uri,
                     metrics_period,
+                    format,
                     command
                 )
             );

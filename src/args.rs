@@ -1,14 +1,20 @@
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use bytesize::ByteSize;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
-use clap::{Parser, Subcommand};
+use clap::{value_parser, Parser, Subcommand};
 use clap_duration::duration_range_value_parse;
 use duration_human::{DurationHuman, DurationHumanValidator};
 use faststr::FastStr;
 use reqwest::Url;
+use serde_json::from_str;
+use serde_keyvalue::from_key_values;
+use strum::EnumString;
+use tracing::info;
 use crate::error::JrpkError;
+use crate::model::JrpCodec;
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
@@ -52,6 +58,29 @@ impl FromStr for Offset {
     }
 }
 
+#[derive(Debug, Clone, EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum Format {
+    Value,
+    Record
+}
+
+#[inline]
+fn parse_header_codecs(s: &str) -> Result<BTreeMap<String, JrpCodec>, JrpkError> {
+    info!("header_codecs: {}", s);
+    let x = s.split(',').map(|kv| {
+        kv.split_once(':')
+            .ok_or(JrpkError::Parse(format!("invalid header: {}", kv)))
+            .and_then(|(k, v)| {
+                JrpCodec::from_str(v)
+                    .map(|c| (k.to_string(), c))
+                    .map_err(|e| JrpkError::Parse(format!("invalid header: {}", e)))
+            })
+    }).collect();
+    info!("header_codecs: {:?}", x);
+    x
+}
+
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     Produce {
@@ -63,9 +92,9 @@ pub enum Command {
         max_rec_byte_size: ByteSize,
     },
     Consume {
-        #[arg(long, default_value = "earliest", value_parser = clap::value_parser!(Offset))]
+        #[arg(long, default_value = "earliest", value_parser = value_parser!(Offset))]
         from: Offset,
-        #[arg(long, default_value = "latest", value_parser = clap::value_parser!(Offset))]
+        #[arg(long, default_value = "latest", value_parser = value_parser!(Offset))]
         until: Offset,
         #[arg(long, default_value = "64KiB")]
         max_batch_byte_size: ByteSize,
@@ -107,6 +136,14 @@ pub enum Mode {
         metrics_uri: Url,
         #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
         metrics_period: DurationHuman,
+        #[arg(long, default_value = "value")]
+        format: Format,
+        #[arg(long, default_value = "str")]
+        key_codec: JrpCodec,
+        #[arg(long, default_value = "json")]
+        value_codec: JrpCodec,
+        #[arg(long, value_parser = parse_header_codecs)]
+        header_codecs: BTreeMap<String, JrpCodec>,
         #[command(subcommand)]
         command: Command,
     }

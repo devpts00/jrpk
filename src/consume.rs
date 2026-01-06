@@ -14,11 +14,11 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
-use tracing::{error, instrument, trace};
+use tracing::{error, info, instrument, trace};
 use crate::args::Offset;
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
-use crate::model::{JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
+use crate::model::{JrpCodec, JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{url_append_tap, Tap};
 
@@ -58,8 +58,8 @@ async fn write_records<'a>(
                     Some(data) => {
                         trace!("record, id: {}, timestamp: {}, offset: {}", id, 0, record.offset);
                         // TODO: differentiate between binary and text data
-                        let buf = data.as_bytes()?;
-                        writer.write_all(buf.as_ref())?;
+                        let buf = data.as_text()?;
+                        writer.write_all(buf.as_bytes())?;
                         writer.write_all(b"\n")?;
                     }
                     None => {
@@ -92,6 +92,7 @@ async fn consumer_req_writer<'a>(
         let tap = tap.clone();
         // TODO: support all codecs
         let codecs = JrpCodecs::default();
+        let codecs = JrpCodecs::new(JrpCodec::Base64, JrpCodec::Base64, Vec::new());
         let bytes = 1..max_batch_size;
         let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, codecs);
         let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, metrics.clone(), labels.clone());
@@ -125,7 +126,6 @@ async fn consumer_rsp_reader(
     offset_snd.send(from).await?;
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
-        let length = frame.len();
         let jrp_rsp = serde_json::from_slice::<JrpRsp>(frame.as_ref())?;
         let id = jrp_rsp.id;
         match jrp_rsp.take_result() {

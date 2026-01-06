@@ -7,7 +7,7 @@ export PARTITIONS=$4
 
 START_TIME=$EPOCHREALTIME
 
-for ((i = 0; i < 100; i++))
+for ((i = 0; i < 1; i++))
 do
   for ((p = 0; p < $PARTITIONS; p++))
   do
@@ -27,7 +27,7 @@ do
     sleep 0.1
   done
   wait
-  rm -f ./json/${FILE}-*.json
+  #rm -f ./json/${FILE}-*.json
 done
 
 END_TIME=$EPOCHREALTIME
