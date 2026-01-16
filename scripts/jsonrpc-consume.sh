@@ -19,19 +19,21 @@ do
       --partition=${p} \
       --metrics-uri=http://pmg:9091/metrics/job/jrpk \
       --metrics-period=1s \
-      --format record \
-      --header-codecs abc:json,xyz:base64 \
-      --key-codec str \
-      --value-codec str \
       consume \
       --from=earliest \
       --until=latest \
       --max-batch-byte-size=32KiB \
-      --max-wait-ms=50 &
+      --max-wait-ms=50 \
+      value \
+      --codec=json &
+#      record \
+#      --key=str \
+#      --value=json \
+#      --header-default=str &
     sleep 0.1
   done
   wait
-  #rm -f ./json/${FILE}-*.json
+  rm -f ./json/${FILE}-*.json
 done
 
 END_TIME=$EPOCHREALTIME
