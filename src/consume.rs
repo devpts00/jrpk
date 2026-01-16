@@ -14,15 +14,21 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
-use tracing::{error, info, instrument, trace};
-use crate::args::{Format, Offset};
+use tracing::{error, instrument, trace};
+use crate::args::{Offset, Save};
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
-use crate::model::{JrpCodec, JrpCodecs, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData};
+use crate::model::{JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{url_append_tap, Tap};
 
 type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
+
+#[derive(Debug, Clone, Copy)]
+pub enum Format {
+    Value,
+    Record
+}
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -83,7 +89,7 @@ async fn write_records<'a>(
 #[instrument(ret, err, skip(metrics, times, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     tap: Tap,
-    codecs: JrpCodecs,
+    selector: JrpSelector,
     max_batch_size: i32,
     max_wait_ms: i32,
     metrics: Arc<JrpkMetrics>,
@@ -100,7 +106,7 @@ async fn consumer_req_writer<'a>(
     while let Some(offset) = offset_rcv.recv().await {
         let tap = tap.clone();
         let bytes = 1..max_batch_size;
-        let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, codecs.clone());
+        let jrp_req_fetch = JrpReq::fetch(id, tap.topic, tap.partition, a2j_offset(offset), bytes, max_wait_ms, selector.clone());
         let metered_item = JrpkMeteredConsReq::new(jrp_req_fetch, metrics.clone(), labels.clone());
         times.insert(id, Instant::now()).await;
         tcp_sink.send(metered_item).await?;
@@ -109,7 +115,6 @@ async fn consumer_req_writer<'a>(
     tcp_sink.flush().await?;
     Ok(())
 }
-
 
 #[instrument(ret, err, skip(metrics, times, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
@@ -178,6 +183,18 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
+fn a2j_selector(save: Save) -> (Format, JrpSelector) {
+    match save {
+        Save::Value { codec } => {
+            (Format::Value, JrpSelector::new(None, codec, Vec::new(), None))
+        }
+        Save::Record { key, value, header, header_default } => {
+            let header = header.into_iter().map(|nc| nc.into()).collect();
+            (Format::Record, JrpSelector::new(key, value, header, header_default))
+        }
+    }
+}
+
 #[instrument(ret, err, skip(metrics, metrics_url))]
 pub async fn consume(
     address: FastStr,
@@ -185,8 +202,7 @@ pub async fn consume(
     path: FastStr,
     from: Offset,
     until: Offset,
-    format: Format,
-    codecs: JrpCodecs,
+    save: Save,
     max_batch_size: i32,
     max_wait_ms: i32,
     max_frame_size: usize,
@@ -208,11 +224,12 @@ pub async fn consume(
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
+    let (format, selector) = a2j_selector(save);
 
     let wh = spawn(
         consumer_req_writer(
             tap.clone(),
-            codecs,
+            selector,
             max_batch_size,
             max_wait_ms,
             metrics.clone(),

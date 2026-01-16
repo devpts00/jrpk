@@ -12,11 +12,11 @@ mod http;
 mod size;
 
 use std::net::SocketAddr;
-use crate::args::{Command, Format, Mode};
+use crate::args::{Command, Mode};
 use crate::consume::consume;
 use crate::http::listen_http;
-use crate::jsonrpc::{listen_jsonrpc, JrpCtxTypes};
-use crate::kafka::{KfkClientCache, KfkReq};
+use crate::jsonrpc::{listen_jsonrpc};
+use crate::kafka::{KfkClientCache};
 use crate::metrics::JrpkMetrics;
 use crate::produce::produce;
 use crate::util::{init_tracing, join_with_quit, join_with_signal, Tap};
@@ -32,7 +32,6 @@ use reqwest::Url;
 use tokio;
 use tokio::spawn;
 use tracing::{info, instrument};
-use crate::model::JrpCodecs;
 
 #[instrument]
 async fn server(
@@ -84,21 +83,20 @@ async fn client(
     max_frame_byte_size: ByteSize,
     metrics_url: Url,
     metrics_period: DurationHuman,
-    format: Format,
-    codecs: JrpCodecs,
     command: Command,
 ) {
     let metrics = Arc::new(JrpkMetrics::new());
     let tap = Tap::new(topic, partition);
 
     match command {
-        Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size} => {
+        Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size, load } => {
             join_with_signal(
                 spawn(
                     produce(
                         address,
                         tap,
                         path,
+                        load,
                         max_frame_byte_size.as_u64() as usize,
                         max_batch_rec_count as usize,
                         max_batch_byte_size.as_u64() as usize,
@@ -110,7 +108,7 @@ async fn client(
                 )
             ).await
         }
-        Command::Consume { from, until, max_batch_byte_size, max_wait_ms} => {
+        Command::Consume { from, until, max_batch_byte_size, max_wait_ms, save } => {
             join_with_signal(
                 spawn(
                     consume(
@@ -119,8 +117,7 @@ async fn client(
                         path,
                         from,
                         until,
-                        format,
-                        codecs,
+                        save,
                         max_batch_byte_size.as_u64() as i32,
                         max_wait_ms,
                         max_frame_byte_size.as_u64() as usize,
@@ -181,10 +178,6 @@ fn main() {
             max_frame_byte_size,
             metrics_uri,
             metrics_period,
-            format,
-            value_codec,
-            key_codec,
-            header_codecs,
             command
         } => {
 
@@ -195,8 +188,6 @@ fn main() {
                 .build()
                 .unwrap();
 
-            let codecs = JrpCodecs::new(key_codec, value_codec, header_codecs);
-
             rt.block_on(
                 client(
                     path,
@@ -206,8 +197,6 @@ fn main() {
                     max_frame_byte_size,
                     metrics_uri,
                     metrics_period,
-                    format,
-                    codecs,
                     command
                 )
             );

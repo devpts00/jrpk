@@ -8,10 +8,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_valid::Validate;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
-use std::slice::from_raw_parts;
 use std::str::FromStr;
 use faststr::FastStr;
 use strum::EnumString;
@@ -130,21 +128,29 @@ pub enum JrpCodec {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct JrpCodecs {
-    pub key: JrpCodec,
+pub struct JrpSelector {
+    
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<JrpCodec>,
+    
     pub value: JrpCodec,
-    pub headers: BTreeMap<String, JrpCodec>,
+    
+    #[serde(with = "tuple_vec_map")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(FastStr, JrpCodec)>,
+    
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_default: Option<JrpCodec>,
 }
 
-impl JrpCodecs {
-    pub fn new(key: JrpCodec, value: JrpCodec, headers: BTreeMap<String, JrpCodec>) -> Self {
-        JrpCodecs { key, value, headers }
-    }
-}
-
-impl Default for JrpCodecs {
-    fn default() -> Self {
-        JrpCodecs { key: JrpCodec::Str, value: JrpCodec::Json, headers: BTreeMap::new() }
+impl JrpSelector {
+    pub fn new(
+        key: Option<JrpCodec>,
+        value: JrpCodec,
+        headers: Vec<(FastStr, JrpCodec)>,
+        header_default: Option<JrpCodec>,
+    ) -> Self {
+        JrpSelector { key, value, headers, header_default }
     }
 }
 
@@ -153,14 +159,17 @@ impl Default for JrpCodecs {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(bound(deserialize = "'de: 'a"))]
 pub struct JrpRecSend<'a> {
-    pub headers: Vec<(String, JrpData<'a>)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<JrpData<'a>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<JrpData<'a>>,
+    #[serde(default, with = "tuple_vec_map", skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, JrpData<'a>)>,
 }
 
 impl<'a> JrpRecSend<'a> {
-    pub fn new(headers: Vec<(String, JrpData<'a>)>,  key: Option<JrpData<'a>>, value: Option<JrpData<'a>>) -> Self {
-        Self { headers, key, value }
+    pub fn new(key: Option<JrpData<'a>>, value: Option<JrpData<'a>>, headers: Vec<(String, JrpData<'a>)>) -> Self {
+        Self { key, value, headers }
     }
 }
 
@@ -170,12 +179,12 @@ impl<'a> JrpRecSend<'a> {
 pub struct JrpRecFetch<'a> {
     pub offset: i64,
     pub timestamp: DateTime<Utc>,
-    #[serde(with = "tuple_vec_map", skip_serializing_if = "Vec::is_empty", default)]
-    pub headers: Vec<(String, JrpData<'a>)>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<JrpData<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<JrpData<'a>>,
+    #[serde(default, with = "tuple_vec_map", skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(FastStr, JrpData<'a>)>,
 }
 
 /// JSONRPC output record can fail to be created from Kafka record.
@@ -184,11 +193,11 @@ impl <'a> JrpRecFetch<'a> {
     pub fn new (
         offset: i64,
         timestamp: DateTime<Utc>,
-        headers: Vec<(String, JrpData<'a>)>,
         key: Option<JrpData<'a>>,
         value: Option<JrpData<'a>>,
+        headers: Vec<(FastStr, JrpData<'a>)>,
     ) -> Self {
-        JrpRecFetch { offset, timestamp, headers, key, value }
+        JrpRecFetch { offset, timestamp, key, value, headers }
     }
 }
 
@@ -277,7 +286,7 @@ pub struct JrpParams<'a> {
     pub records: Option<Vec<JrpRecSend<'a>>>,
     pub bytes: Option<Range<i32>>,
     pub max_wait_ms: Option<i32>,
-    pub codecs: Option<JrpCodecs>,
+    pub selector: Option<JrpSelector>,
 }
 
 impl <'a> JrpParams<'a> {
@@ -289,9 +298,9 @@ impl <'a> JrpParams<'a> {
         records: Option<Vec<JrpRecSend<'a>>>,
         bytes: Option<Range<i32>>,
         max_wait_ms: Option<i32>,
-        codecs: Option<JrpCodecs>,
+        selector: Option<JrpSelector>,
     ) -> Self {
-        JrpParams { topic, partition, offset, records, bytes, max_wait_ms, codecs }
+        JrpParams { topic, partition, offset, records, bytes, max_wait_ms, selector }
     }
 
     #[inline]
@@ -300,8 +309,8 @@ impl <'a> JrpParams<'a> {
     }
 
     #[inline]
-    pub fn fetch(topic: FastStr, partition: i32, offset: JrpOffset, bytes: Range<i32>, max_wait_ms: i32, codecs: JrpCodecs) -> Self {
-        JrpParams::new(topic, partition, Some(offset), None, Some(bytes), Some(max_wait_ms), Some(codecs))
+    pub fn fetch(topic: FastStr, partition: i32, offset: JrpOffset, bytes: Range<i32>, max_wait_ms: i32, selector: JrpSelector) -> Self {
+        JrpParams::new(topic, partition, Some(offset), None, Some(bytes), Some(max_wait_ms), Some(selector))
     }
 
     #[inline]
@@ -328,8 +337,8 @@ impl <'a> JrpReq<'a> {
     pub fn offset(id: usize, topic: FastStr, partition: i32, offset: JrpOffset) -> Self {
         JrpReq::new(id, JrpMethod::Offset, JrpParams::offset(topic, partition, offset))
     }
-    pub fn fetch(id: usize, topic: FastStr, partition: i32, offset: JrpOffset, bytes: Range<i32>, max_wait_ms: i32, codecs: JrpCodecs) -> Self {
-        JrpReq::new(id, JrpMethod::Fetch, JrpParams::fetch(topic, partition, offset, bytes, max_wait_ms, codecs))
+    pub fn fetch(id: usize, topic: FastStr, partition: i32, offset: JrpOffset, bytes: Range<i32>, max_wait_ms: i32, selector: JrpSelector) -> Self {
+        JrpReq::new(id, JrpMethod::Fetch, JrpParams::fetch(topic, partition, offset, bytes, max_wait_ms, selector))
     }
     pub fn send(id: usize, topic: FastStr, partition: i32, records: Vec<JrpRecSend<'a>>) -> Self {
         JrpReq::new(id, JrpMethod::Send, JrpParams::send(topic, partition, records))
@@ -427,25 +436,15 @@ impl <'a> JrpRsp<'a> {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct JrpBytes<J: Serialize> {
-    #[serde(flatten)]
-    json: J,
-    #[serde(skip)]
-    _bytes: Vec<Bytes>,
-}
+// impl <'de, J: Serialize + Deserialize<'de>> JrpBytes<J> {
+//     pub fn from_bytes(bytes: Bytes) -> Result<Self, serde_json::Error> {
+//         // json with static lifetime is not accessible outside
+//         let buf: &'static[u8] = unsafe { mem::transmute(bytes.as_ref()) };
+//         let json: J = serde_json::from_slice(buf)?;
+//         Ok(JrpBytes { json, bytes })
+//     }
+// }
 
-impl <J: Serialize> JrpBytes<J> {
-    pub fn new(json: J, bytes: Vec<Bytes>) -> Self {
-        JrpBytes { _bytes: bytes, json }
-    }
-}
-
-impl <'a, J: Serialize + Deserialize<'a>> JrpBytes<J> {
-    pub unsafe fn from_bytes(bytes: &Bytes) -> Result<J, serde_json::Error> {
-        let p = bytes.as_ptr();
-        let buf = unsafe { from_raw_parts(p, bytes.len()) };
-        let json: J = serde_json::from_slice(buf)?;
-        Ok(json)
-    }
+pub struct JrpReqBuilder {
+    bytes: Vec<Bytes>,
 }

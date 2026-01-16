@@ -28,6 +28,9 @@ pub enum JrpkError {
     #[error("parse: {0}")]
     Parse(String),
 
+    #[error("parse: {0}")]
+    Strum(#[from] strum::ParseError),
+
     #[error("frame too big: {0}")]
     FrameTooBig(usize),
 

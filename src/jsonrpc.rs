@@ -2,7 +2,7 @@ use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
-use crate::model::{JrpCodec, JrpCodecs, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData};
+use crate::model::{JrpCodec, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData, JrpSelector};
 use crate::util::{set_buf_sizes, Ctx, Req, Tap};
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
@@ -15,6 +15,7 @@ use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::Instant;
 use base64::DecodeError;
+use faststr::FastStr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -42,8 +43,8 @@ impl JrpCtxTypes {
     pub fn send(id: usize, ts: Instant, tap: Tap) -> JrpCtx<()> {
         JrpCtx::new(id, ts, tap, ())
     }
-    pub fn fetch(id: usize, ts: Instant, tap: Tap, codecs: JrpCodecs) -> JrpCtx<JrpCodecs> {
-        JrpCtx::new(id, ts, tap, codecs)
+    pub fn fetch(id: usize, ts: Instant, tap: Tap, selector: JrpSelector) -> JrpCtx<JrpSelector> {
+        JrpCtx::new(id, ts, tap, selector)
     }
     pub fn offset(id: usize, ts: Instant, tap: Tap) -> JrpCtx<()> {
         JrpCtx::new(id, ts, tap, ())
@@ -52,7 +53,7 @@ impl JrpCtxTypes {
 
 impl KfkTypes for JrpCtxTypes {
     type S = JrpCtx<()>;
-    type F = JrpCtx<JrpCodecs>;
+    type F = JrpCtx<JrpSelector>;
     type O = JrpCtx<()>;
 }
 
@@ -76,22 +77,36 @@ impl <'a> TryFrom<JrpRecSend<'a>> for Record {
 }
 
 #[inline]
-fn k2j_rec_headers(headers: BTreeMap<String, Vec<u8>>, codecs: &BTreeMap<String, JrpCodec>) -> Result<Vec<(String, JrpData<'static>)>, JrpkError> {
-    headers.into_iter().map(|(header, bytes)| {
-        let codec = codecs.get(&header).unwrap_or(&JrpCodec::Base64);
-        JrpData::from_bytes(bytes, codec).map(|data| (header, data))
+fn k2j_data(bytes: Option<Vec<u8>>, select: Option<JrpCodec>) -> Result<Option<JrpData<'static>>, JrpkError> {
+    match (bytes, select) {
+        (Some(bytes), Some(codec)) => Ok(Some(JrpData::from_bytes(bytes, &codec)?)),
+        _ => Ok(None)
+    }
+}
+
+#[inline]
+fn k2j_rec_headers(headers: BTreeMap<String, Vec<u8>>, codecs: &Vec<(FastStr, JrpCodec)>, default: Option<JrpCodec>) -> Result<Vec<(FastStr, JrpData<'static>)>, JrpkError> {
+    headers.into_iter()
+        .filter_map(|(header, bytes)| {
+            let header = FastStr::new(header);
+            codecs.binary_search_by(|(name, _)| name.as_str().cmp(header.as_str()))
+                .ok()
+                .and_then(|idx| codecs.get(idx))
+                .map(|(_, codec)| codec)
+                .or(default.as_ref())
+                .map(|codec| JrpData::from_bytes(bytes, codec).map(|data| (header, data)))
     }).collect()
 }
 
 #[inline]
-fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, codecs: &JrpCodecs) -> Result<JrpRecFetch<'static>, JrpkError> {
+fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, selector: &JrpSelector) -> Result<JrpRecFetch<'static>, JrpkError> {
     let offset = rec_and_offset.offset;
     let record = rec_and_offset.record;
     let timestamp = record.timestamp;
-    let headers = k2j_rec_headers(record.headers, &codecs.headers)?;
-    let key = record.key.map(|k|JrpData::from_bytes(k, &codecs.key)).transpose()?;
-    let value = record.value.map(|v|JrpData::from_bytes(v, &codecs.value)).transpose()?;
-    Ok(JrpRecFetch::new(offset, timestamp, headers, key, value))
+    let key = k2j_data(record.key, selector.key)?;
+    let value =   k2j_data(record.value, Some(selector.value))?;
+    let headers = k2j_rec_headers(record.headers, &selector.headers, selector.header_default)?;
+    Ok(JrpRecFetch::new(offset, timestamp, key, value, headers))
 }
 
 #[inline]
@@ -101,10 +116,10 @@ fn k2j_rsp_send(send: Result<Vec<i64>, KfkError>) -> Result<JrpRspData<'static>,
 }
 
 #[inline]
-fn k2j_rsp_fetch(fetch: Result<(Vec<RecordAndOffset>, i64), KfkError>, codecs: &JrpCodecs) -> Result<JrpRspData<'static>, JrpkError> {
+fn k2j_rsp_fetch(fetch: Result<(Vec<RecordAndOffset>, i64), KfkError>, selector: &JrpSelector) -> Result<JrpRspData<'static>, JrpkError> {
     let (records_and_offsets, high_watermark) = fetch?;
     let records = records_and_offsets.into_iter()
-        .map(|ro| k2j_rec_fetch(ro, &codecs))
+        .map(|ro| k2j_rec_fetch(ro, selector))
         .collect::<Result<Vec<JrpRecFetch<'static>>, JrpkError>>()?;
     Ok(JrpRspData::fetch(records, high_watermark))
 }
@@ -155,8 +170,8 @@ async fn j2k_req<'a>(
             let offset: KfkOffset = params.offset.ok_or(JrpkError::Syntax("offset is missing")).map(|o| o.into())?;
             let bytes = params.bytes.ok_or(JrpkError::Syntax("bytes is missing"))?;
             let max_wait_ms = params.max_wait_ms.ok_or(JrpkError::Syntax("max_wait_ms is missing"))?;
-            let codecs = params.codecs.ok_or(JrpkError::Syntax("codecs are missing"))?;
-            let ctx = JrpCtxTypes::fetch(id, Instant::now(), tap.clone(), codecs);
+            let selector = params.selector.ok_or(JrpkError::Syntax("selector is missing"))?;
+            let ctx = JrpCtxTypes::fetch(id, Instant::now(), tap.clone(), selector);
             Ok((tap, KfkReq::Fetch(Req(Ctx(ctx, (offset, bytes, max_wait_ms)), kfk_rsp_snd))))
         }
         JrpMethod::Offset => {

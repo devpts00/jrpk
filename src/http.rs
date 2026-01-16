@@ -4,7 +4,7 @@ use crate::error::JrpkError;
 use crate::jsonrpc::{JrpCtx, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
-use crate::model::{JrpCodecs, JrpOffset};
+use crate::model::{JrpCodec, JrpOffset, JrpSelector};
 use crate::size::Size;
 use crate::util::{Ctx, Req, Tap};
 use axum::extract::{Path, Query, State};
@@ -260,7 +260,8 @@ async fn get_kafka_fetch(
     let byte_size_budget = max_bytes_size.map(|s|s.as_u64() as usize).unwrap_or(usize::MAX);
     let (rsp_snd, rsp_rcv) = tokio::sync::mpsc::channel(1);
 
-    let ctx = JrpCtxTypes::fetch(0, Instant::now(), tap, JrpCodecs::default());
+    let selector = JrpSelector::new(None, JrpCodec::Json, Vec::new(), None);
+    let ctx = JrpCtxTypes::fetch(0, Instant::now(), tap, selector);
     let req = KfkReq::Fetch(Req(Ctx(ctx, (from, min_max_bytes.clone(), max_wait_ms)), rsp_snd.clone()));
     req_snd.send(req).await?;
 

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::fmt::Display;
 use bytesize::ByteSize;
 use std::net::SocketAddr;
@@ -9,10 +9,6 @@ use clap_duration::duration_range_value_parse;
 use duration_human::{DurationHuman, DurationHumanValidator};
 use faststr::FastStr;
 use reqwest::Url;
-use serde_json::from_str;
-use serde_keyvalue::from_key_values;
-use strum::EnumString;
-use tracing::info;
 use crate::error::JrpkError;
 use crate::model::JrpCodec;
 
@@ -58,27 +54,46 @@ impl FromStr for Offset {
     }
 }
 
-#[derive(Debug, Clone, Copy, EnumString)]
-#[strum(serialize_all = "lowercase")]
-pub enum Format {
-    Value,
-    Record
+#[derive(Debug, Clone)]
+pub struct NamedCodec(FastStr, JrpCodec);
+
+impl FromStr for NamedCodec {
+    type Err = JrpkError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (name, codec) = s.split_once(':')
+            .ok_or(JrpkError::Parse(format!("invalid named codec: {}", s)))?;
+        let name = FastStr::new(name);
+        let codec = JrpCodec::from_str(codec)?;
+        Ok(NamedCodec(name, codec))
+    }
 }
 
-#[inline]
-fn parse_header_codecs(s: &str) -> Result<BTreeMap<String, JrpCodec>, JrpkError> {
-    info!("header_codecs: {}", s);
-    let x = s.split(',').map(|kv| {
-        kv.split_once(':')
-            .ok_or(JrpkError::Parse(format!("invalid header: {}", kv)))
-            .and_then(|(k, v)| {
-                JrpCodec::from_str(v)
-                    .map(|c| (k.to_string(), c))
-                    .map_err(|e| JrpkError::Parse(format!("invalid header: {}", e)))
-            })
-    }).collect();
-    info!("header_codecs: {:?}", x);
-    x
+impl From<NamedCodec> for (FastStr, JrpCodec) {
+    fn from(value: NamedCodec) -> Self {
+        let NamedCodec(name, codec) = value;
+        (name, codec)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Header {
+    All,
+    Names(Vec<FastStr>)
+}
+
+impl FromStr for Header {
+    type Err = Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "*" {
+            Ok(Header::All)
+        } else {
+            let names = s.split(',')
+                .map(|n| n.trim())
+                .filter_map(|n| if n.is_empty() { None } else { Some(FastStr::new(n)) })
+                .collect();
+            Ok(Header::Names(names))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -90,6 +105,8 @@ pub enum Command {
         max_batch_byte_size: ByteSize,
         #[arg(long, default_value = "16KiB")]
         max_rec_byte_size: ByteSize,
+        #[command(subcommand)]
+        load: Load
     },
     Consume {
         #[arg(long, default_value = "earliest", value_parser = value_parser!(Offset))]
@@ -100,6 +117,35 @@ pub enum Command {
         max_batch_byte_size: ByteSize,
         #[arg(long, default_value = "100")]
         max_wait_ms: i32,
+        #[command(subcommand)]
+        save: Save
+    }
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Load {
+    Value {
+        #[arg(long)]
+        codec: JrpCodec,
+    },
+    Record
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Save {
+    Value {
+        #[arg(long)]
+        codec: JrpCodec,
+    },
+    Record {
+        #[arg(long)]
+        key: Option<JrpCodec>,
+        #[arg(long)]
+        value: JrpCodec,
+        #[arg(long, value_delimiter = ',')]
+        header: Vec<NamedCodec>,
+        #[arg(long)]
+        header_default: Option<JrpCodec>,
     }
 }
 
@@ -136,14 +182,6 @@ pub enum Mode {
         metrics_uri: Url,
         #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
         metrics_period: DurationHuman,
-        #[arg(long, default_value = "value")]
-        format: Format,
-        #[arg(long, default_value = "str")]
-        key_codec: JrpCodec,
-        #[arg(long, default_value = "json")]
-        value_codec: JrpCodec,
-        #[arg(long, value_parser = parse_header_codecs)]
-        header_codecs: BTreeMap<String, JrpCodec>,
         #[command(subcommand)]
         command: Command,
     }

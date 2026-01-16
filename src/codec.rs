@@ -5,7 +5,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::metrics::MeteredItem;
 
 pub struct LinesCodec {
-    max_length: usize,
+    pub max_length: usize,
     position: usize,
 }
 

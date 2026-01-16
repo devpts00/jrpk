@@ -1,80 +1,150 @@
 use crate::async_clean_return;
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
-use crate::model::{JrpBytes, JrpCodecs, JrpData, JrpRecSend, JrpReq, JrpRsp};
+use crate::model::{JrpCodec, JrpData, JrpRecSend, JrpReq, JrpRsp};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{url_append_tap, Tap};
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde_json::value::RawValue;
 use std::borrow::Cow;
+use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use faststr::FastStr;
 use moka::future::Cache;
 use reqwest::Url;
+use serde::{Serialize, Serializer};
 use tokio::net::TcpStream;
 use tokio::try_join;
-use tokio_util::codec::{Framed, FramedRead};
+use tokio_util::codec::{Encoder, Framed, FramedRead};
 use tracing::{debug, error, info, instrument};
-use crate::args::Format;
+use crate::args::Load;
 
-type JrpkMeteredProdReq<'a> = MeteredItem<JrpBytes<JrpReq<'a>>>;
+type JrpRecParser = fn(&[u8]) -> Result<JrpRecSend, JrpkError>;
+
+fn b2r_json(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+    let json: &RawValue = serde_json::from_slice(buf)?;
+    let data = JrpData::Json(Cow::Borrowed(json));
+    let rec = JrpRecSend::new(None, Some(data), Vec::new());
+    Ok(rec)
+}
+
+fn b2r_text(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+    let text = from_utf8(buf)?;
+    let data = JrpData::Str(Cow::Borrowed(text));
+    let rec = JrpRecSend::new(None, Some(data), Vec::new());
+    Ok(rec)
+}
+
+fn b2r_base64(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+    let base64 = from_utf8(buf)?;
+    let data = JrpData::Base64(Cow::Borrowed(base64));
+    let rec = JrpRecSend::new(None, Some(data), Vec::new());
+    Ok(rec)
+}
+
+fn b2r_rec(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+    let rec: JrpRecSend = serde_json::from_slice(buf)?;
+    Ok(rec)
+}
+
+#[inline]
+fn b2r_rec_vec(bytes: &Vec<Bytes>, b2r: JrpRecParser) -> Result<Vec<JrpRecSend>, JrpkError> {
+    bytes.iter().map(|bytes| b2r(bytes.as_ref())).collect()
+}
+
+struct JrpReqBuilder {
+    id: usize,
+    topic: FastStr,
+    partition: i32,
+    bytes: Vec<Bytes>,
+    b2r: JrpRecParser,
+}
+
+impl JrpReqBuilder {
+    fn new(id: usize, topic: FastStr, partition: i32, bytes: Vec<Bytes>, b2r: JrpRecParser) -> Self {
+        JrpReqBuilder { id, topic, partition, bytes, b2r }
+    }
+    fn build(&self) -> Result<JrpReq, JrpkError> {
+        let recs = b2r_rec_vec(&self.bytes, self.b2r)?;
+        let req = JrpReq::send(self.id, self.topic.clone(), self.partition, recs);
+        Ok(req)
+    }
+}
+
+type JrpkMeteredProdReq = MeteredItem<JrpReqBuilder>;
+
+impl Encoder<JrpkMeteredProdReq> for LinesCodec {
+    type Error = JrpkError;
+    fn encode(&mut self, metered_item: JrpkMeteredProdReq, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let MeteredItem { item, metrics, labels } = metered_item;
+        let length = dst.len();
+        dst.reserve(self.max_length);
+        let jrp_req = item.build()?;
+        serde_json::to_writer(dst.writer(), &jrp_req)?;
+        dst.put_u8(b'\n');
+        metrics.size_by_value(&labels, dst.len() - length);
+        Ok(())
+    }
+}
 
 #[instrument(ret, skip(metrics, times, tcp_sink))]
 pub async fn producer_req_writer(
     tap: Tap,
     path: FastStr,
+    load: Load,
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_size: usize,
     metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
-    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpkMeteredProdReq<'_>>,
+    mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpkMeteredProdReq>,
 ) -> Result<(), JrpkError> {
+
+    let b2r = match load {
+        Load::Value { codec: JrpCodec::Json } => b2r_json,
+        Load::Value { codec: JrpCodec::Str } => b2r_text,
+        Load::Value { codec: JrpCodec::Base64 } => b2r_base64,
+        Load::Record => b2r_rec,
+    };
+
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Send)
         .traffic(LblTraffic::Out)
         .tap(tap.clone())
         .build();
+
     let file = async_clean_return!(tokio::fs::File::open(path.as_str()).await, tcp_sink.close().await);
     let reader = tokio::io::BufReader::with_capacity(max_frame_size, file);
     let codec = LinesCodec::new_with_max_length(max_frame_size);
     let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
     let mut id: usize = 0;
+
     let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
-    let mut records: Vec<JrpRecSend> = Vec::with_capacity(max_batch_rec_count);
-    let mut batch_size: usize = 0;
+    let mut batch_length: usize = 0;
     while let Some(result) = file_stream.next().await {
         let tap = tap.clone();
         let frame = result?;
-        let json: &RawValue = unsafe { async_clean_return!( JrpBytes::from_bytes(&frame), tcp_sink.close().await) };
-        let jrp_data: JrpData = JrpData::Json(Cow::Borrowed(json));
-        let jrp_rec = JrpRecSend::new(Vec::new(), None, Some(jrp_data));
-        batch_size += frame.len();
-        frames.push(frame);
-        records.push(jrp_rec);
-        if batch_size > max_batch_size - max_rec_size || records.len() >= max_batch_rec_count {
-            info!("produce, batch-size: {}, max-rec-size: {}", batch_size, max_rec_size);
-            let jrp_req = JrpReq::send(id, tap.topic, tap.partition, records);
-            records = Vec::with_capacity(max_batch_rec_count);
-            let jrp_bytes = JrpBytes::new(jrp_req, frames);
+        batch_length += frame.len();
+        if batch_length > max_batch_size - max_rec_size || frames.len() >= max_batch_rec_count {
+            info!("produce, batch-size: {}, max-rec-size: {}", batch_length, max_rec_size);
+            let jrp_req_builder = JrpReqBuilder::new(id, tap.topic, tap.partition, frames, b2r);
             frames = Vec::with_capacity(max_batch_rec_count);
             times.insert(id, Instant::now()).await;
-            let metered_item = JrpkMeteredProdReq::new(jrp_bytes, metrics.clone(), labels.clone());
+            let metered_item = JrpkMeteredProdReq::new(jrp_req_builder, metrics.clone(), labels.clone());
             async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
             id += 1;
-            batch_size = 0;
+            batch_length = 0;
         }
     }
 
-    if !records.is_empty() && !frames.is_empty() {
-        let jrp_req = JrpReq::send(id, tap.topic, tap.partition, records);
-        let jrp_bytes = JrpBytes::new(jrp_req, frames);
+    if !frames.is_empty() {
+        let jrp_req_builder = JrpReqBuilder::new(id, tap.topic, tap.partition, frames, b2r);
         times.insert(id, Instant::now()).await;
-        let metered_item = JrpkMeteredProdReq::new(jrp_bytes, metrics, labels);
+        let metered_item = JrpkMeteredProdReq::new(jrp_req_builder, metrics, labels);
         async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
     }
 
@@ -120,6 +190,7 @@ pub async fn produce(
     address: FastStr,
     tap: Tap,
     path: FastStr,
+    load: Load,
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,
@@ -145,6 +216,7 @@ pub async fn produce(
         producer_req_writer(
             tap.clone(),
             path,
+            load,
             max_frame_size,
             max_batch_rec_count,
             max_batch_size,
