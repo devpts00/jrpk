@@ -15,43 +15,42 @@ use std::time::{Duration, Instant};
 use faststr::FastStr;
 use moka::future::Cache;
 use reqwest::Url;
-use serde::{Serialize, Serializer};
 use tokio::net::TcpStream;
 use tokio::try_join;
 use tokio_util::codec::{Encoder, Framed, FramedRead};
 use tracing::{debug, error, info, instrument};
 use crate::args::Load;
 
-type JrpRecParser = fn(&[u8]) -> Result<JrpRecSend, JrpkError>;
+type JrpRecParser = fn(&'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError>;
 
-fn b2r_json(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+fn b2r_json(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
     let json: &RawValue = serde_json::from_slice(buf)?;
     let data = JrpData::Json(Cow::Borrowed(json));
     let rec = JrpRecSend::new(None, Some(data), Vec::new());
     Ok(rec)
 }
 
-fn b2r_text(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+fn b2r_text(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
     let text = from_utf8(buf)?;
     let data = JrpData::Str(Cow::Borrowed(text));
     let rec = JrpRecSend::new(None, Some(data), Vec::new());
     Ok(rec)
 }
 
-fn b2r_base64(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+fn b2r_base64(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
     let base64 = from_utf8(buf)?;
     let data = JrpData::Base64(Cow::Borrowed(base64));
     let rec = JrpRecSend::new(None, Some(data), Vec::new());
     Ok(rec)
 }
 
-fn b2r_rec(buf: &[u8]) -> Result<JrpRecSend, JrpkError> {
+fn b2r_rec(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
     let rec: JrpRecSend = serde_json::from_slice(buf)?;
     Ok(rec)
 }
 
 #[inline]
-fn b2r_rec_vec(bytes: &Vec<Bytes>, b2r: JrpRecParser) -> Result<Vec<JrpRecSend>, JrpkError> {
+fn b2r_rec_vec(bytes: &'_ Vec<Bytes>, b2r: JrpRecParser) -> Result<Vec<JrpRecSend<'_>>, JrpkError> {
     bytes.iter().map(|bytes| b2r(bytes.as_ref())).collect()
 }
 
@@ -67,7 +66,7 @@ impl JrpReqBuilder {
     fn new(id: usize, topic: FastStr, partition: i32, bytes: Vec<Bytes>, b2r: JrpRecParser) -> Self {
         JrpReqBuilder { id, topic, partition, bytes, b2r }
     }
-    fn build(&self) -> Result<JrpReq, JrpkError> {
+    fn build(&'_ self) -> Result<JrpReq<'_>, JrpkError> {
         let recs = b2r_rec_vec(&self.bytes, self.b2r)?;
         let req = JrpReq::send(self.id, self.topic.clone(), self.partition, recs);
         Ok(req)
