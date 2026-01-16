@@ -17,13 +17,11 @@ do
     --max-frame-byte-size 32kib \
     --metrics-uri http://pmg:9091/metrics/job/jrpk \
     --metrics-period 1s \
-    --format value \
-    --header-codecs abc:json,xyz:base64 \
-    --key-codec str \
-    --value-codec base64 \
     produce \
     --max-batch-byte-size 16kib \
-    --max-rec-byte-size 2kib &
+    --max-rec-byte-size 2kib \
+    value \
+    --codec json &
     sleep 0.1
 done
 

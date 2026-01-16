@@ -128,6 +128,7 @@ pub async fn producer_req_writer(
         let tap = tap.clone();
         let frame = result?;
         batch_length += frame.len();
+        frames.push(frame);
         if batch_length > max_batch_size - max_rec_size || frames.len() >= max_batch_rec_count {
             info!("produce, batch-size: {}, max-rec-size: {}", batch_length, max_rec_size);
             let jrp_req_builder = JrpReqBuilder::new(id, tap.topic, tap.partition, frames, b2r);
