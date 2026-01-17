@@ -1,22 +1,16 @@
-use std::convert::Infallible;
 use std::fmt::Display;
 use bytesize::ByteSize;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
-use clap::{value_parser, Parser, Subcommand};
+use clap::{value_parser, Arg, Args, Parser};
 use clap_duration::duration_range_value_parse;
 use duration_human::{DurationHuman, DurationHumanValidator};
 use faststr::FastStr;
 use reqwest::Url;
+use strum::EnumString;
 use crate::error::JrpkError;
 use crate::model::JrpCodec;
-
-#[derive(Debug, Clone, Parser)]
-pub struct Args {
-    #[command(subcommand)]
-    pub mode: Mode,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Offset {
@@ -75,83 +69,40 @@ impl From<NamedCodec> for (FastStr, JrpCodec) {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Header {
-    All,
-    Names(Vec<FastStr>)
-}
-
-impl FromStr for Header {
-    type Err = Infallible;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s == "*" {
-            Ok(Header::All)
-        } else {
-            let names = s.split(',')
-                .map(|n| n.trim())
-                .filter_map(|n| if n.is_empty() { None } else { Some(FastStr::new(n)) })
-                .collect();
-            Ok(Header::Names(names))
-        }
-    }
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum Command {
-    Produce {
-        #[arg(long, default_value = "1024")]
-        max_batch_rec_count: u16,
-        #[arg(long, default_value = "64KiB")]
-        max_batch_byte_size: ByteSize,
-        #[arg(long, default_value = "16KiB")]
-        max_rec_byte_size: ByteSize,
-        #[command(subcommand)]
-        load: Load
-    },
-    Consume {
-        #[arg(long, default_value = "earliest", value_parser = value_parser!(Offset))]
-        from: Offset,
-        #[arg(long, default_value = "latest", value_parser = value_parser!(Offset))]
-        until: Offset,
-        #[arg(long, default_value = "64KiB")]
-        max_batch_byte_size: ByteSize,
-        #[arg(long, default_value = "100")]
-        max_wait_ms: i32,
-        #[command(subcommand)]
-        save: Save
-    }
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum Load {
-    Value {
-        #[arg(long)]
-        codec: JrpCodec,
-    },
+#[derive(Debug, Clone, Copy, EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum Format {
+    Value,
     Record
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum Save {
-    Value {
-        #[arg(long)]
-        codec: JrpCodec,
-    },
-    Record {
-        #[arg(long)]
-        key: Option<JrpCodec>,
-        #[arg(long)]
-        value: JrpCodec,
-        #[arg(long, value_delimiter = ',')]
-        header: Vec<NamedCodec>,
-        #[arg(long)]
-        header_default: Option<JrpCodec>,
-    }
+#[derive(Debug, Clone, Args)]
+pub struct Client {
+    #[arg(long)]
+    pub path: FastStr,
+    #[arg(long)]
+    pub address: FastStr,
+    #[arg(long)]
+    pub topic: FastStr,
+    #[arg(long, required = false)]
+    pub partition: i32,
+    #[arg(long, default_value = "1MiB")]
+    pub max_frame_byte_size: ByteSize,
+    #[arg(long)]
+    pub thread_count: Option<usize>,
+    #[arg(long)]
+    pub metrics_url: Url,
+    #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
+    pub metrics_period: DurationHuman,
+    #[arg(long, default_value="value")]
+    pub file_format: Format,
+    #[arg(long, default_value = "json")]
+    pub value_codec: JrpCodec,
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum Mode {
-    Server {
+#[derive(Debug, Clone, Parser)]
+pub enum Cmd {
+    Serve {
         #[arg(long, value_delimiter = ',')]
         brokers: Vec<String>,
         #[arg(long, default_value = "1133")]
@@ -166,24 +117,35 @@ pub enum Mode {
         recv_buffer_byte_size: ByteSize,
         #[arg(long, default_value_t = 32)]
         queue_len: usize,
+        #[arg(long)]
+        thread_count: Option<usize>,
     },
-    Client {
+    Produce {
+        #[clap(flatten)]
+        client: Client,
+        #[arg(long, default_value = "1024")]
+        max_batch_rec_count: u16,
+        #[arg(long, default_value = "64KiB")]
+        max_batch_byte_size: ByteSize,
+        #[arg(long, default_value = "16KiB")]
+        max_rec_byte_size: ByteSize,
+    },
+    Consume {
+        #[clap(flatten)]
+        client: Client,
+        #[arg(long, default_value = "earliest", value_parser = value_parser!(Offset))]
+        from: Offset,
+        #[arg(long, default_value = "latest", value_parser = value_parser!(Offset))]
+        until: Offset,
+        #[arg(long, default_value = "64KiB")]
+        max_batch_byte_size: ByteSize,
+        #[arg(long, default_value = "100")]
+        max_wait_ms: i32,
         #[arg(long)]
-        path: FastStr,
+        key_codec: Option<JrpCodec>,
+        #[arg(long, value_delimiter = ',')]
+        header_codecs: Vec<NamedCodec>,
         #[arg(long)]
-        address: FastStr,
-        #[arg(long)]
-        topic: FastStr,
-        #[arg(long, required = false)]
-        partition: i32,
-        #[arg(long, default_value = "1MiB")]
-        max_frame_byte_size: ByteSize,
-        #[arg(long)]
-        metrics_uri: Url,
-        #[arg(long, default_value = "10s", value_parser = duration_range_value_parse!(min: 1s, max: 1min))]
-        metrics_period: DurationHuman,
-        #[command(subcommand)]
-        command: Command,
-    }
+        header_codec_default: Option<JrpCodec>,
+    },
 }
-

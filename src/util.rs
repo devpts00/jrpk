@@ -1,3 +1,4 @@
+use std::error::Error;
 use crate::error::JrpkError;
 use faststr::FastStr;
 use reqwest::Url;
@@ -8,14 +9,16 @@ use std::future::Future;
 use std::ops::Range;
 use std::slice::Iter;
 use std::str::from_utf8;
+use std::time::Duration;
 use bytes::Bytes;
 use console::Term;
 use tokio::net::TcpStream;
+use tokio::runtime::Runtime;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
@@ -224,4 +227,28 @@ pub async fn quit() -> Result<(), std::io::Error> {
         while term.read_char()? != 'q' {};
         Ok(())
     }).await?
+}
+
+// TODO: whe
+pub fn make_runtime(threads: Option<usize>) -> std::io::Result<Runtime> {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(threads) = threads {
+        builder.worker_threads(threads);
+    }
+    builder.enable_io().enable_time().build()
+}
+
+#[instrument(ret, err, skip(f))]
+pub fn run<E, F>(threads: Option<usize>, f: F) -> Result<(), E>
+where E: Error + From<std::io::Error>, F: Future<Output = Result<(), E>> {
+    let runtime = make_runtime(threads)?;
+    runtime.block_on(f)?;
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    Ok(())
+}
+
+pub fn log<E: Error>(result: Result<(), E>) {
+    if let Err(err) = result {
+        error!("error: {}", err);
+    }
 }

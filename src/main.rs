@@ -10,200 +10,119 @@ mod error;
 mod consume;
 mod http;
 mod size;
+mod serve;
 
-use std::net::SocketAddr;
-use crate::args::{Command, Mode};
-use crate::consume::consume;
-use crate::http::listen_http;
-use crate::jsonrpc::{listen_jsonrpc};
-use crate::kafka::{KfkClientCache};
-use crate::metrics::JrpkMetrics;
-use crate::produce::produce;
-use crate::util::{init_tracing, join_with_quit, join_with_signal, Tap};
+use crate::args::{Client, Cmd};
+use crate::consume::{consume};
+use crate::produce::{produce, Load};
+use crate::util::{init_tracing, log, run, Tap};
 use clap::Parser;
-use futures::future::join_all;
-use rskafka::client::ClientBuilder;
-use std::sync::Arc;
 use std::time::Duration;
-use bytesize::ByteSize;
-use duration_human::DurationHuman;
-use faststr::FastStr;
-use reqwest::Url;
-use tokio;
-use tokio::spawn;
-use tracing::{info, instrument};
-
-#[instrument]
-async fn server(
-    brokers: Vec<String>,
-    jsonrpc_bind: SocketAddr,
-    http_bind: SocketAddr,
-    max_frame_byte_size: ByteSize,
-    send_buffer_byte_size: ByteSize,
-    recv_buffer_byte_size: ByteSize,
-    queue_len: usize,
-) {
-    info!("connect: {}", brokers.join(","));
-    // TODO: handle error
-    let kafka_client = ClientBuilder::new(brokers).build().await.unwrap();
-    let metrics = Arc::new(JrpkMetrics::new());
-    let kafka_clients = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_len, metrics.clone()));
-
-    let jh = spawn(
-        listen_jsonrpc(
-            jsonrpc_bind,
-            max_frame_byte_size.as_u64() as usize,
-            send_buffer_byte_size.as_u64() as usize,
-            recv_buffer_byte_size.as_u64() as usize,
-            queue_len,
-            kafka_clients.clone(),
-            metrics.clone(),
-        )
-    );
-
-    let hh = spawn(
-        listen_http(
-            http_bind,
-            kafka_clients,
-            metrics
-        )
-    );
-
-    join_with_quit(
-        join_all(vec!(jh, hh))
-    ).await
-}
-
-#[instrument(skip(metrics_url))]
-async fn client(
-    path: FastStr,
-    address: FastStr,
-    topic: FastStr,
-    partition: i32,
-    max_frame_byte_size: ByteSize,
-    metrics_url: Url,
-    metrics_period: DurationHuman,
-    command: Command,
-) {
-    let metrics = Arc::new(JrpkMetrics::new());
-    let tap = Tap::new(topic, partition);
-
-    match command {
-        Command::Produce { max_batch_rec_count, max_batch_byte_size, max_rec_byte_size, load } => {
-            join_with_signal(
-                spawn(
-                    produce(
-                        address,
-                        tap,
-                        path,
-                        load,
-                        max_frame_byte_size.as_u64() as usize,
-                        max_batch_rec_count as usize,
-                        max_batch_byte_size.as_u64() as usize,
-                        max_rec_byte_size.as_u64() as usize,
-                        metrics,
-                        metrics_url,
-                        Duration::from(&metrics_period),
-                    )
-                )
-            ).await
-        }
-        Command::Consume { from, until, max_batch_byte_size, max_wait_ms, save } => {
-            join_with_signal(
-                spawn(
-                    consume(
-                        address,
-                        tap,
-                        path,
-                        from,
-                        until,
-                        save,
-                        max_batch_byte_size.as_u64() as i32,
-                        max_wait_ms,
-                        max_frame_byte_size.as_u64() as usize,
-                        metrics,
-                        metrics_url,
-                        Duration::from(&metrics_period),
-                    )
-                )
-            ).await
-        }
-    }
-}
-
+use tracing::info;
+use crate::model::JrpSelector;
+use crate::serve::serve;
 
 fn main() {
 
     let _guard = init_tracing();
-    let args = args::Args::parse();
-    info!("args: {:?}", args);
+    let cmd = args::Cmd::parse();
+    info!("cmd: {:?}", cmd);
 
-    match args.mode {
-        Mode::Server {
+    match cmd {
+        Cmd::Serve {
             brokers,
             jsonrpc_bind,
             http_bind,
             max_frame_byte_size,
             send_buffer_byte_size,
             recv_buffer_byte_size,
-            queue_len
+            queue_len,
+            thread_count,
         } => {
-
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_time()
-                .enable_io()
-                .build()
-                .unwrap();
-
-            rt.block_on(
-                server(
+            log(run(
+                thread_count,
+                serve(
                     brokers,
                     jsonrpc_bind,
                     http_bind,
                     max_frame_byte_size,
                     send_buffer_byte_size,
                     recv_buffer_byte_size,
-                    queue_len,
+                    queue_len
                 )
-            );
-
-            rt.shutdown_timeout(Duration::from_secs(1));
-
-        }
-        Mode::Client {
-            address,
-            topic,
-            partition,
-            path,
-            max_frame_byte_size,
-            metrics_uri,
-            metrics_period,
-            command
+            ));
+        },
+        Cmd::Produce {
+            client: Client {
+                path,
+                address,
+                topic,
+                partition,
+                max_frame_byte_size,
+                thread_count,
+                metrics_url,
+                metrics_period,
+                file_format,
+                value_codec,
+            },
+            max_batch_rec_count,
+            max_batch_byte_size,
+            max_rec_byte_size,
         } => {
-
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_time()
-                .enable_io()
-                .build()
-                .unwrap();
-
-            rt.block_on(
-                client(
-                    path,
+            log(run(
+                thread_count,
+                produce(
                     address,
-                    topic,
-                    partition,
-                    max_frame_byte_size,
-                    metrics_uri,
-                    metrics_period,
-                    command
+                    Tap::new(topic, partition),
+                    path,
+                    max_frame_byte_size.as_u64() as usize,
+                    max_batch_rec_count as usize,
+                    max_batch_byte_size.as_u64() as usize,
+                    max_rec_byte_size.as_u64() as usize,
+                    Load::new(file_format, value_codec),
+                    metrics_url,
+                    Duration::from(&metrics_period),
                 )
-            );
-
-            rt.shutdown_timeout(Duration::from_secs(1));
-
-
+            ));
+        },
+        Cmd::Consume {
+            client: Client {
+                path,
+                address,
+                topic,
+                partition,
+                max_frame_byte_size,
+                thread_count,
+                metrics_url,
+                metrics_period,
+                file_format,
+                value_codec,
+            },
+            from,
+            until,
+            max_batch_byte_size,
+            max_wait_ms,
+            key_codec,
+            header_codecs,
+            header_codec_default,
+        } => {
+            log(run(
+                thread_count,
+                consume(
+                    address,
+                    Tap::new(topic, partition),
+                    path,
+                    from,
+                    until,
+                    file_format,
+                    JrpSelector::new(key_codec, value_codec, header_codecs.into_iter().map(|nc|nc.into()).collect(), header_codec_default),
+                    max_batch_byte_size.as_u64() as i32,
+                    max_wait_ms,
+                    max_frame_byte_size.as_u64() as usize,
+                    metrics_url,
+                    Duration::from(&metrics_period),
+                )
+            ))
         }
     }
 

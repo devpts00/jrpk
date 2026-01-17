@@ -3,7 +3,7 @@ use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::model::{JrpCodec, JrpData, JrpRecSend, JrpReq, JrpRsp};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
-use crate::util::{url_append_tap, Tap};
+use crate::util::{join_with_quit, url_append_tap, Tap};
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -13,13 +13,28 @@ use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use faststr::FastStr;
+use futures_util::future::join_all;
 use moka::future::Cache;
 use reqwest::Url;
 use tokio::net::TcpStream;
-use tokio::try_join;
 use tokio_util::codec::{Encoder, Framed, FramedRead};
 use tracing::{debug, error, info, instrument};
-use crate::args::Load;
+use crate::args::Format;
+
+#[derive(Debug, Clone)]
+pub enum Load {
+    Value(JrpCodec),
+    Record,
+}
+
+impl Load {
+    pub fn new(format: Format, value: JrpCodec) -> Self {
+        match format {
+            Format::Value => Load::Value(value),
+            Format::Record => Load::Record,
+        }
+    }
+}
 
 type JrpRecParser = fn(&'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError>;
 
@@ -104,10 +119,10 @@ pub async fn producer_req_writer(
 ) -> Result<(), JrpkError> {
 
     let b2r = match load {
-        Load::Value { codec: JrpCodec::Json } => b2r_json,
-        Load::Value { codec: JrpCodec::Str } => b2r_text,
-        Load::Value { codec: JrpCodec::Base64 } => b2r_base64,
         Load::Record => b2r_rec,
+        Load::Value(JrpCodec::Json) => b2r_json,
+        Load::Value(JrpCodec::Str) => b2r_text,
+        Load::Value(JrpCodec::Base64) => b2r_base64,
     };
 
     let labels = JrpkLabels::new(LblTier::Client)
@@ -185,20 +200,21 @@ pub async fn producer_rsp_reader(
     Ok(())
 }
 
-#[instrument(ret, err, skip(metrics, metrics_url))]
+#[instrument(ret, err, skip(metrics_url))]
 pub async fn produce(
     address: FastStr,
     tap: Tap,
     path: FastStr,
-    load: Load,
     max_frame_size: usize,
     max_batch_rec_count: usize,
     max_batch_size: usize,
     max_rec_size: usize,
-    metrics: Arc<JrpkMetrics>,
+    load: Load,
     mut metrics_url: Url,
     metrics_period: Duration,
 ) -> Result<(), JrpkError> {
+
+    let metrics = Arc::new(JrpkMetrics::new());
 
     url_append_tap(&mut metrics_url, &tap)?;
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
@@ -235,7 +251,8 @@ pub async fn produce(
         )
     );
 
-    let _ = try_join!(wh, rh);
+    join_with_quit(join_all(vec!(wh, rh))).await;
     let _ = ph.cancel().await?;
+
     Ok(())
 }

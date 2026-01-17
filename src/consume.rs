@@ -15,20 +15,14 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
 use tracing::{error, instrument, trace};
-use crate::args::{Offset, Save};
+use crate::args::{Format, NamedCodec, Offset};
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
-use crate::model::{JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector};
+use crate::model::{JrpCodec, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{url_append_tap, Tap};
 
 type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
-
-#[derive(Debug, Clone, Copy)]
-pub enum Format {
-    Value,
-    Record
-}
 
 fn a2j_offset(ao: Offset) -> JrpOffset {
     match ao {
@@ -183,33 +177,23 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
-fn a2j_selector(save: Save) -> (Format, JrpSelector) {
-    match save {
-        Save::Value { codec } => {
-            (Format::Value, JrpSelector::new(None, codec, Vec::new(), None))
-        }
-        Save::Record { key, value, header, header_default } => {
-            let header = header.into_iter().map(|nc| nc.into()).collect();
-            (Format::Record, JrpSelector::new(key, value, header, header_default))
-        }
-    }
-}
-
-#[instrument(ret, err, skip(metrics, metrics_url))]
+#[instrument(ret, err, skip(metrics_url))]
 pub async fn consume(
     address: FastStr,
     tap: Tap,
     path: FastStr,
     from: Offset,
     until: Offset,
-    save: Save,
+    format: Format,
+    selector: JrpSelector,
     max_batch_size: i32,
     max_wait_ms: i32,
     max_frame_size: usize,
-    metrics: Arc<JrpkMetrics>,
     mut metrics_url: Url,
     metrics_period: Duration,
 ) -> Result<(), JrpkError> {
+
+    let metrics = Arc::new(JrpkMetrics::new());
 
     url_append_tap(&mut metrics_url, &tap)?;
     let ph = spawn_push_prometheus(
@@ -224,7 +208,6 @@ pub async fn consume(
     let (tcp_sink, tcp_stream) = framed.split();
     let (offset_snd, offset_rcv) = mpsc::channel::<Offset>(2);
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
-    let (format, selector) = a2j_selector(save);
 
     let wh = spawn(
         consumer_req_writer(
