@@ -141,7 +141,7 @@ pub enum Cmd {
         max_batch_byte_size: ByteSize,
         #[arg(long, default_value = "100")]
         max_wait_ms: i32,
-        #[arg(long)]
+        #[arg(long, default_value = "str")]
         key_codec: Option<JrpCodec>,
         #[arg(long, value_delimiter = ',')]
         header_codecs: Vec<NamedCodec>,

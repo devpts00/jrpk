@@ -25,18 +25,18 @@ build-release:
 server-debug: build-debug
 	docker compose run --rm -it --remove-orphans -e HEAPPROFILE=/jrpk/out/heap \
 		--name jrpk rst ./target/debug/jrpk \
-		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
+		serve --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
 
 heaptrack-server-debug: build-debug
 	docker compose run --rm -it --remove-orphans \
 		--name jrpk rst heaptrack --output ./out/heap ./target/debug/jrpk \
-		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
+		serve --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
 	heaptrack --analyze ./out/heap.gz &
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans \
 		--name jrpk rst ./target/release/jrpk \
-		server --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134 --max-frame-byte-size=32kib
+		serve --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134 --max-frame-byte-size=32kib
 
 client-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1
@@ -45,10 +45,10 @@ client-release-consume: build-release
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 32
 
 client-debug-produce: build-debug
-	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh debug result posts 1
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh debug values posts 1
 
 client-release-produce: build-release
-	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh release result posts 32
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh release values posts 32
 
 http-consume:
 	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 32 1000000 100mib

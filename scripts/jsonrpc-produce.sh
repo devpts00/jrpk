@@ -9,19 +9,18 @@ START_TIME=$EPOCHREALTIME
 for ((p = 0; p < $PARTITIONS; p++))
 do
   ./target/${BUILD}/jrpk \
-    client \
+    produce \
     --path ./json/${FILE}.json \
     --address jrpk:1133 \
     --topic ${TOPIC} \
     --partition ${p} \
     --max-frame-byte-size 32kib \
-    --metrics-uri http://pmg:9091/metrics/job/jrpk \
+    --metrics-url http://pmg:9091/metrics/job/jrpk \
     --metrics-period 1s \
-    produce \
     --max-batch-byte-size 16kib \
     --max-rec-byte-size 2kib \
-    value \
-    --codec json &
+    --file-format value \
+    --value-codec json &
     sleep 0.1
 done
 

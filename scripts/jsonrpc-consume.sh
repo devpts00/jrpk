@@ -12,21 +12,20 @@ do
   for ((p = 0; p < $PARTITIONS; p++))
   do
     ./target/${BUILD}/jrpk \
-      client \
+      consume \
       --path=./json/${FILE}-${p}.json \
       --address=jrpk:1133 \
       --topic=posts \
       --partition=${p} \
-      --metrics-uri=http://pmg:9091/metrics/job/jrpk \
+      --metrics-url=http://pmg:9091/metrics/job/jrpk \
       --metrics-period=1s \
-      consume \
       --from=earliest \
       --until=latest \
       --max-batch-byte-size=32KiB \
       --max-wait-ms=50 \
-      value \
-      --codec=json &
-#      record \
+      --file-format=value \
+      --value-codec=json &
+#      --format=record \
 #      --key=str \
 #      --value=json \
 #      --header-default=str &
