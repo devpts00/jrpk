@@ -88,7 +88,7 @@ pub struct Client {
     pub partition: i32,
     #[arg(long, default_value = "1MiB")]
     pub max_frame_byte_size: ByteSize,
-    #[arg(long)]
+    #[arg(long, default_value = "1")]
     pub thread_count: Option<usize>,
     #[arg(long)]
     pub metrics_url: Url,

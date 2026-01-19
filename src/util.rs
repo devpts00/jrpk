@@ -229,13 +229,13 @@ pub async fn quit() -> Result<(), std::io::Error> {
     }).await?
 }
 
-// TODO: whe
 pub fn make_runtime(threads: Option<usize>) -> std::io::Result<Runtime> {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if let Some(threads) = threads {
         builder.worker_threads(threads);
+        builder.enable_io();
     }
-    builder.enable_io().enable_time().build()
+    builder.enable_time().build()
 }
 
 #[instrument(ret, err, skip(f))]

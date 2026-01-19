@@ -1,0 +1,33 @@
+consume
+- address
+- topic
+- partition
+- from
+- until
+- max-frame-byte-size
+- max-batch-byte-size
+- max-wait-ms
+- thread-count
+- metrics-url
+- metrics-period
+- path
+- format
+- key-codec
+- value-codec
+- header-codecs
+- header-codec-default
+
+produce
+- address
+- topic
+- partition
+- max-frame-byte-size
+- max-batch-byte-size
+- max-batch-rec-count
+- max-rec-byte-size
+- thread-count
+- metrics-url
+- metrics-period
+- path
+- format
+- value-codec

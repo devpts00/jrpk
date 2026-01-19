@@ -110,6 +110,7 @@ const fn default_max_wait() -> Duration {
     Duration::from_millis(100)
 }
 
+// TODO: unify arguments for jsonrpc and http
 #[derive(Deserialize)]
 struct HttpFetchQuery {
     #[serde(default = "default_from")]
