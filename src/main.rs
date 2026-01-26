@@ -12,14 +12,13 @@ mod http;
 mod size;
 mod serve;
 
-use crate::args::{Client, Cmd};
-use crate::consume::{consume};
-use crate::produce::{produce, Load};
+use crate::args::Cmd;
+use crate::consume::consume;
+use crate::produce::produce;
 use crate::util::{init_tracing, log, run, Tap};
 use clap::Parser;
 use std::time::Duration;
 use tracing::info;
-use crate::model::JrpSelector;
 use crate::serve::serve;
 
 fn main() {
@@ -30,97 +29,126 @@ fn main() {
 
     match cmd {
         Cmd::Serve {
-            brokers,
-            jsonrpc_bind,
+            jrp_bind,
+            jrp_max_frame_size,
+            jrp_queue_len,
             http_bind,
-            max_frame_byte_size,
-            send_buffer_byte_size,
-            recv_buffer_byte_size,
-            queue_len,
+            kfk_brokers,
+            tcp_send_buf_size,
+            tcp_recv_buf_size,
             thread_count,
         } => {
+            let jrp_max_frame_size = jrp_max_frame_size.as_u64() as usize;
+            let tcp_send_buf_size = tcp_send_buf_size.as_u64() as usize;
+            let tcp_recv_buf_size = tcp_recv_buf_size.as_u64() as usize;
             log(run(
                 thread_count,
                 serve(
-                    brokers,
-                    jsonrpc_bind,
+                    jrp_bind,
+                    jrp_max_frame_size,
+                    jrp_queue_len,
                     http_bind,
-                    max_frame_byte_size,
-                    send_buffer_byte_size,
-                    recv_buffer_byte_size,
-                    queue_len
+                    kfk_brokers,
+                    tcp_send_buf_size,
+                    tcp_recv_buf_size,
                 )
             ));
         },
         Cmd::Produce {
-            client: Client {
-                path,
-                address,
-                topic,
-                partition,
-                max_frame_byte_size,
-                thread_count,
-                metrics_url,
-                metrics_period,
-                file_format,
-                value_codec,
-            },
-            max_batch_rec_count,
-            max_batch_byte_size,
-            max_rec_byte_size,
+            jrp_address,
+            jrp_frame_max_size,
+            jrp_send_max_size,
+            jrp_send_max_rec_count,
+            jrp_send_max_rec_size,
+            jrp_value_codec,
+            kfk_topic,
+            kfk_partition,
+            file_path,
+            file_format,
+            file_load_max_size,
+            file_load_max_rec_count,
+            prom_push_url,
+            prom_push_period,
+            thread_count,
         } => {
+            let jrp_frame_max_size = jrp_frame_max_size.as_u64() as usize;
+            let jrp_send_max_size = jrp_send_max_size.as_u64() as usize;
+            let jrp_send_max_rec_size = jrp_send_max_rec_size.as_u64() as usize;
+            let file_load_max_rec_count = file_load_max_rec_count.unwrap_or(usize::MAX);
+            let file_load_max_size = file_load_max_size.map(|bs|bs.as_u64() as usize).unwrap_or(usize::MAX);
+            let prom_push_period = Duration::from(&prom_push_period);
             log(run(
                 thread_count,
                 produce(
-                    address,
-                    Tap::new(topic, partition),
-                    path,
-                    max_frame_byte_size.as_u64() as usize,
-                    max_batch_rec_count as usize,
-                    max_batch_byte_size.as_u64() as usize,
-                    max_rec_byte_size.as_u64() as usize,
-                    Load::new(file_format, value_codec),
-                    metrics_url,
-                    Duration::from(&metrics_period),
+                    jrp_address,
+                    jrp_frame_max_size,
+                    jrp_send_max_size,
+                    jrp_send_max_rec_count,
+                    jrp_send_max_rec_size,
+                    jrp_value_codec,
+                    kfk_topic,
+                    kfk_partition,
+                    file_path,
+                    file_format,
+                    file_load_max_rec_count,
+                    file_load_max_size,
+                    prom_push_url,
+                    prom_push_period,
                 )
             ));
         },
         Cmd::Consume {
-            client: Client {
-                path,
-                address,
-                topic,
-                partition,
-                max_frame_byte_size,
-                thread_count,
-                metrics_url,
-                metrics_period,
-                file_format,
-                value_codec,
-            },
-            from,
-            until,
-            max_batch_byte_size,
-            max_wait_ms,
-            key_codec,
-            header_codecs,
-            header_codec_default,
+            jrp_address,
+            jrp_frame_max_size,
+            jrp_key_codec,
+            jrp_value_codec,
+            jrp_header_codecs,
+            jrp_header_codec_default,
+            kfk_topic,
+            kfk_partition,
+            kfk_offset_from,
+            kfk_offset_until,
+            kfk_fetch_min_size,
+            kfk_fetch_max_size,
+            kfk_fetch_max_wait_time,
+            file_path,
+            file_format,
+            file_save_max_rec_count,
+            file_save_max_size,
+            prom_push_url,
+            prom_push_period,
+            thread_count,
         } => {
+            let jrp_frame_max_size = jrp_frame_max_size.as_u64() as usize;
+            let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
+            let kfk_fetch_min_size = kfk_fetch_min_size.as_u64() as i32;
+            let kfk_fetch_max_size = kfk_fetch_max_size.as_u64() as i32;
+            let kfk_fetch_max_wait_ms = Duration::from(&kfk_fetch_max_wait_time).as_millis() as i32;
+            let file_save_max_rec_count = file_save_max_rec_count.unwrap_or(usize::MAX);
+            let file_save_max_size = file_save_max_size.map(|bs|bs.as_u64() as usize).unwrap_or(usize::MAX);
+            let prom_push_period = Duration::from(&prom_push_period);
             log(run(
                 thread_count,
                 consume(
-                    address,
-                    Tap::new(topic, partition),
-                    path,
-                    from,
-                    until,
+                    jrp_address,
+                    jrp_frame_max_size,
+                    kfk_offset_from,
+                    kfk_offset_until,
+                    jrp_key_codec,
+                    jrp_value_codec,
+                    jrp_header_codecs,
+                    jrp_header_codec_default,
+                    kfk_topic,
+                    kfk_partition,
+                    kfk_fetch_min_size,
+                    kfk_fetch_max_size,
+                    kfk_fetch_max_wait_ms,
+                    file_path,
                     file_format,
-                    JrpSelector::new(key_codec, value_codec, header_codecs.into_iter().map(|nc|nc.into()).collect(), header_codec_default),
-                    max_batch_byte_size.as_u64() as i32,
-                    max_wait_ms,
-                    max_frame_byte_size.as_u64() as usize,
-                    metrics_url,
-                    Duration::from(&metrics_period),
+                    file_save_max_rec_count,
+                    file_save_max_size,
+                    prom_push_url,
+                    prom_push_period,
                 )
             ))
         }

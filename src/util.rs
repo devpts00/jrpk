@@ -6,12 +6,14 @@ use rskafka::record::Record;
 use socket2::SockRef;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
+use std::io::{ErrorKind, Write};
 use std::ops::Range;
 use std::slice::Iter;
 use std::str::from_utf8;
 use std::time::Duration;
-use bytes::Bytes;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use console::Term;
+use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
 use tokio::select;
@@ -24,6 +26,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+use crate::size;
 
 #[macro_export]
 macro_rules! async_clean_return {
@@ -233,9 +236,8 @@ pub fn make_runtime(threads: Option<usize>) -> std::io::Result<Runtime> {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if let Some(threads) = threads {
         builder.worker_threads(threads);
-        builder.enable_io();
     }
-    builder.enable_time().build()
+    builder.enable_io().enable_time().build()
 }
 
 #[instrument(ret, err, skip(f))]
@@ -250,5 +252,126 @@ where E: Error + From<std::io::Error>, F: Future<Output = Result<(), E>> {
 pub fn log<E: Error>(result: Result<(), E>) {
     if let Err(err) = result {
         error!("error: {}", err);
+    }
+}
+
+
+#[inline]
+pub fn json_to_writer<W: Write, S: Serialize>(writer: &mut W, json: &S) -> serde_json::Result<()> {
+    serde_json::to_writer(writer, json)
+}
+
+pub trait Length {
+    fn len(&self) -> usize;
+}
+
+#[derive(Debug)]
+pub struct VecBufWriter<W> {
+    buf: Vec<u8>,
+    inner: W,
+}
+
+impl <W> VecBufWriter<W> {
+    pub fn with_capacity(capacity: usize, writer: W) -> Self {
+        VecBufWriter { buf: Vec::with_capacity(capacity), inner: writer }
+    }
+}
+
+impl <W: Write> Write for VecBufWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buf.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.write_all(self.buf.as_slice())?;
+        self.buf.clear();
+        Ok(())
+    }
+}
+
+impl <W> Length for VecBufWriter<W> {
+    fn len(&self) -> usize {
+        self.buf.len()
+    }
+}
+
+#[derive(Debug)]
+pub struct VecWriter {
+    pos: usize,
+    buf: Vec<u8>,
+}
+
+impl VecWriter {
+    pub fn with_capacity(capacity: usize) -> Self {
+        VecWriter { pos: 0, buf: Vec::with_capacity(capacity) }
+    }
+    pub fn into_inner(mut self) -> Vec<u8> {
+        if self.pos < self.buf.len() {
+            self.buf.truncate(self.pos);
+        }
+        self.buf
+    }
+}
+
+impl Write for VecWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buf.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.pos = self.buf.len();
+        Ok(())
+    }
+}
+
+impl Length for VecWriter {
+    fn len(&self) -> usize {
+        self.buf.len()
+    }
+}
+
+#[derive(Debug)]
+pub struct Budget {
+    empty: bool,
+    size: usize,
+    count: usize,
+}
+
+impl Budget {
+    pub fn new(size: usize, count: usize) -> Self {
+        Budget { empty: false, size, count }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.empty
+    }
+    fn spend(&mut self, size: usize) -> bool {
+        if self.count > 0 || self.size >= size {
+            self.size -= size;
+            self.count -= 1;
+        } else {
+            self.empty = true;
+        }
+        !self.empty
+    }
+
+    pub fn write_ser<WL: Write + Length, S: Serialize>(&mut self, writer: &mut WL, ser: &S) -> Result<bool, JrpkError> {
+        let length = writer.len();
+        json_to_writer(writer, ser)?;
+        writer.write_all(b"\n")?;
+        if self.spend(writer.len() - length) {
+            writer.flush()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn write_slice<WL: Write + Length>(&mut self, writer: &mut WL, slice: &[u8]) -> Result<bool, JrpkError> {
+        if self.spend(slice.len() + 1) {
+            writer.write_all(slice)?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }

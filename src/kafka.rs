@@ -17,6 +17,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tracing::{instrument, trace};
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
+use crate::model::JrpOffset;
 use crate::size::Size;
 
 pub type KfkError = rskafka::client::error::Error;
@@ -27,18 +28,16 @@ pub enum KfkOffset {
     Pos(i64)
 }
 
-// #[inline]
-// fn cmp_offset_at(x: &OffsetAt, y: &OffsetAt) -> Ordering {
-//    match (x, y) {
-//        (OffsetAt::Earliest, OffsetAt::Earliest) => Ordering::Equal,
-//        (OffsetAt::Earliest, _) => Ordering::Less,
-//        (OffsetAt::Latest, OffsetAt::Latest) => Ordering::Equal,
-//        (OffsetAt::Latest, _) => Ordering::Greater,
-//        (OffsetAt::Timestamp(tsx), OffsetAt::Timestamp(tsy)) => tsx.cmp(&tsy),
-//        (_, OffsetAt::Latest) => Ordering::Less,
-//        (_, OffsetAt::Earliest) => Ordering::Greater,
-//    }
-// }
+impl From<JrpOffset> for KfkOffset {
+    fn from(value: JrpOffset) -> Self {
+        match value {
+            JrpOffset::Earliest => KfkOffset::At(OffsetAt::Earliest),
+            JrpOffset::Latest => KfkOffset::At(OffsetAt::Latest),
+            JrpOffset::Timestamp(ts) => KfkOffset::At(OffsetAt::Timestamp(ts)),
+            JrpOffset::Offset(pos) => KfkOffset::Pos(pos)
+        }
+    }
+}
 
 #[inline]
 fn cmp_offset_at_2_record_and_offset(oa: &OffsetAt, ro: &RecordAndOffset) -> Ordering {

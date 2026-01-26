@@ -8,11 +8,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_valid::Validate;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
+use std::io::Write;
 use std::ops::Range;
 use std::str::FromStr;
 use faststr::FastStr;
 use strum::EnumString;
+use tracing::instrument;
+use crate::args::Format;
+use crate::util::{Budget, Length};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,16 +44,16 @@ impl <'a> JrpData<'a> {
         JrpData::Base64(Cow::Owned(str))
     }
 
-    pub fn as_text(self: &'a JrpData<'a>) -> Result<Cow<'a, str>, JrpkError> {
+    pub fn as_text(self: &'a JrpData<'a>) -> Cow<'a, str> {
         match self {
             JrpData::Json(json) => {
-                Ok(Cow::Borrowed(json.get()))
+                Cow::Borrowed(json.get())
             }
             JrpData::Str(text) => {
-                Ok(Cow::Borrowed(text.as_ref()))
+                Cow::Borrowed(text.as_ref())
             }
             JrpData::Base64(text) => {
-                Ok(Cow::Borrowed(text.as_ref()))
+                Cow::Borrowed(text.as_ref())
             }
         }
     }
@@ -201,6 +206,28 @@ impl <'a> JrpRecFetch<'a> {
     }
 }
 
+#[inline]
+fn cmp_rec_fetch_2_offset<'a>(rec: &JrpRecFetch<'a>, offset: &JrpOffset) -> Ordering {
+    match offset {
+        JrpOffset::Earliest => Ordering::Greater,
+        JrpOffset::Latest => Ordering::Less,
+        JrpOffset::Timestamp(timestamp) => rec.timestamp.cmp(&timestamp),
+        JrpOffset::Offset(offset) => rec.offset.cmp(&offset),
+    }
+}
+
+impl PartialOrd<JrpOffset> for JrpRecFetch<'_> {
+    fn partial_cmp(&self, offset: &JrpOffset) -> Option<Ordering> {
+        Some(cmp_rec_fetch_2_offset(self, offset))
+    }
+}
+
+impl PartialEq<JrpOffset> for JrpRecFetch<'_> {
+    fn eq(&self, offset: &JrpOffset) -> bool {
+        cmp_rec_fetch_2_offset(self, offset) == Ordering::Equal
+    }
+}
+
 /// JSONRPC method as an enumeration.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -210,12 +237,40 @@ pub enum JrpMethod {
     Offset,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum JrpOffset {
     Earliest,
     Latest,
     Timestamp(DateTime<Utc>),
     Offset(i64)
+}
+
+impl Display for JrpOffset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JrpOffset::Earliest => f.write_str("earliest"),
+            JrpOffset::Latest => f.write_str("latest"),
+            JrpOffset::Timestamp(ts) => write!(f, "{}", ts),
+            JrpOffset::Offset(pos) => write!(f, "{}", pos),
+        }
+    }
+}
+
+impl FromStr for JrpOffset {
+    type Err = JrpkError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("earliest") {
+            Ok(JrpOffset::Earliest)
+        } else if s.eq_ignore_ascii_case("latest") {
+            Ok(JrpOffset::Latest)
+        } else if let Ok(ts) = DateTime::<Utc>::from_str(s) {
+            Ok(JrpOffset::Timestamp(ts))
+        } else if let Ok(offset) = i64::from_str(s) {
+            Ok(JrpOffset::Offset(offset))
+        } else {
+            Err(JrpkError::Parse(format!("invalid offset: {}", s)))
+        }
+    }
 }
 
 impl Serialize for JrpOffset {
@@ -225,23 +280,6 @@ impl Serialize for JrpOffset {
             JrpOffset::Latest => s.serialize_str("latest"),
             JrpOffset::Timestamp(t) => s.serialize_str(t.to_rfc3339().as_str()),
             JrpOffset::Offset(offset) => s.serialize_i64(*offset),
-        }
-    }
-}
-
-impl FromStr for JrpOffset {
-    type Err = JrpkError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s == "earliest" {
-            Ok(JrpOffset::Earliest)
-        } else if s == "latest" {
-            Ok(JrpOffset::Latest)
-        } else if let Ok(ts) = DateTime::<Utc>::from_str(s) {
-            Ok(JrpOffset::Timestamp(ts))
-        // } else if let Ok(pos) = i64::from_str(s) {
-        //     Ok(JrpOffset::Offset(pos))
-        } else {
-            Err(JrpkError::Parse(format!("invalid offset: {}", s)))
         }
     }
 }
@@ -436,15 +474,53 @@ impl <'a> JrpRsp<'a> {
     }
 }
 
-// impl <'de, J: Serialize + Deserialize<'de>> JrpBytes<J> {
-//     pub fn from_bytes(bytes: Bytes) -> Result<Self, serde_json::Error> {
-//         // json with static lifetime is not accessible outside
-//         let buf: &'static[u8] = unsafe { mem::transmute(bytes.as_ref()) };
-//         let json: J = serde_json::from_slice(buf)?;
-//         Ok(JrpBytes { json, bytes })
-//     }
-// }
-
 pub struct JrpReqBuilder {
     bytes: Vec<Bytes>,
+}
+
+#[derive(Debug)]
+pub enum Progress {
+    Continue(i64),
+    Done,
+    Overdraft,
+}
+
+#[instrument(ret, err, level="trace", skip(records, writer))]
+pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFetch<'a>, JrpkError>>>(
+    format: Format,
+    records: IR,
+    until: JrpOffset,
+    budget: &mut Budget,
+    writer: &mut WL,
+) -> Result<Progress, JrpkError> {
+    let mut progress = Progress::Done;
+    for record in records {
+
+        let record = record?;
+        if record < until {
+            progress = Progress::Continue(record.offset + 1);
+        } else {
+            progress = Progress::Done;
+            break;
+        }
+
+        match format {
+            Format::Value => {
+                if let Some(value) = record.value {
+                    if !budget.write_slice(writer, value.as_text().as_bytes())? {
+                        progress = Progress::Overdraft;
+                        break;
+                    }
+                }
+            }
+            Format::Record => {
+                if !budget.write_ser(writer, &record)? {
+                    progress = Progress::Overdraft;
+                    break
+                }
+            }
+        }
+    }
+    writer.flush()?;
+    Ok(progress)
 }

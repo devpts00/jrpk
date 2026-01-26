@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use bytesize::ByteSize;
 use futures_util::future::join_all;
 use rskafka::client::ClientBuilder;
 use tokio::spawn;
@@ -14,28 +13,29 @@ use crate::util::join_with_quit;
 
 #[instrument]
 pub async fn serve(
-    brokers: Vec<String>,
-    jsonrpc_bind: SocketAddr,
+    jrp_bind: SocketAddr,
+    jrp_max_frame_size: usize,
+    jrp_queue_len: usize,
     http_bind: SocketAddr,
-    max_frame_byte_size: ByteSize,
-    send_buffer_byte_size: ByteSize,
-    recv_buffer_byte_size: ByteSize,
-    queue_len: usize,
+    kfk_brokers: Vec<String>,
+    tcp_send_buffer_size: usize,
+    tcp_recv_buffer_size: usize,
 ) -> Result<(), JrpkError> {
 
-    info!("connect: {}", brokers.join(","));
-    let kafka_client = ClientBuilder::new(brokers).build().await?;
     let metrics = Arc::new(JrpkMetrics::new());
-    let kafka_clients = Arc::new(KfkClientCache::new(kafka_client, 1024, queue_len, metrics.clone()));
+
+    info!("connect: {}", kfk_brokers.join(","));
+    let kfk_client = ClientBuilder::new(kfk_brokers).build().await?;
+    let kfk_clients = Arc::new(KfkClientCache::new(kfk_client, 1024, jrp_queue_len, metrics.clone()));
 
     let jh = spawn(
         listen_jsonrpc(
-            jsonrpc_bind,
-            max_frame_byte_size.as_u64() as usize,
-            send_buffer_byte_size.as_u64() as usize,
-            recv_buffer_byte_size.as_u64() as usize,
-            queue_len,
-            kafka_clients.clone(),
+            jrp_bind,
+            jrp_max_frame_size,
+            jrp_queue_len,
+            kfk_clients.clone(),
+            tcp_send_buffer_size,
+            tcp_recv_buffer_size,
             metrics.clone(),
         )
     );
@@ -43,7 +43,7 @@ pub async fn serve(
     let hh = spawn(
         listen_http(
             http_bind,
-            kafka_clients,
+            kfk_clients,
             metrics
         )
     );

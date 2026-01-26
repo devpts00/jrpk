@@ -13,22 +13,25 @@ do
   do
     ./target/${BUILD}/jrpk \
       consume \
-      --path=./json/${FILE}-${p}.json \
-      --address=jrpk:1133 \
-      --topic=posts \
-      --partition=${p} \
-      --metrics-url=http://pmg:9091/metrics/job/jrpk \
-      --metrics-period=1s \
-      --from=earliest \
-      --until=latest \
-      --max-batch-byte-size=32KiB \
-      --max-wait-ms=50 \
-      --file-format=value \
-      --value-codec=json &
-#      --format=record \
-#      --key=str \
-#      --value=json \
-#      --header-default=str &
+      --jrp-address=jrpk:1133 \
+      --jrp-frame-max-size=1mib \
+      --jrp-key-codec=str \
+      --jrp-value-codec=json \
+      --jrp-header-codec-default=str \
+      --kfk-topic=posts \
+      --kfk-partition=${p} \
+      --kfk-offset-from=earliest \
+      --kfk-offset-until=latest \
+      --kfk-fetch-min-size=1kib \
+      --kfk-fetch-max-size=32kib \
+      --kfk-fetch-max-wait-time=1s \
+      --file-path=./json/${FILE}-${p}.json \
+      --file-format=record \
+      --file-save-max-size=1gib \
+      --file-save-max-rec-count=1000000 \
+      --prom-push-url=http://pmg:9091/metrics/job/jrpk \
+      --prom-push-period=1s \
+      --thread-count=1 &
     sleep 0.1
   done
   wait

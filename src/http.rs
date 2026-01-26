@@ -1,40 +1,42 @@
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use crate::error::JrpkError;
-use crate::jsonrpc::{JrpCtx, JrpCtxTypes};
+use crate::jsonrpc::{k2j_rec_fetch, JrpCtx, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
-use crate::model::{JrpCodec, JrpOffset, JrpSelector};
-use crate::size::Size;
-use crate::util::{Ctx, Req, Tap};
+use crate::model::{write_records, JrpCodec, JrpOffset, JrpRecFetch, JrpSelector, Progress};
+use crate::util::{Budget, Ctx, Req, Tap, VecWriter};
 use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use bytesize::ByteSize;
 use faststr::FastStr;
 use futures_util::stream::try_unfold;
 use http_body_util::StreamBody;
 use hyper::body::Frame;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::net::SocketAddr;
 use std::ops::Range;
+use std::str::FromStr;
 use std::sync::{Arc};
 use std::time::{Duration, Instant};
 use axum::body::{Body, BodyDataStream};
 use chrono::Utc;
 use futures_util::TryStreamExt;
 use rskafka::record::Record;
-use tokio::io::AsyncBufReadExt;
+use serde::de::{Error, Visitor};
+use tokio::io::{AsyncBufReadExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::{spawn, try_join};
 use tokio_stream::wrappers::LinesStream;
 use tokio_util::io::StreamReader;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, trace};
+use crate::args::{Format, NamedCodec};
 
 #[instrument(level="trace", ret, err, skip(metrics))]
 async fn get_prometheus_metrics(State(metrics): State<Arc<JrpkMetrics>>) -> Result<String, JrpkError> {
@@ -42,43 +44,75 @@ async fn get_prometheus_metrics(State(metrics): State<Arc<JrpkMetrics>>) -> Resu
     Ok(buf)
 }
 
+impl <'de> Deserialize<'de> for NamedCodec {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct NamedCodecVisitor;
+        impl <'de> Visitor<'de> for NamedCodecVisitor {
+            type Value = NamedCodec;
+            fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
+                write!(f, "header1:json,header2:str,header3:base64")
+            }
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                NamedCodec::from_str(v).map_err(Error::custom)
+            }
+        }
+        d.deserialize_str(NamedCodecVisitor)
+    }
+}
+
+impl <'de> Deserialize<'de> for Format {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct FormatVisitor;
+        impl <'de> Visitor<'de> for FormatVisitor {
+            type Value = Format;
+            fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
+                write!(f, "record or value")
+            }
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                Format::from_str(v).map_err(Error::custom)
+            }
+        }
+        d.deserialize_str(FormatVisitor)
+    }
+}
+
 #[derive(Clone)]
 struct HttpState {
-    clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    kfk_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     metrics: Arc<JrpkMetrics>,
 }
 
 impl HttpState {
-    fn new(clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>, metrics: Arc<JrpkMetrics>) -> Self {
-        HttpState { clients, metrics }
+    fn new(kfk_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>, metrics: Arc<JrpkMetrics>) -> Self {
+        HttpState { kfk_clients, metrics }
     }
 }
 
 #[derive(Deserialize)]
 struct HttpOffsetQuery {
-    at: JrpOffset,
+    kfk_offset: JrpOffset,
 }
 
 #[instrument(ret, err, skip(state))]
 async fn get_kafka_offset(
     State(state): State<HttpState>,
-    Path((topic, partition)): Path<(FastStr, i32)>,
-    Query(HttpOffsetQuery { at }): Query<HttpOffsetQuery>,
+    Path((kfk_topic, kfk_partition)): Path<(FastStr, i32)>,
+    Query(HttpOffsetQuery { kfk_offset }): Query<HttpOffsetQuery>,
 ) -> Result<String, JrpkError> {
-    let HttpState { clients, metrics } = state;
+    let HttpState { kfk_clients: clients, metrics } = state;
     let ts = Instant::now();
-    let tap = Tap::new(topic, partition);
-    let ctx = JrpCtxTypes::offset(0, Instant::now(), tap.clone());
-    let req_snd = clients.lookup_sender(tap.clone()).await?;
-    let at = at.into();
+    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let ctx = JrpCtxTypes::offset(0, Instant::now(), kfk_tap.clone());
+    let req_snd = clients.lookup_sender(kfk_tap.clone()).await?;
+    let kfk_offset = kfk_offset.into();
     let (rsp_snd, mut rsp_rcv) = tokio::sync::mpsc::channel(1);
-    let kfk_req = KfkReq::Offset(Req(Ctx(ctx, at), rsp_snd));
+    let kfk_req = KfkReq::Offset(Req(Ctx(ctx, kfk_offset), rsp_snd));
     req_snd.send(kfk_req).await?;
     let kfk_rsp = rsp_rcv.recv().await.ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
     let Ctx(_, kfk_offset_res) = kfk_rsp.offset_or(JrpkError::Unexpected("kafka client wrong response"))?;
     let offset = kfk_offset_res?;
     let body = offset.to_string();
-    let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Offset).traffic(LblTraffic::Out).tap(tap).build();
+    let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Offset).traffic(LblTraffic::Out).tap(kfk_tap).build();
     metrics.size(&labels, &body);
     metrics.time(&labels, ts);
     Ok(offset.to_string())
@@ -86,56 +120,71 @@ async fn get_kafka_offset(
 
 #[derive(Deserialize)]
 struct HttpFetchPath {
-    topic: FastStr,
-    partition: i32,
+    kfk_topic: FastStr,
+    kfk_partition: i32,
 }
 
-const fn default_from() -> JrpOffset {
+const fn default_jrp_codec_value() -> JrpCodec {
+    JrpCodec::Json
+}
+
+const fn default_kfk_offset_from() -> JrpOffset {
     JrpOffset::Earliest
 }
 
-const fn default_until() -> JrpOffset {
+const fn default_kfk_offset_until() -> JrpOffset {
     JrpOffset::Latest
 }
 
-const fn default_min_batch_size() -> ByteSize {
+const fn default_kfk_fetch_min_size() -> ByteSize {
     ByteSize::kib(1)
 }
 
-const fn default_max_batch_size() -> ByteSize {
+const fn default_kfk_fetch_max_size() -> ByteSize {
     ByteSize::mib(1)
 }
 
-const fn default_max_wait() -> Duration {
+const fn default_kfk_fetch_max_wait_time() -> Duration {
     Duration::from_millis(100)
 }
 
-// TODO: unify arguments for jsonrpc and http
+const fn default_file_format() -> Format { Format::Value }
+
 #[derive(Deserialize)]
 struct HttpFetchQuery {
-    #[serde(default = "default_from")]
-    from: JrpOffset,
-    #[serde(default = "default_until")]
-    until: JrpOffset,
-    #[serde(default = "default_min_batch_size")]
-    min_batch_size: ByteSize,
-    #[serde(default = "default_max_batch_size")]
-    max_batch_size: ByteSize,
-    #[serde(default = "default_max_wait", with = "humantime_serde")]
-    max_wait_duration: Duration,
+    jrp_key_codec: Option<JrpCodec>,
+    #[serde(default = "default_jrp_codec_value")]
+    jrp_value_codec: JrpCodec,
+    jrp_header_codecs: Vec<NamedCodec>,
+    jrp_header_codec_default: Option<JrpCodec>,
+
+    #[serde(default = "default_kfk_offset_from")]
+    kfk_offset_from: JrpOffset,
+    #[serde(default = "default_kfk_offset_until")]
+    kfk_offset_until: JrpOffset,
+    #[serde(default = "default_kfk_fetch_min_size")]
+    kfk_fetch_min_size: ByteSize,
+    #[serde(default = "default_kfk_fetch_max_size")]
+    kfk_fetch_max_size: ByteSize,
+    #[serde(default = "default_kfk_fetch_max_wait_time", with = "humantime_serde")]
+    kfk_fetch_max_wait_time: Duration,
+
+    #[serde(default = "default_file_format")]
+    file_format: Format,
     #[serde(default)]
-    max_rec_count: Option<usize>,
+    file_save_max_rec_count: Option<usize>,
     #[serde(default)]
-    max_bytes_size: Option<ByteSize>,
+    file_save_max_size: Option<ByteSize>,
 }
 
 enum KfkFetchState {
     Next {
-        until: KfkOffset,
-        min_max_bytes: Range<i32>,
-        max_wait_ms: i32,
-        rec_count_budget: usize,
-        byte_size_budget: usize,
+        kfk_offset_until: KfkOffset,
+        kfk_fetch_min_max_bytes: Range<i32>,
+        kfk_fetch_max_wait_ms: i32,
+        file_save_rec_count_budget: usize,
+        file_save_size_budget: usize,
+        file_format: Format,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
         rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
@@ -151,18 +200,19 @@ enum KfkFetchState {
 
 impl KfkFetchState {
     fn next(
-        until: KfkOffset,
-        min_max_bytes: Range<i32>,
-        max_wait_ms: i32,
-        rec_count_budget: usize,
-        byte_size_budget: usize,
+        kfk_offset_until: KfkOffset,
+        kfk_fetch_min_max_bytes: Range<i32>,
+        kfk_fetch_max_wait_ms: i32,
+        file_save_rec_count_budget: usize,
+        file_save_size_budget: usize,
+        file_format: Format,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
         rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
         metrics: Arc<JrpkMetrics>,
         labels: JrpkLabels,
     ) -> Self {
-        KfkFetchState::Next { until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, metrics, labels }
+        KfkFetchState::Next { kfk_offset_until, kfk_fetch_min_max_bytes, kfk_fetch_max_wait_ms, file_save_rec_count_budget, file_save_size_budget, file_format, req_snd, rsp_snd, rsp_rcv, metrics, labels }
     }
     fn done(
         ts: Instant,
@@ -176,7 +226,7 @@ impl KfkFetchState {
 impl Debug for KfkFetchState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            KfkFetchState::Next { until, min_max_bytes, max_wait_ms, .. } => {
+            KfkFetchState::Next { kfk_offset_until: until, kfk_fetch_min_max_bytes: min_max_bytes, kfk_fetch_max_wait_ms: max_wait_ms, .. } => {
                 f.debug_struct("KfkFetchState::Next")
                     .field("until", until)
                     .field("min_max_bytes", min_max_bytes)
@@ -195,42 +245,73 @@ impl Debug for KfkFetchState {
 #[instrument(level = "debug", err)]
 async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Bytes>, KfkFetchState)>, JrpkError> {
     match state {
-        KfkFetchState::Next { until, min_max_bytes, max_wait_ms, mut rec_count_budget, mut byte_size_budget, req_snd, rsp_snd, mut rsp_rcv, metrics, labels } => {
-            let kfk_rsp = rsp_rcv.recv().await.ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
-            let Ctx(ctx, kfk_res) = kfk_rsp.fetch_or(JrpkError::Unexpected("kafka response wrong type"))?;
-            let JrpCtx { id, ts, tap, extra } = ctx;
-            let (records_and_offsets, high_watermark) = kfk_res?;
-            let mut done = false;
-            let mut buf = BytesMut::with_capacity(records_and_offsets.size() + records_and_offsets.len());
-            let mut pos = 0;
-            for mut ro in records_and_offsets {
-                pos = ro.offset;
-                if let Some(value) = ro.record.value.take() {
-                    let size = value.len() + 1;
-                    if until > ro && ro.offset < high_watermark && rec_count_budget > 0 && byte_size_budget > size {
-                        rec_count_budget -= 1;
-                        byte_size_budget -= size;
-                        buf.put_slice(&value);
-                        buf.put_slice(b"\n");
-                    } else {
-                        done = true;
-                        break;
-                    }
-                }
-            }
-            let bytes = buf.freeze();
+        KfkFetchState::Next {
+            kfk_offset_until,
+            kfk_fetch_min_max_bytes,
+            kfk_fetch_max_wait_ms,
+            file_save_rec_count_budget,
+            file_save_size_budget,
+            file_format,
+            req_snd,
+            rsp_snd,
+            mut rsp_rcv,
+            metrics,
+            labels
+        } => {
+            let kfk_rsp = rsp_rcv.recv().await
+                .ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
+            let Ctx(ctx, kfk_res) = kfk_rsp
+                .fetch_or(JrpkError::Unexpected("kafka response wrong type"))?;
+            let JrpCtx { id, ts, tap: kfk_tap, extra: jrp_selector } = ctx;
+            let (ros, high_watermark) = kfk_res?;
+
+            let mut writer = VecWriter::with_capacity(64 * 1024);
+            let mut budget = Budget::new(file_save_size_budget, file_save_rec_count_budget);
+
+            let records = ros.into_iter()
+                .map(|ro| k2j_rec_fetch(ro, &jrp_selector));
+
+            let progress = write_records(file_format, records, kfk_offset_until.into(), &mut budget, &mut writer)?;
+
+            let buf = writer.into_inner();
+            let bytes = buf.into();
             metrics.size(&labels, &bytes);
             let frame = Frame::data(bytes);
-            let pos = pos + 1;
-            if !done && pos < high_watermark {
-                let from = KfkOffset::Pos(pos);
-                let ctx = JrpCtx::new(id + 1, ts, tap, extra);
-                let req = KfkReq::Fetch(Req(Ctx(ctx, (from, min_max_bytes.clone(), max_wait_ms)), rsp_snd.clone()));
-                req_snd.send(req).await?;
-                let next = KfkFetchState::next(until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, metrics, labels);
-                Ok(Some((frame, next)))
-            } else {
-                Ok(Some((frame, KfkFetchState::done(ts, metrics, labels))))
+
+            match progress {
+                Progress::Continue(pos) => {
+                    trace!("continue");
+                    if pos < high_watermark {
+                        let from = KfkOffset::Pos(pos);
+                        let ctx = JrpCtx::new(id + 1, ts, kfk_tap, jrp_selector);
+                        let req = KfkReq::Fetch(Req(Ctx(ctx, (from, kfk_fetch_min_max_bytes.clone(), kfk_fetch_max_wait_ms)), rsp_snd.clone()));
+                        req_snd.send(req).await?;
+                        let next = KfkFetchState::next(
+                            kfk_offset_until,
+                            kfk_fetch_min_max_bytes,
+                            kfk_fetch_max_wait_ms,
+                            file_save_rec_count_budget,
+                            file_save_size_budget,
+                            file_format,
+                            req_snd,
+                            rsp_snd,
+                            rsp_rcv,
+                            metrics,
+                            labels
+                        );
+                        Ok(Some((frame, next)))
+                    } else {
+                        Ok(Some((frame, KfkFetchState::done(ts, metrics, labels))))
+                    }
+                }
+                Progress::Done => {
+                    debug!("break: until reached");
+                    Ok(Some((frame, KfkFetchState::done(ts, metrics, labels))))
+                }
+                Progress::Overdraft => {
+                    debug!("break: budget overdraft");
+                    Ok(Some((frame, KfkFetchState::done(ts, metrics, labels))))
+                }
             }
         },
         KfkFetchState::Done { ts, metrics, labels } => {
@@ -243,27 +324,59 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
 #[instrument(err, skip(state))]
 async fn get_kafka_fetch(
     State(state): State<HttpState>,
-    Path(HttpFetchPath { topic, partition }): Path<HttpFetchPath>,
-    Query(HttpFetchQuery { from, until, min_batch_size, max_batch_size, max_wait_duration, max_rec_count, max_bytes_size }): Query<HttpFetchQuery>,
+    Path(
+        HttpFetchPath {
+            kfk_topic,
+            kfk_partition
+        }
+    ): Path<HttpFetchPath>,
+    Query(
+        HttpFetchQuery {
+            jrp_key_codec,
+            jrp_value_codec,
+            jrp_header_codecs,
+            jrp_header_codec_default,
+            kfk_offset_from,
+            kfk_offset_until,
+            kfk_fetch_min_size,
+            kfk_fetch_max_size,
+            kfk_fetch_max_wait_time,
+            file_format,
+            file_save_max_rec_count,
+            file_save_max_size
+        }
+    ): Query<HttpFetchQuery>,
 ) -> Result<impl IntoResponse, JrpkError> {
-    let HttpState { clients, metrics } = state;
-    let tap = Tap::new(topic, partition);
-    let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Fetch).traffic(LblTraffic::Out).tap(tap.clone()).build();
-    let req_snd = clients.lookup_sender(tap.clone()).await?;
-    let from = from.into();
-    let until = until.into();
-    let min_max_bytes = min_batch_size.as_u64() as i32 .. max_batch_size.as_u64() as i32;
-    let max_wait_ms = max_wait_duration.as_millis() as i32;
-    let rec_count_budget = max_rec_count.unwrap_or(usize::MAX);
-    let byte_size_budget = max_bytes_size.map(|s|s.as_u64() as usize).unwrap_or(usize::MAX);
+    let HttpState { kfk_clients: clients, metrics } = state;
+    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Fetch).traffic(LblTraffic::Out).tap(kfk_tap.clone()).build();
+    let req_snd = clients.lookup_sender(kfk_tap.clone()).await?;
+    let kfk_offset_from = kfk_offset_from.into();
+    let kfk_offset_until = kfk_offset_until.into();
+    let kfk_fetch_min_max_bytes = kfk_fetch_min_size.as_u64() as i32 .. kfk_fetch_max_size.as_u64() as i32;
+    let kfk_fetch_max_wait_ms = kfk_fetch_max_wait_time.as_millis() as i32;
+    let file_save_rec_count_budget =  file_save_max_rec_count.unwrap_or(usize::MAX);
+    let file_save_size_budget = file_save_max_size.map(|s|s.as_u64() as usize).unwrap_or(usize::MAX);
     let (rsp_snd, rsp_rcv) = tokio::sync::mpsc::channel(1);
-
-    let selector = JrpSelector::new(None, JrpCodec::Json, Vec::new(), None);
-    let ctx = JrpCtxTypes::fetch(0, Instant::now(), tap, selector);
-    let req = KfkReq::Fetch(Req(Ctx(ctx, (from, min_max_bytes.clone(), max_wait_ms)), rsp_snd.clone()));
+    let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
+    let jrp_selector = JrpSelector::new(jrp_key_codec, jrp_value_codec, jrp_header_codecs, jrp_header_codec_default);
+    let ctx = JrpCtxTypes::fetch(0, Instant::now(), kfk_tap, jrp_selector);
+    let req = KfkReq::Fetch(Req(Ctx(ctx, (kfk_offset_from, kfk_fetch_min_max_bytes.clone(), kfk_fetch_max_wait_ms)), rsp_snd.clone()));
     req_snd.send(req).await?;
 
-    let state = KfkFetchState::next(until, min_max_bytes, max_wait_ms, rec_count_budget, byte_size_budget, req_snd, rsp_snd, rsp_rcv, metrics, labels);
+    let state = KfkFetchState::next(
+        kfk_offset_until,
+        kfk_fetch_min_max_bytes,
+        kfk_fetch_max_wait_ms,
+        file_save_rec_count_budget,
+        file_save_size_budget,
+        file_format,
+        req_snd,
+        rsp_snd,
+        rsp_rcv,
+        metrics,
+        labels
+    );
     let stream = try_unfold(state, get_kafka_fetch_chunk);
     let body = StreamBody::new(stream);
     let response = Response::builder()
@@ -343,11 +456,11 @@ async fn post_kafka_send_proc_responses(
 #[instrument(ret, err, skip(state))]
 async fn post_kafka_send(
     State(state): State<HttpState>,
-    Path(HttpFetchPath { topic, partition }): Path<HttpFetchPath>,
+    Path(HttpFetchPath { kfk_topic: topic, kfk_partition: partition }): Path<HttpFetchPath>,
     Query(HttpSendQuery { max_batch_size }): Query<HttpSendQuery>,
     request: Request<Body>,
 ) -> Result<(), JrpkError> {
-    let HttpState { clients, metrics } = state;
+    let HttpState { kfk_clients: clients, metrics } = state;
     let tap = Tap::new(topic, partition);
     let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(tap.clone()).build();
     let max_batch_size = max_batch_size.as_u64() as usize;

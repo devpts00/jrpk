@@ -10,17 +10,21 @@ for ((p = 0; p < $PARTITIONS; p++))
 do
   ./target/${BUILD}/jrpk \
     produce \
-    --path ./json/${FILE}.json \
-    --address jrpk:1133 \
-    --topic ${TOPIC} \
-    --partition ${p} \
-    --max-frame-byte-size 32kib \
-    --metrics-url http://pmg:9091/metrics/job/jrpk \
-    --metrics-period 1s \
-    --max-batch-byte-size 16kib \
-    --max-rec-byte-size 2kib \
+    --jrp-address jrpk:1133 \
+    --jrp-frame-max-size 64kib \
+    --jrp-send-max-size 32kib \
+    --jrp-send-max-rec-count 100 \
+    --jrp-send-max-rec-size 1kib \
+    --jrp-value-codec json \
+    --kfk-topic ${TOPIC} \
+    --kfk-partition ${p} \
+    --file-path ./json/${FILE}.json \
     --file-format value \
-    --value-codec json &
+    --file-load-max-size 1gib \
+    --file-load-max-rec-count 1000000 \
+    --prom-push-url http://pmg:9091/metrics/job/jrpk \
+    --prom-push-period 1s \
+    --thread-count 1 &
     sleep 0.1
 done
 

@@ -99,7 +99,7 @@ fn k2j_rec_headers(headers: BTreeMap<String, Vec<u8>>, codecs: &Vec<(FastStr, Jr
 }
 
 #[inline]
-fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, selector: &JrpSelector) -> Result<JrpRecFetch<'static>, JrpkError> {
+pub fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, selector: &JrpSelector) -> Result<JrpRecFetch<'static>, JrpkError> {
     let offset = rec_and_offset.offset;
     let record = rec_and_offset.record;
     let timestamp = record.timestamp;
@@ -130,13 +130,13 @@ fn k2j_rsp_offset(offsets: Result<i64, KfkError>) -> Result<JrpRspData<'static>,
     Ok(JrpRspData::Offset(offsets))
 }
 
-impl Into<KfkOffset> for JrpOffset {
-    fn into(self) -> KfkOffset {
-        match self {
-            JrpOffset::Earliest => KfkOffset::At(OffsetAt::Earliest),
-            JrpOffset::Latest => KfkOffset::At(OffsetAt::Latest),
-            JrpOffset::Timestamp(ts) => KfkOffset::At(OffsetAt::Timestamp(ts)),
-            JrpOffset::Offset(pos) => KfkOffset::Pos(pos)
+impl From<KfkOffset> for JrpOffset {
+    fn from(value: KfkOffset) -> Self {
+        match value {
+            KfkOffset::At(OffsetAt::Earliest) => JrpOffset::Earliest,
+            KfkOffset::At(OffsetAt::Latest) => JrpOffset::Latest,
+            KfkOffset::At(OffsetAt::Timestamp(timestamp)) => JrpOffset::Timestamp(timestamp),
+            KfkOffset::Pos(offset) => JrpOffset::Offset(offset),
         }
     }
 }
@@ -280,29 +280,29 @@ async fn jsonrpc_rsp_writer(
 type JrpErrSnd = Sender<(usize, JrpkError)>;
 type JrpErrRcv = Receiver<(usize, JrpkError)>;
 
-#[instrument(ret, err, skip(cli_cache, tcp_stream, metrics))]
+#[instrument(ret, err, skip(kafka_cache, tcp_stream, metrics))]
 async fn serve_jsonrpc(
+    jrp_max_frame_size: usize,
+    jrp_queue_size: usize,
+    kafka_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     tcp_stream: TcpStream,
-    cli_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
-    max_frame_size: usize,
-    send_buf_size: usize,
-    recv_buf_size: usize,
-    queue_size: usize,
+    tcp_send_buf_size: usize,
+    tcp_recv_buf_size: usize,
     metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
 
-    set_buf_sizes(&tcp_stream, recv_buf_size, send_buf_size)?;
+    set_buf_sizes(&tcp_stream, tcp_recv_buf_size, tcp_send_buf_size)?;
 
-    let codec = LinesCodec::new_with_max_length(max_frame_size);
+    let codec = LinesCodec::new_with_max_length(jrp_max_frame_size);
     let framed = Framed::new(tcp_stream, codec);
     let (tcp_sink, tcp_stream) = framed.split();
-    let (kfk_rsp_snd, kfk_rsp_rcv) = mpsc::channel::<KfkRsp<JrpCtxTypes>>(queue_size);
-    let (jrp_err_snd, jrp_err_rcv) = mpsc::channel::<(usize, JrpkError)>(queue_size);
+    let (kfk_rsp_snd, kfk_rsp_rcv) = mpsc::channel::<KfkRsp<JrpCtxTypes>>(jrp_queue_size);
+    let (jrp_err_snd, jrp_err_rcv) = mpsc::channel::<(usize, JrpkError)>(jrp_queue_size);
 
     let rh = spawn(
         jsonrpc_req_reader(
             tcp_stream,
-            cli_cache,
+            kafka_cache,
             kfk_rsp_snd,
             jrp_err_snd,
             metrics.clone(),
@@ -320,30 +320,30 @@ async fn serve_jsonrpc(
     Ok(())
 }
 
-#[instrument(ret, err, skip(cache, metrics))]
+#[instrument(ret, err, skip(kfk_cache, metrics))]
 pub async fn listen_jsonrpc(
-    bind: SocketAddr,
-    max_frame_size: usize,
-    send_buf_size: usize,
-    recv_buf_size: usize,
-    queue_size: usize,
-    cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    jrp_bind: SocketAddr,
+    jrp_max_frame_size: usize,
+    jrp_queue_size: usize,
+    kfk_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    tcp_send_buf_size: usize,
+    tcp_recv_buf_size: usize,
     metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
 
-    info!("bind: {:?}", bind);
-    let listener = TcpListener::bind(bind).await?;
+    info!("bind: {:?}", jrp_bind);
+    let listener = TcpListener::bind(jrp_bind).await?;
     loop {
         let (tcp_stream, addr) = listener.accept().await?;
         info!("accepted: {:?}", addr);
         spawn(
             serve_jsonrpc(
+                jrp_max_frame_size,
+                jrp_queue_size,
+                kfk_cache.clone(),
                 tcp_stream,
-                cache.clone(),
-                max_frame_size,
-                send_buf_size,
-                recv_buf_size,
-                queue_size,
+                tcp_send_buf_size,
+                tcp_recv_buf_size,
                 metrics.clone(),
             )
         );

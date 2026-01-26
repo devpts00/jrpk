@@ -21,21 +21,6 @@ use tokio_util::codec::{Encoder, Framed, FramedRead};
 use tracing::{debug, error, info, instrument};
 use crate::args::Format;
 
-#[derive(Debug, Clone)]
-pub enum Load {
-    Value(JrpCodec),
-    Record,
-}
-
-impl Load {
-    pub fn new(format: Format, value: JrpCodec) -> Self {
-        match format {
-            Format::Value => Load::Value(value),
-            Format::Record => Load::Record,
-        }
-    }
-}
-
 type JrpRecParser = fn(&'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError>;
 
 fn b2r_json(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
@@ -106,48 +91,62 @@ impl Encoder<JrpkMeteredProdReq> for LinesCodec {
 
 #[instrument(ret, skip(metrics, times, tcp_sink))]
 pub async fn producer_req_writer(
-    tap: Tap,
-    path: FastStr,
-    load: Load,
-    max_frame_size: usize,
-    max_batch_rec_count: usize,
-    max_batch_size: usize,
-    max_rec_size: usize,
+    jrp_frame_max_size: usize,
+    jrp_send_max_size: usize,
+    jrp_send_max_rec_count: usize,
+    jrp_send_max_rec_size: usize,
+    jrp_value_codec: JrpCodec,
+    kfk_tap: Tap,
+    file_path: FastStr,
+    file_format: Format,
+    file_load_max_rec_count: usize,
+    file_load_max_size: usize,
     metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpkMeteredProdReq>,
 ) -> Result<(), JrpkError> {
 
-    let b2r = match load {
-        Load::Record => b2r_rec,
-        Load::Value(JrpCodec::Json) => b2r_json,
-        Load::Value(JrpCodec::Str) => b2r_text,
-        Load::Value(JrpCodec::Base64) => b2r_base64,
+    let mut file_load_rec_count_budget = file_load_max_rec_count;
+    let mut file_load_size_budget = file_load_max_size;
+
+    let b2r = match (file_format, jrp_value_codec) {
+        (Format::Record, _) => b2r_rec,
+        (Format::Value, JrpCodec::Json) => b2r_json,
+        (Format::Value, JrpCodec::Str) => b2r_text,
+        (Format::Value, JrpCodec::Base64) => b2r_base64,
     };
 
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Send)
         .traffic(LblTraffic::Out)
-        .tap(tap.clone())
+        .tap(kfk_tap.clone())
         .build();
 
-    let file = async_clean_return!(tokio::fs::File::open(path.as_str()).await, tcp_sink.close().await);
-    let reader = tokio::io::BufReader::with_capacity(max_frame_size, file);
-    let codec = LinesCodec::new_with_max_length(max_frame_size);
-    let mut file_stream = FramedRead::with_capacity(reader, codec, max_frame_size);
+    let file = async_clean_return!(tokio::fs::File::open(file_path.as_str()).await, tcp_sink.close().await);
+    let reader = tokio::io::BufReader::with_capacity(jrp_frame_max_size, file);
+    let codec = LinesCodec::new_with_max_length(jrp_frame_max_size);
+    let mut file_stream = FramedRead::with_capacity(reader, codec, jrp_frame_max_size);
     let mut id: usize = 0;
 
-    let mut frames: Vec<Bytes> = Vec::with_capacity(max_batch_rec_count);
+    let mut frames: Vec<Bytes> = Vec::with_capacity(jrp_send_max_rec_count);
     let mut batch_length: usize = 0;
     while let Some(result) = file_stream.next().await {
-        let tap = tap.clone();
+
         let frame = result?;
+        if file_load_rec_count_budget == 0 && file_load_size_budget < frame.len() {
+            break;
+        } else {
+            file_load_rec_count_budget -= 1;
+            file_load_size_budget -= frame.len();
+        }
+
+        let kfk_tap = kfk_tap.clone();
         batch_length += frame.len();
         frames.push(frame);
-        if batch_length > max_batch_size - max_rec_size || frames.len() >= max_batch_rec_count {
-            info!("produce, batch-size: {}, max-rec-size: {}", batch_length, max_rec_size);
-            let jrp_req_builder = JrpReqBuilder::new(id, tap.topic, tap.partition, frames, b2r);
-            frames = Vec::with_capacity(max_batch_rec_count);
+        if batch_length > jrp_send_max_size - jrp_send_max_rec_size || frames.len() >= jrp_send_max_rec_count {
+            info!("produce, batch-size: {}, max-rec-size: {}", batch_length, jrp_send_max_rec_size);
+            let jrp_req_builder = JrpReqBuilder::new(id, kfk_tap.topic, kfk_tap.partition, frames, b2r);
+            frames = Vec::with_capacity(jrp_send_max_rec_count);
             times.insert(id, Instant::now()).await;
             let metered_item = JrpkMeteredProdReq::new(jrp_req_builder, metrics.clone(), labels.clone());
             async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
@@ -157,7 +156,7 @@ pub async fn producer_req_writer(
     }
 
     if !frames.is_empty() {
-        let jrp_req_builder = JrpReqBuilder::new(id, tap.topic, tap.partition, frames, b2r);
+        let jrp_req_builder = JrpReqBuilder::new(id, kfk_tap.topic, kfk_tap.partition, frames, b2r);
         times.insert(id, Instant::now()).await;
         let metered_item = JrpkMeteredProdReq::new(jrp_req_builder, metrics, labels);
         async_clean_return!(tcp_sink.send(metered_item).await, tcp_sink.close().await);
@@ -170,7 +169,7 @@ pub async fn producer_req_writer(
 
 #[instrument(ret, skip(metrics, times, tcp_stream))]
 pub async fn producer_rsp_reader(
-    tap: Tap,
+    kfk_tap: Tap,
     metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
@@ -178,7 +177,7 @@ pub async fn producer_rsp_reader(
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Send)
         .traffic(LblTraffic::In)
-        .tap(tap)
+        .tap(kfk_tap)
         .build();
     while let Some(result) = tcp_stream.next().await {
         let frame = result?;
@@ -200,43 +199,51 @@ pub async fn producer_rsp_reader(
     Ok(())
 }
 
-#[instrument(ret, err, skip(metrics_url))]
+#[instrument(ret, err, skip(prom_push_url))]
 pub async fn produce(
-    address: FastStr,
-    tap: Tap,
-    path: FastStr,
-    max_frame_size: usize,
-    max_batch_rec_count: usize,
-    max_batch_size: usize,
-    max_rec_size: usize,
-    load: Load,
-    mut metrics_url: Url,
-    metrics_period: Duration,
+    jrp_address: FastStr,
+    jrp_frame_max_size: usize,
+    jrp_send_max_size: usize,
+    jrp_send_max_rec_count: usize,
+    jrp_send_max_rec_size: usize,
+    jrp_value_codec: JrpCodec,
+    kfk_topic: FastStr,
+    kfk_partition: i32,
+    file_path: FastStr,
+    file_format: Format,
+    file_load_max_rec_count: usize,
+    file_load_max_size: usize,
+    mut prom_push_url: Url,
+    prom_push_period: Duration,
 ) -> Result<(), JrpkError> {
 
+    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
     let metrics = Arc::new(JrpkMetrics::new());
 
-    url_append_tap(&mut metrics_url, &tap)?;
+    url_append_tap(&mut prom_push_url, &kfk_tap)?;
     let times = Arc::new(Cache::builder().time_to_live(Duration::from_mins(1)).build());
     let ph = spawn_push_prometheus(
-        metrics_url,
-        metrics_period,
+        prom_push_url,
+        prom_push_period,
         metrics.clone()
     );
 
-    let stream = TcpStream::connect(address.as_str()).await?;
-    let codec = LinesCodec::new_with_max_length(max_frame_size);
-    let framed = Framed::with_capacity(stream, codec, max_frame_size);
+    let stream = TcpStream::connect(jrp_address.as_str()).await?;
+    let codec = LinesCodec::new_with_max_length(jrp_frame_max_size);
+    let framed = Framed::with_capacity(stream, codec, jrp_frame_max_size);
     let (tcp_sink, tcp_stream) = framed.split();
     let wh = tokio::spawn(
         producer_req_writer(
-            tap.clone(),
-            path,
-            load,
-            max_frame_size,
-            max_batch_rec_count,
-            max_batch_size,
-            max_rec_size,
+            jrp_frame_max_size,
+            jrp_send_max_size,
+            jrp_send_max_rec_count,
+            jrp_send_max_rec_size,
+            jrp_value_codec,
+            kfk_tap.clone(),
+            file_path,
+            file_format,
+            file_load_max_rec_count,
+            file_load_max_size,
             metrics.clone(),
             times.clone(),
             tcp_sink
@@ -244,7 +251,7 @@ pub async fn produce(
     );
     let rh = tokio::spawn(
         producer_rsp_reader(
-            tap,
+            kfk_tap,
             metrics.clone(),
             times.clone(),
             tcp_stream

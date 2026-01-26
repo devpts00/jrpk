@@ -25,18 +25,33 @@ build-release:
 server-debug: build-debug
 	docker compose run --rm -it --remove-orphans -e HEAPPROFILE=/jrpk/out/heap \
 		--name jrpk rst ./target/debug/jrpk \
-		serve --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
+		serve \
+		--jrp-bind=0.0.0.0:1133 --jrp-max-frame-size=1mib --jrp-queue-len=8 \
+		--http-bind=0.0.0.0:1134 \
+		--kfk-brokers=kfk:9092 \
+		--tcp-send-buf-size=32kib \
+		--tcp-recv-buf-size=32kib
 
 heaptrack-server-debug: build-debug
 	docker compose run --rm -it --remove-orphans \
 		--name jrpk rst heaptrack --output ./out/heap ./target/debug/jrpk \
-		serve --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134
+		serve \
+		--jrp-bind=0.0.0.0:1133 --jrp-max-frame-size=1mib --jrp-queue-len=8 \
+		--http-bind=0.0.0.0:1134 \
+		--kfk-brokers=kfk:9092 \
+		--tcp-send-buf-size=32kib \
+		--tcp-recv-buf-size=32kib
 	heaptrack --analyze ./out/heap.gz &
 
 server-release: build-release
 	docker compose run --rm -it --remove-orphans \
 		--name jrpk rst ./target/release/jrpk \
-		serve --brokers=kfk:9092 --jsonrpc-bind=0.0.0.0:1133 --http-bind=0.0.0.0:1134 --max-frame-byte-size=32kib
+		serve \
+		--jrp-bind=0.0.0.0:1133 --jrp-max-frame-size=1mib --jrp-queue-len=8 \
+		--http-bind=0.0.0.0:1134 \
+		--kfk-brokers=kfk:9092 \
+		--tcp-send-buf-size=32kib \
+		--tcp-recv-buf-size=32kib
 
 client-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1
