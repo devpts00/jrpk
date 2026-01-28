@@ -4,10 +4,11 @@ use futures_util::future::join_all;
 use rskafka::client::ClientBuilder;
 use tokio::spawn;
 use tracing::{info, instrument};
+use crate::args::KfkCompression;
 use crate::error::JrpkError;
 use crate::http::listen_http;
 use crate::jsonrpc::listen_jsonrpc;
-use crate::kafka::KfkClientCache;
+use crate::kafka::{a2k_compression, KfkClientCache};
 use crate::metrics::JrpkMetrics;
 use crate::util::join_with_quit;
 
@@ -18,6 +19,7 @@ pub async fn serve(
     jrp_queue_len: usize,
     http_bind: SocketAddr,
     kfk_brokers: Vec<String>,
+    kfk_compression: Option<KfkCompression>,
     tcp_send_buffer_size: usize,
     tcp_recv_buffer_size: usize,
 ) -> Result<(), JrpkError> {
@@ -26,7 +28,8 @@ pub async fn serve(
 
     info!("connect: {}", kfk_brokers.join(","));
     let kfk_client = ClientBuilder::new(kfk_brokers).build().await?;
-    let kfk_clients = Arc::new(KfkClientCache::new(kfk_client, 1024, jrp_queue_len, metrics.clone()));
+    let kfk_compression = a2k_compression(kfk_compression);
+    let kfk_clients = Arc::new(KfkClientCache::new(kfk_client, kfk_compression, 1024, jrp_queue_len, metrics.clone()));
 
     let jh = spawn(
         listen_jsonrpc(

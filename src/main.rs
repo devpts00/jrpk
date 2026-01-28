@@ -34,6 +34,7 @@ fn main() {
             jrp_queue_len,
             http_bind,
             kfk_brokers,
+            kfk_compression,
             tcp_send_buf_size,
             tcp_recv_buf_size,
             thread_count,
@@ -49,6 +50,7 @@ fn main() {
                     jrp_queue_len,
                     http_bind,
                     kfk_brokers,
+                    kfk_compression,
                     tcp_send_buf_size,
                     tcp_recv_buf_size,
                 )

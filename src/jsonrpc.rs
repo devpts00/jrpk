@@ -22,6 +22,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::{select, spawn, try_join};
 use tokio_util::codec::Framed;
 use tracing::{info, instrument, trace, warn};
+use crate::args::KfkCompression;
 
 #[derive(Debug, Clone)]
 pub struct JrpCtx<E: Clone> {
@@ -37,6 +38,7 @@ impl <E: Clone> JrpCtx<E> {
     }
 }
 
+#[derive(Debug)]
 pub struct JrpCtxTypes;
 
 impl JrpCtxTypes {
@@ -280,11 +282,11 @@ async fn jsonrpc_rsp_writer(
 type JrpErrSnd = Sender<(usize, JrpkError)>;
 type JrpErrRcv = Receiver<(usize, JrpkError)>;
 
-#[instrument(ret, err, skip(kafka_cache, tcp_stream, metrics))]
+#[instrument(ret, err, skip(kfk_cache, tcp_stream, metrics))]
 async fn serve_jsonrpc(
     jrp_max_frame_size: usize,
     jrp_queue_size: usize,
-    kafka_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    kfk_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     tcp_stream: TcpStream,
     tcp_send_buf_size: usize,
     tcp_recv_buf_size: usize,
@@ -302,7 +304,7 @@ async fn serve_jsonrpc(
     let rh = spawn(
         jsonrpc_req_reader(
             tcp_stream,
-            kafka_cache,
+            kfk_cache,
             kfk_rsp_snd,
             jrp_err_snd,
             metrics.clone(),

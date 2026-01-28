@@ -20,7 +20,7 @@ services:
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
       - KAFKA_LOG_DIR=/kafka
-      - KAFKA_LOG_RETENTION_MS=43200000
+      - KAFKA_LOG_RETENTION_MS=3600000
       - KAFKA_LOG_RETENTION_BYTES=1073741824
     volumes:
       - kafka:/kafka:rw
@@ -109,11 +109,11 @@ services:
       - RUST_LOG=info,jrpk=info,tokio::task=info,tower_http=debug
       #- LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
       #- MALLOC_CONF=stats_print:true
-      #- LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so
-      - LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libmimalloc.so
-      - MIMALLOC_PAGE_RESET=1
-      - MIMALLOC_RESET_DECOMMITS=1
-      - MIMALLOC_RESET_DELAY=1
+      - LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so
+      #- LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libmimalloc.so
+      #- MIMALLOC_PAGE_RESET=1
+      #- MIMALLOC_RESET_DECOMMITS=1
+      #- MIMALLOC_RESET_DELAY=1
     volumes:
       - cargo:/usr/local/cargo
       - target:/jrpk/target
@@ -127,7 +127,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4g
+          memory: 2g
 
   trc:
     profiles:

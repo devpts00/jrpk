@@ -37,9 +37,18 @@ impl From<NamedCodec> for (FastStr, JrpCodec) {
 
 #[derive(Debug, Clone, Copy, EnumString)]
 #[strum(serialize_all = "lowercase")]
-pub enum Format {
+pub enum FileFormat {
     Value,
     Record
+}
+
+#[derive(Debug, Clone, Copy, EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum KfkCompression {
+    Gzip,
+    Lz4,
+    Snappy,
+    Zstd,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -57,6 +66,8 @@ pub enum Cmd {
 
         #[arg(long, value_delimiter = ',')]
         kfk_brokers: Vec<String>,
+        #[arg(long)]
+        kfk_compression: Option<KfkCompression>,
 
         #[arg(long, default_value = "32KiB")]
         tcp_send_buf_size: ByteSize,
@@ -88,7 +99,7 @@ pub enum Cmd {
         #[arg(long)]
         file_path: FastStr,
         #[arg(long, default_value="value")]
-        file_format: Format,
+        file_format: FileFormat,
         #[arg(long)]
         file_load_max_size: Option<ByteSize>,
         #[arg(long)]
@@ -134,7 +145,7 @@ pub enum Cmd {
         #[arg(long)]
         file_path: FastStr,
         #[arg(long, default_value="value")]
-        file_format: Format,
+        file_format: FileFormat,
         #[arg(long)]
         file_save_max_rec_count: Option<usize>,
         #[arg(long)]

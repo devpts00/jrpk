@@ -19,7 +19,7 @@ use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Encoder, Framed, FramedRead};
 use tracing::{debug, error, info, instrument};
-use crate::args::Format;
+use crate::args::FileFormat;
 
 type JrpRecParser = fn(&'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError>;
 
@@ -98,7 +98,7 @@ pub async fn producer_req_writer(
     jrp_value_codec: JrpCodec,
     kfk_tap: Tap,
     file_path: FastStr,
-    file_format: Format,
+    file_format: FileFormat,
     file_load_max_rec_count: usize,
     file_load_max_size: usize,
     metrics: Arc<JrpkMetrics>,
@@ -110,10 +110,10 @@ pub async fn producer_req_writer(
     let mut file_load_size_budget = file_load_max_size;
 
     let b2r = match (file_format, jrp_value_codec) {
-        (Format::Record, _) => b2r_rec,
-        (Format::Value, JrpCodec::Json) => b2r_json,
-        (Format::Value, JrpCodec::Str) => b2r_text,
-        (Format::Value, JrpCodec::Base64) => b2r_base64,
+        (FileFormat::Record, _) => b2r_rec,
+        (FileFormat::Value, JrpCodec::Json) => b2r_json,
+        (FileFormat::Value, JrpCodec::Str) => b2r_text,
+        (FileFormat::Value, JrpCodec::Base64) => b2r_base64,
     };
 
     let labels = JrpkLabels::new(LblTier::Client)
@@ -210,7 +210,7 @@ pub async fn produce(
     kfk_topic: FastStr,
     kfk_partition: i32,
     file_path: FastStr,
-    file_format: Format,
+    file_format: FileFormat,
     file_load_max_rec_count: usize,
     file_load_max_size: usize,
     mut prom_push_url: Url,

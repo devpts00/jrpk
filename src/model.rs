@@ -16,7 +16,7 @@ use std::str::FromStr;
 use faststr::FastStr;
 use strum::EnumString;
 use tracing::instrument;
-use crate::args::Format;
+use crate::args::FileFormat;
 use crate::util::{Budget, Length};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -487,7 +487,7 @@ pub enum Progress {
 
 #[instrument(ret, err, level="trace", skip(records, writer))]
 pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFetch<'a>, JrpkError>>>(
-    format: Format,
+    format: FileFormat,
     records: IR,
     until: JrpOffset,
     budget: &mut Budget,
@@ -505,7 +505,7 @@ pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFe
         }
 
         match format {
-            Format::Value => {
+            FileFormat::Value => {
                 if let Some(value) = record.value {
                     if !budget.write_slice(writer, value.as_text().as_bytes())? {
                         progress = Progress::Overdraft;
@@ -513,7 +513,7 @@ pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFe
                     }
                 }
             }
-            Format::Record => {
+            FileFormat::Record => {
                 if !budget.write_ser(writer, &record)? {
                     progress = Progress::Overdraft;
                     break

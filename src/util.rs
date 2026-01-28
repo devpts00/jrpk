@@ -81,12 +81,14 @@ impl Display for Tap {
     }
 }
 
+#[derive(Debug)]
 pub struct Ctx<C, T>(pub C, pub T);
 
 impl <C, T> Ctx<C, T> {
     pub fn new(ctx: C, value: T) -> Self { Ctx(ctx, value) }
 }
 
+#[derive(Debug)]
 pub struct Req<C, T, K> (pub Ctx<C, T>, pub Sender<K> );
 
 pub async fn join_with_signal<F: Future>(f: F) {
@@ -190,7 +192,8 @@ pub fn debug_record_and_offset(f: &mut Formatter<'_>, record: &Record, offset: O
 pub fn set_buf_sizes(stream: &TcpStream, recv: usize, send: usize) -> std::io::Result<()> {
     let socket = SockRef::from(&stream);
     socket.set_recv_buffer_size(recv)?;
-    socket.set_send_buffer_size(send)
+    socket.set_send_buffer_size(send)?;
+    Ok(())
 }
 
 pub struct CancellableHandle<T> {

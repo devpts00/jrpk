@@ -16,11 +16,22 @@ use tokio::{spawn};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
 use tracing::{instrument, trace};
+use crate::args::KfkCompression;
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
 use crate::model::JrpOffset;
 use crate::size::Size;
 
 pub type KfkError = rskafka::client::error::Error;
+
+pub fn a2k_compression(compression: Option<KfkCompression>) -> Compression {
+    match compression {
+        None => Compression::NoCompression,
+        Some(KfkCompression::Gzip) => Compression::Gzip,
+        Some(KfkCompression::Lz4) => Compression::Lz4,
+        Some(KfkCompression::Snappy) => Compression::Snappy,
+        Some(KfkCompression::Zstd) => Compression::Zstd,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KfkOffset {
@@ -74,6 +85,7 @@ pub trait KfkTypes {
     type O;
 }
 
+#[derive(Debug)]
 pub enum KfkData<T: KfkTypes> {
     Send(T::S),
     Fetch(T::F),
@@ -105,6 +117,7 @@ impl <T: KfkTypes> KfkData<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct KfkTypesIn;
 
 impl KfkTypes for KfkTypesIn {
@@ -113,6 +126,7 @@ impl KfkTypes for KfkTypesIn {
     type O = KfkOffset;
 }
 
+#[derive(Debug)]
 pub struct KfkTypesRsp;
 
 impl KfkTypes for KfkTypesRsp {
@@ -121,6 +135,7 @@ impl KfkTypes for KfkTypesRsp {
     type O = i64;
 }
 
+#[derive(Debug)]
 pub struct KfkResTypes<T, E>(PhantomData<T>, PhantomData<E>);
 
 impl <T: KfkTypes, E: Error> KfkTypes for KfkResTypes<T, E> {
@@ -129,6 +144,7 @@ impl <T: KfkTypes, E: Error> KfkTypes for KfkResTypes<T, E> {
     type O = Result<T::O, E>;
 }
 
+#[derive(Debug)]
 pub struct KfkCtxTypes<C, T>(PhantomData<C>, PhantomData<T>);
 
 impl <C: KfkTypes, T: KfkTypes> KfkTypes for KfkCtxTypes<C, T> {
@@ -141,6 +157,7 @@ pub type KfkIn<C> = KfkData<KfkCtxTypes<C, KfkTypesIn>>;
 
 pub type KfkRsp<C> = KfkData<KfkCtxTypes<C, KfkResTypes<KfkTypesRsp, KfkError>>>;
 
+#[derive(Debug)]
 pub struct KfkCtxReqTypes<C, T, U, E, K>(PhantomData<C>, PhantomData<T>, PhantomData<U>, PhantomData<E>, PhantomData<K>);
 
 impl <C: KfkTypes, T: KfkTypes, U: KfkTypes, E: Error, K> KfkTypes for KfkCtxReqTypes<C, T, U, E, K> {
@@ -185,25 +202,26 @@ where
 
 async fn kafka_send(
     cli: &PartitionClient,
+    records: Vec<Record>,
+    compression: Compression,
     metrics: &JrpkMetrics,
     labels: &mut JrpkLabels,
-    records: Vec<Record>
 ) -> Result<Vec<i64>, KfkError> {
     let labels = labels.method(LblMethod::Send);
-    let func = |rs| cli.produce(rs, Compression::Snappy);
+    let func = |rs| cli.produce(rs, compression);
     let offsets = meter(records, metrics, labels, func).await?;
     Ok(offsets)
 }
 
 async fn kafka_fetch(
     cli: &PartitionClient,
-    metrics: &JrpkMetrics,
-    labels: &mut JrpkLabels,
     offset: KfkOffset,
     bytes: Range<i32>,
-    max_wait_ms: i32
+    max_wait_ms: i32,
+    metrics: &JrpkMetrics,
+    labels: &mut JrpkLabels,
 ) -> Result<(Vec<RecordAndOffset>, i64), KfkError> {
-    let offset = kafka_offset(cli, metrics, labels, offset).await?;
+    let offset = kafka_offset(cli, offset, metrics, labels).await?;
     let labels = labels.method(LblMethod::Fetch);
     let func = |(offset, bytes, max_wait_ms)| cli.fetch_records(offset, bytes, max_wait_ms);
     let (records_and_offsets, high_watermark) = meter((offset, bytes, max_wait_ms), metrics, labels, func).await?;
@@ -212,9 +230,9 @@ async fn kafka_fetch(
 
 async fn kafka_offset(
     cli: &PartitionClient,
+    offset: KfkOffset,
     metrics: &JrpkMetrics,
     labels: &mut JrpkLabels,
-    offset: KfkOffset
 ) -> Result<i64, KfkError> {
     match offset {
         KfkOffset::At(at) => {
@@ -232,6 +250,7 @@ async fn kafka_offset(
 async fn kafka_loop<C: KfkTypes>(
     tap: Tap,
     cli: PartitionClient,
+    compression: Compression,
     metrics: Arc<JrpkMetrics>,
     mut rcv: Receiver<KfkReq<C>>,
 ) -> Result<(), SendError<KfkRsp<C>>> {
@@ -239,15 +258,15 @@ async fn kafka_loop<C: KfkTypes>(
     while let Some(req) = rcv.recv().await {
         match req {
             KfkReq::Send(Req(Ctx(ctx, records), rsp)) => {
-                let res = kafka_send(&cli, &metrics, &mut labels, records).await;
+                let res = kafka_send(&cli, records, compression, &metrics, &mut labels).await;
                 rsp.send(KfkRsp::Send(Ctx::new(ctx, res))).await?
             }
             KfkReq::Fetch(Req(Ctx(ctx, (offset, bytes, max_wait_ms)), rsp)) => {
-                let res = kafka_fetch(&cli, &metrics, &mut labels, offset, bytes, max_wait_ms).await;
+                let res = kafka_fetch(&cli, offset, bytes, max_wait_ms, &metrics, &mut labels).await;
                 rsp.send(KfkRsp::Fetch(Ctx::new(ctx, res))).await?
             }
             KfkReq::Offset(Req(Ctx(ctx, offset), rsp)) => {
-                let res = kafka_offset(&cli, &metrics, &mut labels, offset).await;
+                let res = kafka_offset(&cli, offset, &metrics, &mut labels).await;
                 rsp.send(KfkRsp::Offset(Ctx::new(ctx, res))).await?
             }
         }
@@ -258,6 +277,7 @@ async fn kafka_loop<C: KfkTypes>(
 pub struct KfkClientCache<REQ> {
     client: Client,
     cache: Cache<Tap, Sender<REQ>>,
+    compression: Compression,
     queue_size: usize,
     metrics: Arc<JrpkMetrics>,
 }
@@ -265,8 +285,8 @@ pub struct KfkClientCache<REQ> {
 impl <C: KfkTypes> KfkClientCache<KfkReq<C>>
 where C::S: Send + Sync, C::F: Send + Sync, C::O: Send + Sync, C: 'static {
 
-    pub fn new(client: Client, capacity: u64, queue_size: usize, metrics: Arc<JrpkMetrics>) -> Self {
-        Self { client, cache: Cache::new(capacity), queue_size, metrics }
+    pub fn new(client: Client, compression: Compression, capacity: u64, queue_size: usize, metrics: Arc<JrpkMetrics>) -> Self {
+        Self { client, cache: Cache::new(capacity), compression, queue_size, metrics }
     }
 
     #[instrument(err, skip(self))]
@@ -274,14 +294,14 @@ where C::S: Send + Sync, C::F: Send + Sync, C::O: Send + Sync, C: 'static {
         info!("init: {}, queue length: {}", tap, self.queue_size);
         let cli = self.client.partition_client(tap.topic.as_str(), tap.partition, UnknownTopicHandling::Error).await?;
         let (snd, rcv) = tokio::sync::mpsc::channel(self.queue_size);
-        spawn(kafka_loop(tap, cli, self.metrics.clone(), rcv));
+        spawn(kafka_loop(tap, cli, self.compression, self.metrics.clone(), rcv));
         Ok(snd)
     }
 
     #[instrument(level="debug", err, skip(self))]
     pub async fn lookup_sender(&self, tap: Tap) -> Result<Sender<KfkReq<C>>, JrpkError> {
         trace!("lookup: {}", tap);
-        self.cache.run_pending_tasks().await;
+        //self.cache.run_pending_tasks().await;
         if let Some(snd) = self.cache.get(&tap).await {
             Ok(snd)
         } else {

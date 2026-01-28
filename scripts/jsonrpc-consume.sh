@@ -4,10 +4,11 @@ export BUILD=$1
 export FILE=$2
 export TOPIC=$3
 export PARTITIONS=$4
+export COUNT=$5
 
 START_TIME=$EPOCHREALTIME
 
-for ((i = 0; i < 1; i++))
+for ((i = 0; i < $COUNT; i++))
 do
   for ((p = 0; p < $PARTITIONS; p++))
   do
@@ -22,8 +23,8 @@ do
       --kfk-partition=${p} \
       --kfk-offset-from=earliest \
       --kfk-offset-until=latest \
-      --kfk-fetch-min-size=1kib \
-      --kfk-fetch-max-size=32kib \
+      --kfk-fetch-min-size=32kib \
+      --kfk-fetch-max-size=256kib \
       --kfk-fetch-max-wait-time=1s \
       --file-path=./json/${FILE}-${p}.json \
       --file-format=record \

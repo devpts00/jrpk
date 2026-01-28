@@ -36,7 +36,7 @@ use tokio::{spawn, try_join};
 use tokio_stream::wrappers::LinesStream;
 use tokio_util::io::StreamReader;
 use tracing::{debug, instrument, trace};
-use crate::args::{Format, NamedCodec};
+use crate::args::{FileFormat, NamedCodec};
 
 #[instrument(level="trace", ret, err, skip(metrics))]
 async fn get_prometheus_metrics(State(metrics): State<Arc<JrpkMetrics>>) -> Result<String, JrpkError> {
@@ -60,16 +60,16 @@ impl <'de> Deserialize<'de> for NamedCodec {
     }
 }
 
-impl <'de> Deserialize<'de> for Format {
+impl <'de> Deserialize<'de> for FileFormat {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct FormatVisitor;
         impl <'de> Visitor<'de> for FormatVisitor {
-            type Value = Format;
+            type Value = FileFormat;
             fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
                 write!(f, "record or value")
             }
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-                Format::from_str(v).map_err(Error::custom)
+                FileFormat::from_str(v).map_err(Error::custom)
             }
         }
         d.deserialize_str(FormatVisitor)
@@ -148,7 +148,7 @@ const fn default_kfk_fetch_max_wait_time() -> Duration {
     Duration::from_millis(100)
 }
 
-const fn default_file_format() -> Format { Format::Value }
+const fn default_file_format() -> FileFormat { FileFormat::Value }
 
 #[derive(Deserialize)]
 struct HttpFetchQuery {
@@ -170,7 +170,7 @@ struct HttpFetchQuery {
     kfk_fetch_max_wait_time: Duration,
 
     #[serde(default = "default_file_format")]
-    file_format: Format,
+    file_format: FileFormat,
     #[serde(default)]
     file_save_max_rec_count: Option<usize>,
     #[serde(default)]
@@ -184,7 +184,7 @@ enum KfkFetchState {
         kfk_fetch_max_wait_ms: i32,
         file_save_rec_count_budget: usize,
         file_save_size_budget: usize,
-        file_format: Format,
+        file_format: FileFormat,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
         rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
@@ -205,7 +205,7 @@ impl KfkFetchState {
         kfk_fetch_max_wait_ms: i32,
         file_save_rec_count_budget: usize,
         file_save_size_budget: usize,
-        file_format: Format,
+        file_format: FileFormat,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
         rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,

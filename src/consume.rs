@@ -15,7 +15,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, instrument, trace};
-use crate::args::Format;
+use crate::args::FileFormat;
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::model::{write_records, JrpCodec, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector, Progress};
@@ -114,7 +114,7 @@ async fn consumer_rsp_reader(
     kfk_from: JrpOffset,
     kfk_until: JrpOffset,
     file_path: FastStr,
-    file_format: Format,
+    file_format: FileFormat,
     file_save_max_rec_count: usize,
     file_save_max_size: usize,
     metrics: Arc<JrpkMetrics>,
@@ -205,7 +205,7 @@ pub async fn consume(
     kfk_fetch_max_size: i32,
     kfk_fetch_max_wait_ms: i32,
     file_path: FastStr,
-    file_format: Format,
+    file_format: FileFormat,
     file_save_max_rec_count: usize,
     file_save_max_size: usize,
     mut prom_push_url: Url,
