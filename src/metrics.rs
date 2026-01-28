@@ -8,7 +8,7 @@ use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue, LabelValueEn
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
-use prometheus_client::metrics::histogram::{exponential_buckets, linear_buckets, Histogram};
+use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::{Registry, Unit};
 use reqwest::{Client, Url};
 use reqwest::header::HOST;
@@ -144,7 +144,7 @@ impl JrpkMetrics {
 
     pub fn encode(&self) -> Result<String, std::fmt::Error> {
         let mut buf = String::with_capacity(64 * 1024);
-        // TODO: see if we can handle 
+        // TODO: see if we can handle
         let registry = self.registry.lock().unwrap();
         encode(&mut buf, &registry)?;
         trace!("metrics:\n{}", buf);

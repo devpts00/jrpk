@@ -15,7 +15,7 @@ mod serve;
 use crate::args::Cmd;
 use crate::consume::consume;
 use crate::produce::produce;
-use crate::util::{init_tracing, log, run, Tap};
+use crate::util::{init_tracing, log, run};
 use clap::Parser;
 use std::time::Duration;
 use tracing::info;
@@ -112,7 +112,7 @@ fn main() {
             kfk_offset_until,
             kfk_fetch_min_size,
             kfk_fetch_max_size,
-            kfk_fetch_max_wait_time,
+            kfk_fetch_max_wait_time_ms,
             file_path,
             file_format,
             file_save_max_rec_count,
@@ -125,7 +125,6 @@ fn main() {
             let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
             let kfk_fetch_min_size = kfk_fetch_min_size.as_u64() as i32;
             let kfk_fetch_max_size = kfk_fetch_max_size.as_u64() as i32;
-            let kfk_fetch_max_wait_ms = Duration::from(&kfk_fetch_max_wait_time).as_millis() as i32;
             let file_save_max_rec_count = file_save_max_rec_count.unwrap_or(usize::MAX);
             let file_save_max_size = file_save_max_size.map(|bs|bs.as_u64() as usize).unwrap_or(usize::MAX);
             let prom_push_period = Duration::from(&prom_push_period);
@@ -144,7 +143,7 @@ fn main() {
                     kfk_partition,
                     kfk_fetch_min_size,
                     kfk_fetch_max_size,
-                    kfk_fetch_max_wait_ms,
+                    kfk_fetch_max_wait_time_ms,
                     file_path,
                     file_format,
                     file_save_max_rec_count,

@@ -6,12 +6,9 @@ use rskafka::record::Record;
 use socket2::SockRef;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
-use std::io::{ErrorKind, Write};
-use std::ops::Range;
-use std::slice::Iter;
+use std::io::Write;
 use std::str::from_utf8;
 use std::time::Duration;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use console::Term;
 use serde::Serialize;
 use tokio::net::TcpStream;
@@ -26,7 +23,6 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
-use crate::size;
 
 #[macro_export]
 macro_rules! async_clean_return {

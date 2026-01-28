@@ -25,7 +25,7 @@ do
       --kfk-offset-until=latest \
       --kfk-fetch-min-size=32kib \
       --kfk-fetch-max-size=256kib \
-      --kfk-fetch-max-wait-time=1s \
+      --kfk-fetch-max-wait-time-ms=5 \
       --file-path=./json/${FILE}-${p}.json \
       --file-format=record \
       --file-save-max-size=1gib \

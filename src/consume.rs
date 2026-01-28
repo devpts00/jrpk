@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Seek, Write};
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use faststr::FastStr;
@@ -203,7 +203,7 @@ pub async fn consume(
     kfk_partition: i32,
     kfk_fetch_min_size: i32,
     kfk_fetch_max_size: i32,
-    kfk_fetch_max_wait_ms: i32,
+    kfk_fetch_max_wait_time_ms: i32,
     file_path: FastStr,
     file_format: FileFormat,
     file_save_max_rec_count: usize,
@@ -236,7 +236,7 @@ pub async fn consume(
             kfk_tap.clone(),
             kfk_fetch_min_size,
             kfk_fetch_max_size,
-            kfk_fetch_max_wait_ms,
+            kfk_fetch_max_wait_time_ms,
             metrics.clone(),
             times.clone(),
             offset_rcv,

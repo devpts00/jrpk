@@ -4,7 +4,7 @@ use crate::error::JrpkError;
 use crate::jsonrpc::{k2j_rec_fetch, JrpCtx, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
-use crate::model::{write_records, JrpCodec, JrpOffset, JrpRecFetch, JrpSelector, Progress};
+use crate::model::{write_records, JrpCodec, JrpOffset, JrpSelector, Progress};
 use crate::util::{Budget, Ctx, Req, Tap, VecWriter};
 use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;

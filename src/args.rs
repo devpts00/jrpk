@@ -1,15 +1,11 @@
-use std::fmt::{Display, Formatter};
 use bytesize::ByteSize;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use chrono::{DateTime, Utc};
-use clap::{value_parser, Arg, Args, Parser};
+use clap::{value_parser, Parser};
 use clap_duration::duration_range_value_parse;
 use duration_human::{DurationHuman, DurationHumanValidator};
 use faststr::FastStr;
 use reqwest::Url;
-use serde::{Deserialize, Deserializer};
-use serde::de::{Error, Visitor};
 use strum::EnumString;
 use crate::error::JrpkError;
 use crate::model::{JrpCodec, JrpOffset};
@@ -139,8 +135,8 @@ pub enum Cmd {
         kfk_fetch_min_size: ByteSize,
         #[arg(long, default_value = "64KiB")]
         kfk_fetch_max_size: ByteSize,
-        #[arg(long, default_value = "1s", value_parser = duration_range_value_parse!(min: 1s, max: 10s))]
-        kfk_fetch_max_wait_time: DurationHuman,
+        #[arg(long, default_value = "10")]
+        kfk_fetch_max_wait_time_ms: i32,
 
         #[arg(long)]
         file_path: FastStr,
