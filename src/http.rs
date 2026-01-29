@@ -1,10 +1,9 @@
-use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use crate::error::JrpkError;
-use crate::jsonrpc::{j2k_req, k2j_rec_fetch, JrpCtx, JrpCtxTypes};
+use crate::jsonrpc::{k2j_rec_fetch, JrpCtx, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
-use crate::model::{b2j, b2j_rec_vec, write_records, JrpCodec, JrpOffset, JrpReq, JrpSelector, Progress};
+use crate::model::{b2j, b2j_rec_vec, write_records, JrpCodec, JrpOffset, JrpSelector, Progress};
 use crate::util::{Budget, Ctx, Req, Tap, VecWriter};
 use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
@@ -12,7 +11,7 @@ use axum::http::{Request, Response};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use bytesize::ByteSize;
 use faststr::FastStr;
 use futures_util::stream::try_unfold;
@@ -349,19 +348,19 @@ async fn get_kafka_fetch(
     let HttpState { kfk_clients: clients, metrics } = state;
     let kfk_tap = Tap::new(kfk_topic, kfk_partition);
     let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Fetch).traffic(LblTraffic::Out).tap(kfk_tap.clone()).build();
-    let req_snd = clients.lookup_sender(kfk_tap.clone()).await?;
+    let kfk_req_snd = clients.lookup_sender(kfk_tap.clone()).await?;
     let kfk_offset_from = kfk_offset_from.into();
     let kfk_offset_until = kfk_offset_until.into();
     let kfk_fetch_min_max_bytes = kfk_fetch_min_size.as_u64() as i32 .. kfk_fetch_max_size.as_u64() as i32;
     let kfk_fetch_max_wait_ms = kfk_fetch_max_wait_time.as_millis() as i32;
     let file_save_rec_count_budget =  file_save_max_rec_count.unwrap_or(usize::MAX);
     let file_save_size_budget = file_save_max_size.map(|s|s.as_u64() as usize).unwrap_or(usize::MAX);
-    let (rsp_snd, rsp_rcv) = tokio::sync::mpsc::channel(1);
+    let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel(1);
     let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
     let jrp_selector = JrpSelector::new(jrp_key_codec, jrp_value_codec, jrp_header_codecs, jrp_header_codec_default);
     let ctx = JrpCtxTypes::fetch(0, Instant::now(), kfk_tap, jrp_selector);
-    let req = KfkReq::Fetch(Req(Ctx(ctx, (kfk_offset_from, kfk_fetch_min_max_bytes.clone(), kfk_fetch_max_wait_ms)), rsp_snd.clone()));
-    req_snd.send(req).await?;
+    let kfk_req = KfkReq::Fetch(Req(Ctx(ctx, (kfk_offset_from, kfk_fetch_min_max_bytes.clone(), kfk_fetch_max_wait_ms)), kfk_rsp_snd.clone()));
+    kfk_req_snd.send(kfk_req).await?;
 
     let state = KfkFetchState::next(
         kfk_offset_until,
@@ -370,9 +369,9 @@ async fn get_kafka_fetch(
         file_save_rec_count_budget,
         file_save_size_budget,
         file_format,
-        req_snd,
-        rsp_snd,
-        rsp_rcv,
+        kfk_req_snd,
+        kfk_rsp_snd,
+        kfk_rsp_rcv,
         metrics,
         labels
     );
@@ -471,17 +470,35 @@ async fn post_kafka_send_proc_responses(
 
 #[instrument(ret, err, skip(kfk_clients, metrics))]
 async fn post_kafka_send(
-    State(HttpState { kfk_clients, metrics } ): State<HttpState>,
-    Path(HttpFetchPath { kfk_topic, kfk_partition }): Path<HttpFetchPath>,
-    Query(HttpSendQuery { jrp_value_codec, jrp_send_max_size, jrp_send_max_rec_count, jrp_send_max_rec_size, file_format }): Query<HttpSendQuery>,
+    State(
+        HttpState {
+            kfk_clients,
+            metrics
+        }
+    ): State<HttpState>,
+    Path(
+        HttpFetchPath {
+            kfk_topic,
+            kfk_partition
+        }
+    ): Path<HttpFetchPath>,
+    Query(
+        HttpSendQuery {
+            jrp_value_codec,
+            jrp_send_max_size,
+            jrp_send_max_rec_count,
+            jrp_send_max_rec_size,
+            file_format
+        }
+    ): Query<HttpSendQuery>,
     request: Request<Body>,
 ) -> Result<(), JrpkError> {
-    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
-    let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(kfk_tap.clone()).build();
     let jrp_send_max_size = jrp_send_max_size.as_u64() as usize;
     let jrp_send_max_rec_size = jrp_send_max_rec_size.as_u64() as usize;
+    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
     let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
-    let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel::<KfkRsp<JrpCtxTypes>>(1024);
+    let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel::<KfkRsp<JrpCtxTypes>>(kfk_req_snd.max_capacity());
+    let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(kfk_tap.clone()).build();
     let body = request.into_body();
     let stream = body.into_data_stream();
     let rsp_h = spawn(
