@@ -186,7 +186,6 @@ where
     let timestamp = Instant::now();
     let res = func(input).await;
     let labels = labels.traffic(LblTraffic::Out);
-    // TODO: add error label
     match res {
         Ok(output) => {
             metrics.time(labels, timestamp);

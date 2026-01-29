@@ -146,6 +146,7 @@ impl JrpkMetrics {
         let mut buf = String::with_capacity(64 * 1024);
         let registry = self.registry.lock()
             .unwrap_or_else(|err| {
+                warn!("registry, lock is poisoned: {}", err);
                 self.registry.clear_poison();
                 err.into_inner()
             });
