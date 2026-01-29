@@ -54,12 +54,13 @@ server-release: build-release
 		serve \
 		--jrp-bind=0.0.0.0:1133 \
 		--jrp-max-frame-size=1mib \
-		--jrp-queue-len=1 \
+		--jrp-queue-len=1024 \
 		--http-bind=0.0.0.0:1134 \
 		--kfk-brokers=kfk:9092 \
 		--kfk-compression=lz4 \
 		--tcp-send-buf-size=32kib \
-		--tcp-recv-buf-size=32kib
+		--tcp-recv-buf-size=32kib \
+		--thread-count=32
 
 client-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1 1
@@ -71,7 +72,7 @@ client-debug-produce: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh debug values posts 1 1
 
 client-release-produce: build-release
-	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh release values posts 32 10
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh release values posts 32 1
 
 http-consume:
 	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 32 1000000 100mib

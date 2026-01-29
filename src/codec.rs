@@ -2,6 +2,7 @@ use crate::error::JrpkError;
 use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::info;
 use crate::metrics::MeteredItem;
 
 pub struct LinesCodec {

@@ -15,7 +15,7 @@ do
       produce \
       --jrp-address jrpk:1133 \
       --jrp-frame-max-size 512kib \
-      --jrp-send-max-size 512kib \
+      --jrp-send-max-size 128kib \
       --jrp-send-max-rec-count 1000 \
       --jrp-send-max-rec-size 1kib \
       --jrp-value-codec json \

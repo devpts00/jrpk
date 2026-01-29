@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use faststr::FastStr;
 use futures_util::future::join_all;
 use moka::future::Cache;
+use prometheus_client::registry::Registry;
 use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Encoder, Framed, FramedRead};

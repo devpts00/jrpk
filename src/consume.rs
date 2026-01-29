@@ -6,6 +6,7 @@ use faststr::FastStr;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use moka::future::Cache;
+use prometheus_client::registry::Registry;
 use reqwest::Url;
 use serde::Serialize;
 use tokio::net::TcpStream;
@@ -39,43 +40,6 @@ fn test<W: Write, S: Serialize>(writer: &mut W, data: S) {
     serde_json::to_writer(w, &data).unwrap();
     writer.write_all(b"\n").unwrap();
 }
-
-/*
-#[instrument(ret, err, level="trace", skip(records, buf, writer))]
-async fn write_records<'a, W: Write>(
-    format: Format,
-    records: Vec<JrpRecFetch<'a>>,
-    until: Offset,
-    budget: &mut Budget,
-    buf: &mut Vec<u8>,
-    writer: &mut W,
-) -> Result<(), JrpkError> {
-    block_in_place(|| {
-        let records = records.into_iter()
-            .take_while(|r| less_record_offset(r, until));
-        match format {
-            Format::Value => {
-                for record in records {
-                    if let Some(value) = record.value {
-                        if !budget.slice_to_writer(buf, writer, value.as_text().as_bytes())? {
-                            break
-                        }
-                    }
-                }
-            }
-            Format::Record => {
-                for record in records {
-                    if !budget.json_to_writer(buf, writer, &record)? {
-                        break
-                    }
-                }
-            }
-        }
-        writer.flush()?;
-        Ok(())
-    })
-}
- */
 
 #[instrument(ret, err, skip(metrics, times, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(

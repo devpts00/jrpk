@@ -144,8 +144,11 @@ impl JrpkMetrics {
 
     pub fn encode(&self) -> Result<String, std::fmt::Error> {
         let mut buf = String::with_capacity(64 * 1024);
-        // TODO: see if we can handle
-        let registry = self.registry.lock().unwrap();
+        let registry = self.registry.lock()
+            .unwrap_or_else(|err| {
+                self.registry.clear_poison();
+                err.into_inner()
+            });
         encode(&mut buf, &registry)?;
         trace!("metrics:\n{}", buf);
         Ok(buf)
@@ -187,7 +190,6 @@ async fn push_prometheus(
             warn!("status: {}", status);
         }
     }
-
     Ok(())
 }
 
