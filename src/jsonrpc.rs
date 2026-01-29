@@ -142,7 +142,8 @@ impl From<KfkOffset> for JrpOffset {
     }
 }
 
-async fn j2k_req<'a>(
+// TODO: split into three separate functions for focused re-use
+pub fn j2k_req<'a>(
     jrp_req: JrpReq<'a>,
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     metrics: &JrpkMetrics,
@@ -206,7 +207,7 @@ async fn jsonrpc_req_reader(
             Ok(jrp_req) => {
                 trace!("request: {:?}", jrp_req);
                 let id = jrp_req.id;
-                match j2k_req(jrp_req, kfk_rsp_snd.clone(), &metrics, &mut labels, length).await {
+                match j2k_req(jrp_req, kfk_rsp_snd.clone(), &metrics, &mut labels, length) {
                     Ok((tap, kfk_req)) => {
                         let kfk_req_snd = cli_cache.lookup_sender(tap).await?;
                         kfk_req_snd.send(kfk_req).await?;

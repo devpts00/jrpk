@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use crate::error::JrpkError;
-use crate::jsonrpc::{k2j_rec_fetch, JrpCtx, JrpCtxTypes};
+use crate::jsonrpc::{j2k_req, k2j_rec_fetch, JrpCtx, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
-use crate::model::{write_records, JrpCodec, JrpOffset, JrpSelector, Progress};
+use crate::model::{b2j, b2j_rec_vec, write_records, JrpCodec, JrpOffset, JrpReq, JrpSelector, Progress};
 use crate::util::{Budget, Ctx, Req, Tap, VecWriter};
 use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
@@ -22,22 +22,20 @@ use serde::{Deserialize, Deserializer};
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use axum::body::{Body, BodyDataStream};
-use chrono::Utc;
-use futures_util::TryStreamExt;
-use prometheus_client::registry::Registry;
+use futures_util::{StreamExt, TryStreamExt};
 use rskafka::record::Record;
 use serde::de::{Error, Visitor};
-use tokio::io::{AsyncBufReadExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::{spawn, try_join};
-use tokio_stream::wrappers::LinesStream;
+use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
 use tracing::{debug, instrument, trace};
 use crate::args::{FileFormat, NamedCodec};
+use crate::codec::LinesCodec;
 
 #[instrument(level="trace", ret, err, skip(metrics))]
 async fn get_prometheus_metrics(State(metrics): State<Arc<JrpkMetrics>>) -> Result<String, JrpkError> {
@@ -389,62 +387,79 @@ async fn get_kafka_fetch(
 
 #[derive(Deserialize)]
 struct HttpSendQuery {
-    max_batch_size: ByteSize,
+    jrp_value_codec: JrpCodec,
+    jrp_send_max_size: ByteSize,
+    jrp_send_max_rec_count: usize,
+    jrp_send_max_rec_size: ByteSize,
+    file_format: FileFormat,
 }
 
-#[instrument(err, skip(stream, metrics, labels))]
+#[instrument(err, skip(stream, kfk_req_snd, kfk_rsp_snd, metrics, labels))]
 async fn post_kafka_send_proc_requests(
     stream: BodyDataStream,
-    req_snd: Sender<KfkReq<JrpCtxTypes>>,
-    rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
-    tap: Tap,
-    max_batch_size: usize,
+    jrp_value_codec: JrpCodec,
+    jrp_send_max_size: usize,
+    jrp_send_max_rec_count: usize,
+    mut jrp_send_max_rec_size: usize,
+    kfk_tap: Tap,
+    kfk_req_snd: Sender<KfkReq<JrpCtxTypes>>,
+    kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
+    file_format: FileFormat,
     metrics: Arc<JrpkMetrics>,
     labels: JrpkLabels,
 ) -> Result<(), JrpkError> {
-    let mut max_rec_size: usize = 0;
-    let mut batch_size: usize = 0;
-    let mut records: Vec<Record> = Vec::with_capacity(1024);
     let stream = stream.map_err(std::io::Error::other);
     let reader = StreamReader::new(stream);
-    let mut lines = LinesStream::new(reader.lines());
+    let codec = LinesCodec::new_with_max_length(jrp_send_max_size);
+    let mut framed = FramedRead::with_capacity(reader, codec, jrp_send_max_size);
+    let mut jrp_send_size: usize = 0;
     let mut id: usize = 0;
-    while let Some(line) = lines.try_next().await? {
-        batch_size += line.len();
-        max_rec_size = max_rec_size.max(line.len());
-        let record = Record { key: None, value: Some(line.into_bytes()), headers: BTreeMap::default(), timestamp: Utc::now() };
-        records.push(record);
-        if batch_size > max_batch_size - max_rec_size {
-            metrics.size_by_value(&labels, batch_size);
-            let recs_count = records.len();
-            let ctx = JrpCtxTypes::send(id, Instant::now(), tap.clone());
-            let req = KfkReq::Send(Req(Ctx(ctx, records), rsp_snd.clone()));
-            req_snd.send(req).await?;
+    let mut frames: Vec<Bytes> = Vec::with_capacity(jrp_send_max_rec_count);
+    let b2j = b2j(file_format, jrp_value_codec);
+    while let Some(result) = framed.next().await {
+        let frame = result?;
+        jrp_send_size += frame.len();
+        jrp_send_max_rec_size = jrp_send_max_rec_size.max(frame.len());
+        frames.push(frame);
+        if jrp_send_size > jrp_send_max_size - jrp_send_max_rec_size || frames.len() >= jrp_send_max_rec_count {
+            debug!("produce, batch-size: {}, max-rec-size: {}", jrp_send_size, jrp_send_max_rec_size);
+            metrics.size_by_value(&labels, jrp_send_size);
+            let jrp_records = b2j_rec_vec(&frames, b2j)?;
+            let kfk_records = jrp_records.into_iter()
+                .map(|jrs| Record::try_from(jrs))
+                .collect::<Result<Vec<Record>, JrpkError>>()?;
+            let ctx = JrpCtxTypes::send(id, Instant::now(), kfk_tap.clone());
+            let kfk_req = KfkReq::Send(Req(Ctx(ctx, kfk_records), kfk_rsp_snd.clone()));
+            kfk_req_snd.send(kfk_req).await?;
             id = id + 1;
-            batch_size = 0;
-            records = Vec::with_capacity(recs_count);
+            jrp_send_size = 0;
+            frames.clear();
         }
     }
 
-    if !records.is_empty() {
-        metrics.size_by_value(&labels, batch_size);
-        let ctx = JrpCtxTypes::send(id, Instant::now(), tap.clone());
-        let req = KfkReq::Send(Req(Ctx(ctx, records), rsp_snd.clone()));
-        req_snd.send(req).await?;
+    if !frames.is_empty() {
+        metrics.size_by_value(&labels, jrp_send_size);
+        let jrp_records = b2j_rec_vec(&frames, b2j)?;
+        let kfk_records = jrp_records.into_iter()
+            .map(|jrs| Record::try_from(jrs))
+            .collect::<Result<Vec<Record>, JrpkError>>()?;
+        let ctx = JrpCtxTypes::send(id, Instant::now(), kfk_tap.clone());
+        let kfk_req = KfkReq::Send(Req(Ctx(ctx, kfk_records), kfk_rsp_snd));
+        kfk_req_snd.send(kfk_req).await?;
     }
 
     Ok(())
 }
 
-#[instrument(err, skip(rsp_rcv, metrics, labels))]
+#[instrument(err, skip(kfk_rsp_rcv, metrics, labels))]
 async fn post_kafka_send_proc_responses(
-    mut rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
+    mut kfk_rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
     metrics: Arc<JrpkMetrics>,
     labels: JrpkLabels,
 ) -> Result<(), JrpkError> {
     let ts = Instant::now();
-    while let Some(rsp) = rsp_rcv.recv().await {
-        let Ctx(ctx, res) = rsp.send_or(JrpkError::Unexpected("kafka response wrong type"))?;
+    while let Some(kfk_rsp) = kfk_rsp_rcv.recv().await {
+        let Ctx(ctx, res) = kfk_rsp.send_or(JrpkError::Unexpected("kafka response wrong type"))?;
         let JrpCtx { id, ts, tap, .. } = ctx;
         debug!("response, id: {}, tap: {}, duration: {} ms", id, tap, ts.elapsed().as_millis());
         let offsets = res?;
@@ -454,24 +469,44 @@ async fn post_kafka_send_proc_responses(
     Ok(())
 }
 
-#[instrument(ret, err, skip(state))]
+#[instrument(ret, err, skip(kfk_clients, metrics))]
 async fn post_kafka_send(
-    State(state): State<HttpState>,
-    Path(HttpFetchPath { kfk_topic: topic, kfk_partition: partition }): Path<HttpFetchPath>,
-    Query(HttpSendQuery { max_batch_size }): Query<HttpSendQuery>,
+    State(HttpState { kfk_clients, metrics } ): State<HttpState>,
+    Path(HttpFetchPath { kfk_topic, kfk_partition }): Path<HttpFetchPath>,
+    Query(HttpSendQuery { jrp_value_codec, jrp_send_max_size, jrp_send_max_rec_count, jrp_send_max_rec_size, file_format }): Query<HttpSendQuery>,
     request: Request<Body>,
 ) -> Result<(), JrpkError> {
-    let HttpState { kfk_clients: clients, metrics } = state;
-    let tap = Tap::new(topic, partition);
-    let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(tap.clone()).build();
-    let max_batch_size = max_batch_size.as_u64() as usize;
-    let req_snd = clients.lookup_sender(tap.clone()).await?;
-    let (rsp_snd, rsp_rcv) = tokio::sync::mpsc::channel::<KfkRsp<JrpCtxTypes>>(1024);
+    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(kfk_tap.clone()).build();
+    let jrp_send_max_size = jrp_send_max_size.as_u64() as usize;
+    let jrp_send_max_rec_size = jrp_send_max_rec_size.as_u64() as usize;
+    let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
+    let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel::<KfkRsp<JrpCtxTypes>>(1024);
     let body = request.into_body();
     let stream = body.into_data_stream();
-    let rsp_h = spawn(post_kafka_send_proc_responses(rsp_rcv, metrics.clone(), labels.clone()));
+    let rsp_h = spawn(
+        post_kafka_send_proc_responses(
+            kfk_rsp_rcv,
+            metrics.clone(),
+            labels.clone()
+        )
+    );
     let labels = labels.traffic(LblTraffic::Out).build();
-    let req_h = spawn(post_kafka_send_proc_requests(stream, req_snd, rsp_snd, tap, max_batch_size, metrics, labels));
+    let req_h = spawn(
+        post_kafka_send_proc_requests(
+            stream,
+            jrp_value_codec,
+            jrp_send_max_size,
+            jrp_send_max_rec_count,
+            jrp_send_max_rec_size,
+            kfk_tap,
+            kfk_req_snd,
+            kfk_rsp_snd,
+            file_format,
+            metrics,
+            labels
+        )
+    );
     let _ = try_join!(req_h, rsp_h)?;
     Ok(())
 }

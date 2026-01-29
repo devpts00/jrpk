@@ -1,7 +1,7 @@
 use crate::error::JrpkError;
 use base64::prelude::BASE64_STANDARD;
 use base64::{DecodeError, Engine};
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use rskafka::chrono::{DateTime, Utc};
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -12,11 +12,14 @@ use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
 use std::ops::Range;
-use std::str::FromStr;
+use std::str::{from_utf8, FromStr};
 use faststr::FastStr;
 use strum::EnumString;
+use tokio_util::codec::Encoder;
 use tracing::instrument;
 use crate::args::FileFormat;
+use crate::codec::LinesCodec;
+use crate::metrics::MeteredItem;
 use crate::util::{Budget, Length};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -474,10 +477,6 @@ impl <'a> JrpRsp<'a> {
     }
 }
 
-pub struct JrpReqBuilder {
-    bytes: Vec<Bytes>,
-}
-
 #[derive(Debug)]
 pub enum Progress {
     Continue(i64),
@@ -523,4 +522,83 @@ pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFe
     }
     writer.flush()?;
     Ok(progress)
+}
+
+
+type JrpRecParser = fn(&'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError>;
+
+fn b2j_json(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
+    let json: &RawValue = serde_json::from_slice(buf)?;
+    let data = JrpData::Json(Cow::Borrowed(json));
+    let rec = JrpRecSend::new(None, Some(data), Vec::new());
+    Ok(rec)
+}
+
+fn b2j_text(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
+    let text = from_utf8(buf)?;
+    let data = JrpData::Str(Cow::Borrowed(text));
+    let rec = JrpRecSend::new(None, Some(data), Vec::new());
+    Ok(rec)
+}
+
+fn b2j_base64(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
+    let base64 = from_utf8(buf)?;
+    let data = JrpData::Base64(Cow::Borrowed(base64));
+    let rec = JrpRecSend::new(None, Some(data), Vec::new());
+    Ok(rec)
+}
+
+fn b2j_rec(buf: &'_ [u8]) -> Result<JrpRecSend<'_>, JrpkError> {
+    let rec: JrpRecSend = serde_json::from_slice(buf)?;
+    Ok(rec)
+}
+
+#[inline]
+pub fn b2j(file_format: FileFormat, jrp_value_codec: JrpCodec) -> JrpRecParser {
+    match (file_format, jrp_value_codec) {
+        (FileFormat::Record, _) => b2j_rec,
+        (FileFormat::Value, JrpCodec::Json) => b2j_json,
+        (FileFormat::Value, JrpCodec::Str) => b2j_text,
+        (FileFormat::Value, JrpCodec::Base64) => b2j_base64,
+    }
+}
+
+#[inline]
+pub fn b2j_rec_vec(bytes: &'_ Vec<Bytes>, b2r: JrpRecParser) -> Result<Vec<JrpRecSend<'_>>, JrpkError> {
+    bytes.iter().map(|bytes| b2r(bytes.as_ref())).collect()
+}
+
+pub struct JrpReqBuilder {
+    id: usize,
+    topic: FastStr,
+    partition: i32,
+    bytes: Vec<Bytes>,
+    b2r: JrpRecParser,
+}
+
+impl JrpReqBuilder {
+    pub fn new(id: usize, topic: FastStr, partition: i32, bytes: Vec<Bytes>, b2r: JrpRecParser) -> Self {
+        JrpReqBuilder { id, topic, partition, bytes, b2r }
+    }
+    pub fn build(&'_ self) -> Result<JrpReq<'_>, JrpkError> {
+        let recs = b2j_rec_vec(&self.bytes, self.b2r)?;
+        let req = JrpReq::send(self.id, self.topic.clone(), self.partition, recs);
+        Ok(req)
+    }
+}
+
+pub type JrpkMeteredProdReq = MeteredItem<JrpReqBuilder>;
+
+impl Encoder<JrpkMeteredProdReq> for LinesCodec {
+    type Error = JrpkError;
+    fn encode(&mut self, metered_item: JrpkMeteredProdReq, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let MeteredItem { item, metrics, labels } = metered_item;
+        let length = dst.len();
+        dst.reserve(self.max_length);
+        let jrp_req = item.build()?;
+        serde_json::to_writer(dst.writer(), &jrp_req)?;
+        dst.put_u8(b'\n');
+        metrics.size_by_value(&labels, dst.len() - length);
+        Ok(())
+    }
 }

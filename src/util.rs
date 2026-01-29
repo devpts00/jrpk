@@ -59,6 +59,8 @@ pub fn init_tracing() {
 }
 
 
+// TODO: see if we can have a kfk_tap param like "posts@10"
+// TODO: move to kafka module
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct Tap {
     pub topic: FastStr,
