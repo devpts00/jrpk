@@ -5,7 +5,7 @@ use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
 use crate::model::{b2j, b2j_rec_vec, write_records, JrpCodec, JrpOffset, JrpSelector, Progress};
 use crate::util::{Budget, Ctx, Req, Tap, VecWriter};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
 use axum::response::IntoResponse;
@@ -24,6 +24,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use axum::body::{Body, BodyDataStream};
+use axum_extra::extract::Query;
 use futures_util::{StreamExt, TryStreamExt};
 use rskafka::record::Record;
 use serde::de::{Error, Visitor};
@@ -91,21 +92,20 @@ struct HttpOffsetQuery {
     kfk_offset: JrpOffset,
 }
 
-#[instrument(ret, err, skip(state))]
+#[instrument(ret, err, skip(kfk_clients, metrics))]
 async fn get_kafka_offset(
-    State(state): State<HttpState>,
-    Path((kfk_topic, kfk_partition)): Path<(FastStr, i32)>,
+    State(HttpState { kfk_clients, metrics, }): State<HttpState>,
+    Path(HttpKfkPath { kfk_topic, kfk_partition }): Path<HttpKfkPath>,
     Query(HttpOffsetQuery { kfk_offset }): Query<HttpOffsetQuery>,
 ) -> Result<String, JrpkError> {
-    let HttpState { kfk_clients: clients, metrics } = state;
     let ts = Instant::now();
     let kfk_tap = Tap::new(kfk_topic, kfk_partition);
     let ctx = JrpCtxTypes::offset(0, Instant::now(), kfk_tap.clone());
-    let req_snd = clients.lookup_sender(kfk_tap.clone()).await?;
+    let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
     let kfk_offset = kfk_offset.into();
     let (rsp_snd, mut rsp_rcv) = tokio::sync::mpsc::channel(1);
     let kfk_req = KfkReq::Offset(Req(Ctx(ctx, kfk_offset), rsp_snd));
-    req_snd.send(kfk_req).await?;
+    kfk_req_snd.send(kfk_req).await?;
     let kfk_rsp = rsp_rcv.recv().await.ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
     let Ctx(_, kfk_offset_res) = kfk_rsp.offset_or(JrpkError::Unexpected("kafka client wrong response"))?;
     let offset = kfk_offset_res?;
@@ -117,9 +117,9 @@ async fn get_kafka_offset(
 }
 
 #[derive(Deserialize)]
-struct HttpFetchPath {
-    kfk_topic: FastStr,
-    kfk_partition: i32,
+pub struct HttpKfkPath {
+    pub kfk_topic: FastStr,
+    pub kfk_partition: i32,
 }
 
 const fn default_jrp_codec_value() -> JrpCodec {
@@ -323,11 +323,11 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
 async fn get_kafka_fetch(
     State(state): State<HttpState>,
     Path(
-        HttpFetchPath {
+        HttpKfkPath {
             kfk_topic,
             kfk_partition
         }
-    ): Path<HttpFetchPath>,
+    ): Path<HttpKfkPath>,
     Query(
         HttpFetchQuery {
             jrp_key_codec,
@@ -477,11 +477,11 @@ async fn post_kafka_send(
         }
     ): State<HttpState>,
     Path(
-        HttpFetchPath {
+        HttpKfkPath {
             kfk_topic,
             kfk_partition
         }
-    ): Path<HttpFetchPath>,
+    ): Path<HttpKfkPath>,
     Query(
         HttpSendQuery {
             jrp_value_codec,
@@ -540,9 +540,9 @@ pub async fn listen_http(
         .route("/", get(get_prometheus_metrics))
         .with_state(metrics);
     let kafka = Router::new()
-        .route("/offset/{topic}/{partition}", get(get_kafka_offset))
-        .route("/fetch/{topic}/{partition}", get(get_kafka_fetch))
-        .route("/send/{topic}/{partition}", post(post_kafka_send))
+        .route("/offset/{kfk_topic}/{kfk_partition}", get(get_kafka_offset))
+        .route("/fetch/{kfk_topic}/{kfk_partition}", get(get_kafka_fetch))
+        .route("/send/{kfk_topic}/{kfk_partition}", post(post_kafka_send))
         .with_state(state);
     let root = Router::new()
         .nest("/kafka", kafka)

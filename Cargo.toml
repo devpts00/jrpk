@@ -38,6 +38,6 @@ log = "0.4.27"
 faststr = { version = "0.2.32", features = ["serde"] }
 strum = { version = "0.27.2", features = ["derive"] }
 axum = { version = "0.8.7", features = ["http1", "tokio", "query"] }
-axum-extra = { version = "0.12.2", features = ["json-lines"] }
-reqwest = "0.12.24"
+axum-extra = { version = "0.12.2", features = ["json-lines", "query"] }
+reqwest = "0.13.1"
 console = "0.16.2"

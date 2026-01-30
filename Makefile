@@ -74,8 +74,11 @@ client-debug-produce: build-debug
 client-release-produce: build-release
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh release values posts 32 1
 
+http-offset:
+	docker compose run --rm -it --remove-orphans rst ./scripts/http-offset.sh posts 0 latest
+
 http-consume:
-	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 32 1000000 100mib
+	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 1 1000000 100mib
 
 http-produce:
 	docker compose run --rm -it --remove-orphans rst ./scripts/http-produce.sh result posts 32
