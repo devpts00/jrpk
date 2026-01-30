@@ -169,6 +169,7 @@ impl <C: KfkTypes, T: KfkTypes, U: KfkTypes, E: Error, K> KfkTypes for KfkCtxReq
 pub type KfkReq<C> = KfkData<KfkCtxReqTypes<C, KfkTypesIn, KfkTypesRsp, KfkError, KfkRsp<C>>>;
 
 /// Helper function to encapsulate cumbersome metrics manipulations
+#[instrument(level="trace", err, skip(input, metrics, func))]
 async fn meter<IN, OUT, ERR, FUT, FUN>(
     input: IN,
     metrics: &JrpkMetrics,
@@ -199,73 +200,84 @@ where
     }
 }
 
+#[instrument(level="debug", err, skip(kfk_client, kfk_records, metrics, labels))]
 async fn kafka_send(
-    cli: &PartitionClient,
-    records: Vec<Record>,
-    compression: Compression,
+    kfk_client: &PartitionClient,
+    kfk_records: Vec<Record>,
+    kfk_compression: Compression,
     metrics: &JrpkMetrics,
     labels: &mut JrpkLabels,
 ) -> Result<Vec<i64>, KfkError> {
     let labels = labels.method(LblMethod::Send);
-    let func = |rs| cli.produce(rs, compression);
-    let offsets = meter(records, metrics, labels, func).await?;
+    let func = |rs| kfk_client.produce(rs, kfk_compression);
+    let offsets = meter(kfk_records, metrics, labels, func).await?;
     Ok(offsets)
 }
 
+#[instrument(level="debug", err, skip(kfk_client, metrics, labels))]
 async fn kafka_fetch(
-    cli: &PartitionClient,
-    offset: KfkOffset,
-    bytes: Range<i32>,
-    max_wait_ms: i32,
+    kfk_client: &PartitionClient,
+    kfk_offset: KfkOffset,
+    kfk_bytes: Range<i32>,
+    kfk_max_wait_ms: i32,
     metrics: &JrpkMetrics,
     labels: &mut JrpkLabels,
 ) -> Result<(Vec<RecordAndOffset>, i64), KfkError> {
-    let offset = kafka_offset(cli, offset, metrics, labels).await?;
+    let offset = match kfk_offset {
+        KfkOffset::At(kfk_at) => {
+            kafka_offset(kfk_client, kfk_at, metrics, labels).await?
+        }
+        KfkOffset::Pos(offset) => {
+            offset
+        }
+    };
     let labels = labels.method(LblMethod::Fetch);
-    let func = |(offset, bytes, max_wait_ms)| cli.fetch_records(offset, bytes, max_wait_ms);
-    let (records_and_offsets, high_watermark) = meter((offset, bytes, max_wait_ms), metrics, labels, func).await?;
+    let func = |(offset, bytes, max_wait_ms)| kfk_client.fetch_records(offset, bytes, max_wait_ms);
+    let (records_and_offsets, high_watermark) = meter((offset, kfk_bytes, kfk_max_wait_ms), metrics, labels, func).await?;
     Ok((records_and_offsets, high_watermark))
 }
 
+#[instrument(level="debug", err, skip(kfk_client, metrics, labels))]
 async fn kafka_offset(
-    cli: &PartitionClient,
-    offset: KfkOffset,
+    kfk_client: &PartitionClient,
+    kfk_at: OffsetAt,
     metrics: &JrpkMetrics,
     labels: &mut JrpkLabels,
 ) -> Result<i64, KfkError> {
-    match offset {
-        KfkOffset::At(at) => {
-            let labels = labels.method(LblMethod::Offset);
-            let func = |at| cli.get_offset(at);
-            let offset = meter(at, &metrics, labels, func).await?;
-            Ok(offset)
-        }
-        KfkOffset::Pos(pos) => {
-            Ok(pos)
-        }
-    }
+    let labels = labels.method(LblMethod::Offset);
+    let func = |at| kfk_client.get_offset(at);
+    let offset = meter(kfk_at, &metrics, labels, func).await?;
+    Ok(offset)
 }
 
+#[instrument(level="info", err, skip(kfk_client, metrics, kfk_rcv))]
 async fn kafka_loop<C: KfkTypes>(
-    tap: Tap,
-    cli: PartitionClient,
-    compression: Compression,
+    kfk_tap: Tap,
+    kfk_client: PartitionClient,
+    kfk_compression: Compression,
     metrics: Arc<JrpkMetrics>,
-    mut rcv: Receiver<KfkReq<C>>,
+    mut kfk_rcv: Receiver<KfkReq<C>>,
 ) -> Result<(), SendError<KfkRsp<C>>> {
-    let mut labels = JrpkLabels::new(LblTier::Kafka).tap(tap).build();
-    while let Some(req) = rcv.recv().await {
+    let mut labels = JrpkLabels::new(LblTier::Kafka).tap(kfk_tap).build();
+    while let Some(req) = kfk_rcv.recv().await {
         match req {
             KfkReq::Send(Req(Ctx(ctx, records), rsp)) => {
-                let res = kafka_send(&cli, records, compression, &metrics, &mut labels).await;
+                let res = kafka_send(&kfk_client, records, kfk_compression, &metrics, &mut labels).await;
                 rsp.send(KfkRsp::Send(Ctx::new(ctx, res))).await?
             }
             KfkReq::Fetch(Req(Ctx(ctx, (offset, bytes, max_wait_ms)), rsp)) => {
-                let res = kafka_fetch(&cli, offset, bytes, max_wait_ms, &metrics, &mut labels).await;
+                let res = kafka_fetch(&kfk_client, offset, bytes, max_wait_ms, &metrics, &mut labels).await;
                 rsp.send(KfkRsp::Fetch(Ctx::new(ctx, res))).await?
             }
             KfkReq::Offset(Req(Ctx(ctx, offset), rsp)) => {
-                let res = kafka_offset(&cli, offset, &metrics, &mut labels).await;
+                let res = match offset {
+                    KfkOffset::At(kfk_at) => {
+                        kafka_offset(&kfk_client, kfk_at, &metrics, &mut labels).await
+                    }
+                    KfkOffset::Pos(offset) => {
+                        Ok(offset)
+                    }
+                };
                 rsp.send(KfkRsp::Offset(Ctx::new(ctx, res))).await?
             }
         }
@@ -288,9 +300,8 @@ where C::S: Send + Sync, C::F: Send + Sync, C::O: Send + Sync, C: 'static {
         Self { client, cache: Cache::new(capacity), compression, queue_size, metrics }
     }
 
-    #[instrument(err, skip(self))]
+    #[instrument(level="info", err, skip(self))]
     async fn init_kafka_loop(&self, tap: Tap) -> Result<Sender<KfkReq<C>>, JrpkError> {
-        info!("init: {}, queue length: {}", tap, self.queue_size);
         let cli = self.client.partition_client(tap.topic.as_str(), tap.partition, UnknownTopicHandling::Error).await?;
         let (snd, rcv) = tokio::sync::mpsc::channel(self.queue_size);
         spawn(kafka_loop(tap, cli, self.compression, self.metrics.clone(), rcv));
@@ -299,8 +310,6 @@ where C::S: Send + Sync, C::F: Send + Sync, C::O: Send + Sync, C: 'static {
 
     #[instrument(level="debug", err, skip(self))]
     pub async fn lookup_sender(&self, tap: Tap) -> Result<Sender<KfkReq<C>>, JrpkError> {
-        trace!("lookup: {}", tap);
-        //self.cache.run_pending_tasks().await;
         if let Some(snd) = self.cache.get(&tap).await {
             Ok(snd)
         } else {
