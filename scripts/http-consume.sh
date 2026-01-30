@@ -11,7 +11,7 @@ START_TIME=$EPOCHREALTIME
 for ((p = 0; p < $PARTITIONS; p++))
 do
   #curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}" &
-  curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}?jrp_header_codecs=test:json&jrp_header_codecs=key:str" &
+  curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}" &
 	sleep 0.1
 done
 

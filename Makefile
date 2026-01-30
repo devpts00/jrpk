@@ -80,8 +80,11 @@ http-offset:
 http-consume:
 	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 1 1000000 100mib
 
-http-produce:
-	docker compose run --rm -it --remove-orphans rst ./scripts/http-produce.sh result posts 32
+http-debug-produce:
+	docker compose run --rm -it --remove-orphans rst ./scripts/http-produce.sh values posts 1
+
+http-release-produce:
+	docker compose run --rm -it --remove-orphans rst ./scripts/http-produce.sh values posts 32
 
 trace:
 	docker compose run --rm -it --rm --use-aliases --remove-orphans trc

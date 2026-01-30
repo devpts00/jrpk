@@ -92,7 +92,7 @@ struct HttpOffsetQuery {
     kfk_offset: JrpOffset,
 }
 
-#[instrument(ret, err, skip(kfk_clients, metrics))]
+#[instrument(level="debug", ret, err, skip(kfk_clients, metrics))]
 async fn get_kafka_offset(
     State(HttpState { kfk_clients, metrics, }): State<HttpState>,
     Path(HttpKfkPath { kfk_topic, kfk_partition }): Path<HttpKfkPath>,
@@ -126,6 +126,8 @@ const fn default_jrp_codec_value() -> JrpCodec {
     JrpCodec::Json
 }
 
+const fn default_jrp_header_codecs() -> Vec<NamedCodec> { Vec::new() }
+
 const fn default_kfk_offset_from() -> JrpOffset {
     JrpOffset::Earliest
 }
@@ -148,11 +150,16 @@ const fn default_kfk_fetch_max_wait_time() -> Duration {
 
 const fn default_file_format() -> FileFormat { FileFormat::Value }
 
+const fn default_file_save_max_rec_count() -> usize { usize::MAX }
+
+const fn default_file_save_max_size() -> ByteSize { ByteSize::b(u64::MAX) }
+
 #[derive(Deserialize)]
 struct HttpFetchQuery {
     jrp_key_codec: Option<JrpCodec>,
     #[serde(default = "default_jrp_codec_value")]
     jrp_value_codec: JrpCodec,
+    #[serde(default = "default_jrp_header_codecs")]
     jrp_header_codecs: Vec<NamedCodec>,
     jrp_header_codec_default: Option<JrpCodec>,
 
@@ -169,10 +176,10 @@ struct HttpFetchQuery {
 
     #[serde(default = "default_file_format")]
     file_format: FileFormat,
-    #[serde(default)]
-    file_save_max_rec_count: Option<usize>,
-    #[serde(default)]
-    file_save_max_size: Option<ByteSize>,
+    #[serde(default = "default_file_save_max_rec_count")]
+    file_save_max_rec_count: usize,
+    #[serde(default = "default_file_save_max_size")]
+    file_save_max_size: ByteSize,
 }
 
 enum KfkFetchState {
@@ -319,9 +326,14 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
     }
 }
 
-#[instrument(err, skip(state))]
+#[instrument(level="info", err, skip(kfk_clients, metrics))]
 async fn get_kafka_fetch(
-    State(state): State<HttpState>,
+    State(
+        HttpState {
+            kfk_clients,
+            metrics
+        }
+    ): State<HttpState>,
     Path(
         HttpKfkPath {
             kfk_topic,
@@ -345,16 +357,15 @@ async fn get_kafka_fetch(
         }
     ): Query<HttpFetchQuery>,
 ) -> Result<impl IntoResponse, JrpkError> {
-    let HttpState { kfk_clients: clients, metrics } = state;
     let kfk_tap = Tap::new(kfk_topic, kfk_partition);
     let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Fetch).traffic(LblTraffic::Out).tap(kfk_tap.clone()).build();
-    let kfk_req_snd = clients.lookup_sender(kfk_tap.clone()).await?;
+    let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
     let kfk_offset_from = kfk_offset_from.into();
     let kfk_offset_until = kfk_offset_until.into();
     let kfk_fetch_min_max_bytes = kfk_fetch_min_size.as_u64() as i32 .. kfk_fetch_max_size.as_u64() as i32;
     let kfk_fetch_max_wait_ms = kfk_fetch_max_wait_time.as_millis() as i32;
-    let file_save_rec_count_budget =  file_save_max_rec_count.unwrap_or(usize::MAX);
-    let file_save_size_budget = file_save_max_size.map(|s|s.as_u64() as usize).unwrap_or(usize::MAX);
+    let file_save_rec_count_budget =  file_save_max_rec_count;
+    let file_save_size_budget = file_save_max_size.as_u64() as usize;
     let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel(1);
     let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
     let jrp_selector = JrpSelector::new(jrp_key_codec, jrp_value_codec, jrp_header_codecs, jrp_header_codec_default);
@@ -384,18 +395,37 @@ async fn get_kafka_fetch(
     Ok(response)
 }
 
+const fn default_jrp_send_max_size() -> ByteSize {
+    ByteSize::kib(256)
+}
+
+const fn default_jrp_send_max_rec_count() -> usize {
+    1000
+}
+
+const fn default_jrp_send_max_rec_size() -> ByteSize {
+    ByteSize::kib(1)
+}
+
+
+
 #[derive(Deserialize)]
 struct HttpSendQuery {
+    #[serde(default = "default_jrp_codec_value")]
     jrp_value_codec: JrpCodec,
+    #[serde(default = "default_jrp_send_max_size")]
     jrp_send_max_size: ByteSize,
+    #[serde(default = "default_jrp_send_max_rec_count")]
     jrp_send_max_rec_count: usize,
+    #[serde(default = "default_jrp_send_max_rec_size")]
     jrp_send_max_rec_size: ByteSize,
+    #[serde(default = "default_file_format")]
     file_format: FileFormat,
 }
 
-#[instrument(err, skip(stream, kfk_req_snd, kfk_rsp_snd, metrics, labels))]
+#[instrument(level="info", err, skip(http_stream, kfk_req_snd, kfk_rsp_snd, metrics, labels))]
 async fn post_kafka_send_proc_requests(
-    stream: BodyDataStream,
+    http_stream: BodyDataStream,
     jrp_value_codec: JrpCodec,
     jrp_send_max_size: usize,
     jrp_send_max_rec_count: usize,
@@ -407,21 +437,20 @@ async fn post_kafka_send_proc_requests(
     metrics: Arc<JrpkMetrics>,
     labels: JrpkLabels,
 ) -> Result<(), JrpkError> {
-    let stream = stream.map_err(std::io::Error::other);
-    let reader = StreamReader::new(stream);
-    let codec = LinesCodec::new_with_max_length(jrp_send_max_size);
-    let mut framed = FramedRead::with_capacity(reader, codec, jrp_send_max_size);
+    let http_stream = http_stream.map_err(std::io::Error::other);
+    let http_reader = StreamReader::new(http_stream);
+    let http_codec = LinesCodec::new_with_max_length(jrp_send_max_size);
+    let mut http_framed = FramedRead::with_capacity(http_reader, http_codec, jrp_send_max_size);
     let mut jrp_send_size: usize = 0;
     let mut id: usize = 0;
     let mut frames: Vec<Bytes> = Vec::with_capacity(jrp_send_max_rec_count);
     let b2j = b2j(file_format, jrp_value_codec);
-    while let Some(result) = framed.next().await {
+    while let Some(result) = http_framed.next().await {
         let frame = result?;
         jrp_send_size += frame.len();
         jrp_send_max_rec_size = jrp_send_max_rec_size.max(frame.len());
         frames.push(frame);
         if jrp_send_size > jrp_send_max_size - jrp_send_max_rec_size || frames.len() >= jrp_send_max_rec_count {
-            debug!("produce, batch-size: {}, max-rec-size: {}", jrp_send_size, jrp_send_max_rec_size);
             metrics.size_by_value(&labels, jrp_send_size);
             let jrp_records = b2j_rec_vec(&frames, b2j)?;
             let kfk_records = jrp_records.into_iter()
@@ -450,7 +479,7 @@ async fn post_kafka_send_proc_requests(
     Ok(())
 }
 
-#[instrument(err, skip(kfk_rsp_rcv, metrics, labels))]
+#[instrument(level="info", err, skip(kfk_rsp_rcv, metrics, labels))]
 async fn post_kafka_send_proc_responses(
     mut kfk_rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
     metrics: Arc<JrpkMetrics>,
@@ -460,7 +489,6 @@ async fn post_kafka_send_proc_responses(
     while let Some(kfk_rsp) = kfk_rsp_rcv.recv().await {
         let Ctx(ctx, res) = kfk_rsp.send_or(JrpkError::Unexpected("kafka response wrong type"))?;
         let JrpCtx { id, ts, tap, .. } = ctx;
-        debug!("response, id: {}, tap: {}, duration: {} ms", id, tap, ts.elapsed().as_millis());
         let offsets = res?;
         metrics.size(&labels, &offsets);
     }
@@ -468,7 +496,7 @@ async fn post_kafka_send_proc_responses(
     Ok(())
 }
 
-#[instrument(ret, err, skip(kfk_clients, metrics))]
+#[instrument(level="info", err, skip(kfk_clients, metrics))]
 async fn post_kafka_send(
     State(
         HttpState {
@@ -528,14 +556,14 @@ async fn post_kafka_send(
     Ok(())
 }
 
-#[instrument(ret, err, skip(clients, metrics))]
+#[instrument(level="info", err, skip(kfk_clients, metrics))]
 pub async fn listen_http(
-    bind: SocketAddr,
-    clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    http_bind: SocketAddr,
+    kfk_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     metrics: Arc<JrpkMetrics>,
 ) -> Result<(), JrpkError> {
-    let state = HttpState::new(clients, metrics.clone());
-    let listener = TcpListener::bind(bind).await?;
+    let state = HttpState::new(kfk_clients, metrics.clone());
+    let listener = TcpListener::bind(http_bind).await?;
     let metrics = Router::new()
         .route("/", get(get_prometheus_metrics))
         .with_state(metrics);
