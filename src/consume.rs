@@ -36,13 +36,7 @@ fn less_record_offset(record: &JrpRecFetch, offset: JrpOffset) -> bool {
     }
 }
 
-fn test<W: Write, S: Serialize>(writer: &mut W, data: S) {
-    let w: &mut W = writer;
-    serde_json::to_writer(w, &data).unwrap();
-    writer.write_all(b"\n").unwrap();
-}
-
-#[instrument(ret, err, skip(metrics, times, offset_rcv, tcp_sink))]
+#[instrument(level="info", err, skip(metrics, times, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     jrp_selector: JrpSelector,
     kfk_tap: KfkTap,
@@ -73,7 +67,7 @@ async fn consumer_req_writer<'a>(
     Ok(())
 }
 
-#[instrument(ret, err, skip(metrics, times, offset_snd, tcp_stream))]
+#[instrument(level="info", err, skip(metrics, times, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
     kfk_tap: KfkTap,
     kfk_from: JrpOffset,
@@ -154,7 +148,7 @@ async fn consumer_rsp_reader(
     Ok(())
 }
 
-#[instrument(ret, err, skip(prom_push_url))]
+#[instrument(level="info", err)]
 pub async fn consume(
     jrp_address: FastStr,
     jrp_frame_max_size: usize,

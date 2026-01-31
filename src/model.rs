@@ -47,7 +47,7 @@ impl <'a> JrpData<'a> {
         JrpData::Base64(Cow::Owned(str))
     }
 
-    pub fn as_text(self: &'a JrpData<'a>) -> Cow<'a, str> {
+    pub fn as_str(self: &'a JrpData<'a>) -> Cow<'a, str> {
         match self {
             JrpData::Json(json) => {
                 Cow::Borrowed(json.get())
@@ -57,24 +57,6 @@ impl <'a> JrpData<'a> {
             }
             JrpData::Base64(text) => {
                 Cow::Borrowed(text.as_ref())
-            }
-        }
-    }
-
-    /// Returns byte slice of parsed JSON fragment
-    pub fn as_bytes(self: &'a JrpData<'a>) -> Result<Cow<'a, [u8]>, DecodeError> {
-        match self {
-            // zero copy
-            JrpData::Json(json) => {
-                Ok(Cow::Borrowed(json.get().as_bytes()))
-            }
-            // zero copy
-            JrpData::Str(text) => {
-                Ok(Cow::Borrowed(text.as_bytes()))
-            },
-            // non-zero copy due to decoding
-            JrpData::Base64(text) => {
-                BASE64_STANDARD.decode(text.as_bytes()).map(|vec| Cow::Owned(vec))
             }
         }
     }
@@ -506,7 +488,7 @@ pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFe
         match format {
             FileFormat::Value => {
                 if let Some(value) = record.value {
-                    if !budget.write_slice(writer, value.as_text().as_bytes())? {
+                    if !budget.write_slice(writer, value.as_str().as_bytes())? {
                         progress = Progress::Overdraft;
                         break;
                     }

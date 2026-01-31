@@ -15,7 +15,7 @@ use moka::future::Cache;
 use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, instrument, trace};
 use crate::args::FileFormat;
 use crate::http::url_append_tap;
 use crate::kafka::KfkTap;
@@ -70,7 +70,6 @@ pub async fn producer_req_writer(
         batch_length += frame.len();
         frames.push(frame);
         if batch_length > jrp_send_max_size - jrp_send_max_rec_size || frames.len() >= jrp_send_max_rec_count {
-            debug!("produce, batch-size: {}, max-rec-size: {}", batch_length, jrp_send_max_rec_size);
             let jrp_req_builder = JrpReqBuilder::new(id, kfk_tap.topic, kfk_tap.partition, frames, b2j);
             frames = Vec::with_capacity(jrp_send_max_rec_count);
             times.insert(id, Instant::now()).await;
@@ -115,7 +114,7 @@ pub async fn producer_rsp_reader(
         }
         match jrp_rsp.take_result() {
             Ok(data) => {
-                debug!("success, id: {}, {:?}", id, data);
+                trace!("success, id: {}, {:?}", id, data);
             }
             Err(err) => {
                 error!("error, id: {}, message: {}", id, err);
@@ -125,7 +124,7 @@ pub async fn producer_rsp_reader(
     Ok(())
 }
 
-#[instrument(ret, err, skip(prom_push_url))]
+#[instrument(err, skip(prom_push_url))]
 pub async fn produce(
     jrp_address: FastStr,
     jrp_frame_max_size: usize,

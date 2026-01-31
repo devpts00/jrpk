@@ -169,7 +169,7 @@ impl <T> MeteredItem<T> {
     }
 }
 
-#[instrument(level="debug", ret, err, skip(url, cli, metrics))]
+#[instrument(level="debug", err, skip(url, cli, metrics))]
 async fn push_prometheus(
     url: Url,
     auth: FastStr,
@@ -195,7 +195,7 @@ async fn push_prometheus(
     Ok(())
 }
 
-#[instrument(ret, err, skip(url, metrics, cancel))]
+#[instrument(ret, err, skip(metrics, cancel))]
 async fn loop_push_prometheus(
     url: Url,
     period: Duration,
@@ -218,7 +218,7 @@ async fn loop_push_prometheus(
     Ok(())
 }
 
-#[instrument(skip(url, metrics))]
+#[instrument(level="info", skip(metrics))]
 pub fn spawn_push_prometheus(
     url: Url,
     period: Duration,

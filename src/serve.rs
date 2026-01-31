@@ -3,7 +3,7 @@ use std::sync::Arc;
 use futures_util::future::join_all;
 use rskafka::client::ClientBuilder;
 use tokio::spawn;
-use tracing::{info, instrument};
+use tracing::instrument;
 use crate::args::KfkCompression;
 use crate::error::JrpkError;
 use crate::http::listen_http;

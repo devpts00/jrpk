@@ -301,9 +301,7 @@ impl Budget {
     pub fn new(size: usize, count: usize) -> Self {
         Budget { empty: false, size, count }
     }
-    pub fn is_empty(&self) -> bool {
-        self.empty
-    }
+
     fn spend(&mut self, size: usize) -> bool {
         if self.count > 0 || self.size >= size {
             self.size -= size;
