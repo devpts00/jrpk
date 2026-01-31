@@ -505,7 +505,7 @@ async fn post_kafka_send_proc_responses(
     let ts = Instant::now();
     while let Some(kfk_rsp) = kfk_rsp_rcv.recv().await {
         let Ctx(ctx, res) = kfk_rsp.send_or(JrpkError::Unexpected("kafka response wrong type"))?;
-        let JrpCtx { id, ts, tap, .. } = ctx;
+        let JrpCtx { id: _, ts: _, tap: _, .. } = ctx;
         let offsets = res?;
         metrics.size(&labels, &offsets);
     }

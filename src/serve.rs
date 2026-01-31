@@ -12,7 +12,7 @@ use crate::kafka::{a2k_compression, KfkClientCache};
 use crate::metrics::JrpkMetrics;
 use crate::util::join_with_quit;
 
-#[instrument]
+#[instrument(err)]
 pub async fn serve(
     jrp_bind: SocketAddr,
     jrp_max_frame_size: usize,
@@ -25,8 +25,6 @@ pub async fn serve(
 ) -> Result<(), JrpkError> {
 
     let metrics = Arc::new(JrpkMetrics::new());
-
-    info!("connect: {}", kfk_brokers.join(","));
     let kfk_client = ClientBuilder::new(kfk_brokers).build().await?;
     let kfk_compression = a2k_compression(kfk_compression);
     let kfk_clients = Arc::new(KfkClientCache::new(kfk_client, kfk_compression, 1024, jrp_queue_len, metrics.clone()));

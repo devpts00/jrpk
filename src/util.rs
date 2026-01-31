@@ -1,7 +1,5 @@
 use std::error::Error;
 use crate::error::JrpkError;
-use faststr::FastStr;
-use reqwest::Url;
 use rskafka::record::Record;
 use socket2::SockRef;
 use std::fmt::{Debug, Display, Formatter};
@@ -83,7 +81,6 @@ pub async fn join_with_quit<F: Future>(f: F) {
         _ = f => {
         },
         _ = quit() => {
-            info!("quit...");
         }
     }
 }
@@ -188,6 +185,7 @@ impl <T> CancellableHandle<T> {
     }
 }
 
+#[instrument(level="info", err)]
 pub async fn quit() -> Result<(), std::io::Error> {
     tokio::task::spawn_blocking(|| {
         let term = Term::stdout();

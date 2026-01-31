@@ -6,7 +6,6 @@ use faststr::FastStr;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use moka::future::Cache;
-use prometheus_client::registry::Registry;
 use reqwest::Url;
 use serde::Serialize;
 use tokio::net::TcpStream;
