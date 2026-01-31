@@ -15,7 +15,7 @@ use moka::future::Cache;
 use reqwest::Url;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, FramedRead};
-use tracing::{debug, error, instrument, trace};
+use tracing::{error, instrument, trace};
 use crate::args::FileFormat;
 use crate::http::url_append_tap;
 use crate::kafka::KfkTap;

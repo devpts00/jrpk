@@ -7,7 +7,6 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use moka::future::Cache;
 use reqwest::Url;
-use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
 use tokio::sync::mpsc;
