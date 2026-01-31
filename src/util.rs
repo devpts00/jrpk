@@ -58,27 +58,6 @@ pub fn init_tracing() {
         .init();
 }
 
-
-// TODO: see if we can have a kfk_tap param like "posts@10"
-// TODO: move to kafka module
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct Tap {
-    pub topic: FastStr,
-    pub partition: i32
-}
-
-impl Tap {
-    pub fn new<S: Into<FastStr>>(topic: S, partition: i32) -> Self {
-        Tap { topic: topic.into(), partition }
-    }
-}
-
-impl Display for Tap {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.topic, self.partition)
-    }
-}
-
 #[derive(Debug)]
 pub struct Ctx<C, T>(pub C, pub T);
 
@@ -206,22 +185,6 @@ impl <T> CancellableHandle<T> {
     pub async fn cancel(self) -> Result<T, JoinError> {
         self.token.cancel();
         self.handle.await
-    }
-}
-
-#[inline]
-pub fn url_append_tap(url: &mut Url, tap: &Tap) -> Result<(), JrpkError> {
-    match url.path_segments_mut() {
-        Ok(mut segments) => {
-            segments.push("topic");
-            segments.push(tap.topic.as_str());
-            segments.push("partition");
-            segments.push(tap.partition.to_string().as_str());
-            Ok(())
-        },
-        Err(_) => {
-            Err(JrpkError::Url)
-        }
     }
 }
 

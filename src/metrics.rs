@@ -16,9 +16,10 @@ use tokio::spawn;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 use crate::error::JrpkError;
+use crate::kafka::KfkTap;
 use crate::model::JrpMethod;
 use crate::size::Size;
-use crate::util::{CancellableHandle, Tap};
+use crate::util::CancellableHandle;
 
 pub static IO_OP_THROUGHPUT: &str = "io_op_throughput";
 pub static IO_OP_SIZE: &str = "io_op_size";
@@ -88,7 +89,7 @@ impl JrpkLabels {
         self.traffic = Some(traffic);
         self
     }
-    pub fn tap(&mut self, tap: Tap) -> &mut Self {
+    pub fn tap(&mut self, tap: KfkTap) -> &mut Self {
         self.topic = Some(tap.topic.into());
         self.partition = Some(tap.partition);
         self

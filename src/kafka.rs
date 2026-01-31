@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 use std::error::Error;
+use std::fmt::{Display, Formatter};
 use crate::error::JrpkError;
-use crate::util::{Ctx, Req, Tap};
+use crate::util::{Ctx, Req};
 use moka::future::Cache;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::Client;
@@ -11,17 +12,36 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
-use log::info;
+use faststr::FastStr;
 use tokio::{spawn};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
-use tracing::{instrument, trace};
+use tracing::instrument;
 use crate::args::KfkCompression;
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
 use crate::model::JrpOffset;
 use crate::size::Size;
 
 pub type KfkError = rskafka::client::error::Error;
+
+// TODO: see if we can have a kfk_tap param like "posts@10"
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct KfkTap {
+    pub topic: FastStr,
+    pub partition: i32
+}
+
+impl KfkTap {
+    pub fn new<S: Into<FastStr>>(topic: S, partition: i32) -> Self {
+        KfkTap { topic: topic.into(), partition }
+    }
+}
+
+impl Display for KfkTap {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.topic, self.partition)
+    }
+}
 
 pub fn a2k_compression(compression: Option<KfkCompression>) -> Compression {
     match compression {
@@ -252,7 +272,7 @@ async fn kafka_offset(
 
 #[instrument(level="info", err, skip(kfk_client, metrics, kfk_rcv))]
 async fn kafka_loop<C: KfkTypes>(
-    kfk_tap: Tap,
+    kfk_tap: KfkTap,
     kfk_client: PartitionClient,
     kfk_compression: Compression,
     metrics: Arc<JrpkMetrics>,
@@ -287,7 +307,7 @@ async fn kafka_loop<C: KfkTypes>(
 
 pub struct KfkClientCache<REQ> {
     client: Client,
-    cache: Cache<Tap, Sender<REQ>>,
+    cache: Cache<KfkTap, Sender<REQ>>,
     compression: Compression,
     queue_size: usize,
     metrics: Arc<JrpkMetrics>,
@@ -301,7 +321,7 @@ where C::S: Send + Sync, C::F: Send + Sync, C::O: Send + Sync, C: 'static {
     }
 
     #[instrument(level="info", err, skip(self))]
-    async fn init_kafka_loop(&self, tap: Tap) -> Result<Sender<KfkReq<C>>, JrpkError> {
+    async fn init_kafka_loop(&self, tap: KfkTap) -> Result<Sender<KfkReq<C>>, JrpkError> {
         let cli = self.client.partition_client(tap.topic.as_str(), tap.partition, UnknownTopicHandling::Error).await?;
         let (snd, rcv) = tokio::sync::mpsc::channel(self.queue_size);
         spawn(kafka_loop(tap, cli, self.compression, self.metrics.clone(), rcv));
@@ -309,7 +329,7 @@ where C::S: Send + Sync, C::F: Send + Sync, C::O: Send + Sync, C: 'static {
     }
 
     #[instrument(level="debug", err, skip(self))]
-    pub async fn lookup_sender(&self, tap: Tap) -> Result<Sender<KfkReq<C>>, JrpkError> {
+    pub async fn lookup_sender(&self, tap: KfkTap) -> Result<Sender<KfkReq<C>>, JrpkError> {
         if let Some(snd) = self.cache.get(&tap).await {
             Ok(snd)
         } else {

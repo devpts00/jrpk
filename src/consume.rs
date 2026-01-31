@@ -19,9 +19,11 @@ use tracing::{debug, error, instrument, trace};
 use crate::args::FileFormat;
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
+use crate::http::url_append_tap;
+use crate::kafka::KfkTap;
 use crate::model::{write_records, JrpCodec, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector, Progress};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
-use crate::util::{url_append_tap, Budget, Tap, VecBufWriter};
+use crate::util::{Budget, VecBufWriter};
 
 type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
 
@@ -44,7 +46,7 @@ fn test<W: Write, S: Serialize>(writer: &mut W, data: S) {
 #[instrument(ret, err, skip(metrics, times, offset_rcv, tcp_sink))]
 async fn consumer_req_writer<'a>(
     jrp_selector: JrpSelector,
-    kfk_tap: Tap,
+    kfk_tap: KfkTap,
     kfk_fetch_min_size: i32,
     kfk_fetch_max_size: i32,
     kfk_fetch_max_wait_ms: i32,
@@ -74,7 +76,7 @@ async fn consumer_req_writer<'a>(
 
 #[instrument(ret, err, skip(metrics, times, offset_snd, tcp_stream))]
 async fn consumer_rsp_reader(
-    kfk_tap: Tap,
+    kfk_tap: KfkTap,
     kfk_from: JrpOffset,
     kfk_until: JrpOffset,
     file_path: FastStr,
@@ -177,7 +179,7 @@ pub async fn consume(
 ) -> Result<(), JrpkError> {
 
     let jrp_selector = JrpSelector::new(jrp_key_codec, jrp_value_codec, jrp_header_codecs, jrp_header_codec_default);
-    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let kfk_tap = KfkTap::new(kfk_topic, kfk_partition);
     let metrics = Arc::new(JrpkMetrics::new());
 
     url_append_tap(&mut prom_push_url, &kfk_tap)?;

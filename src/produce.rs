@@ -1,9 +1,9 @@
 use crate::async_clean_return;
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
-use crate::model::{b2j, JrpCodec, JrpReq, JrpReqBuilder, JrpRsp, JrpkMeteredProdReq};
+use crate::model::{b2j, JrpCodec, JrpReqBuilder, JrpRsp, JrpkMeteredProdReq};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
-use crate::util::{join_with_quit, url_append_tap, Tap};
+use crate::util::join_with_quit;
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -17,6 +17,8 @@ use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, FramedRead};
 use tracing::{debug, error, instrument};
 use crate::args::FileFormat;
+use crate::http::url_append_tap;
+use crate::kafka::KfkTap;
 
 #[instrument(ret, skip(metrics, times, tcp_sink))]
 pub async fn producer_req_writer(
@@ -25,7 +27,7 @@ pub async fn producer_req_writer(
     jrp_send_max_rec_count: usize,
     jrp_send_max_rec_size: usize,
     jrp_value_codec: JrpCodec,
-    kfk_tap: Tap,
+    kfk_tap: KfkTap,
     file_path: FastStr,
     file_format: FileFormat,
     file_load_max_rec_count: usize,
@@ -93,7 +95,7 @@ pub async fn producer_req_writer(
 
 #[instrument(ret, skip(metrics, times, tcp_stream))]
 pub async fn producer_rsp_reader(
-    kfk_tap: Tap,
+    kfk_tap: KfkTap,
     metrics: Arc<JrpkMetrics>,
     times: Arc<Cache<usize, Instant>>,
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
@@ -141,7 +143,7 @@ pub async fn produce(
     prom_push_period: Duration,
 ) -> Result<(), JrpkError> {
 
-    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let kfk_tap = KfkTap::new(kfk_topic, kfk_partition);
     let metrics = Arc::new(JrpkMetrics::new());
 
     url_append_tap(&mut prom_push_url, &kfk_tap)?;

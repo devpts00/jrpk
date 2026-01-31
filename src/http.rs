@@ -1,10 +1,10 @@
 use std::fmt::{Debug, Formatter};
 use crate::error::JrpkError;
 use crate::jsonrpc::{k2j_rec_fetch, JrpCtx, JrpCtxTypes};
-use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp};
+use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp, KfkTap};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
 use crate::model::{b2j, b2j_rec_vec, write_records, JrpCodec, JrpOffset, JrpSelector, Progress};
-use crate::util::{Budget, Ctx, Req, Tap, VecWriter};
+use crate::util::{Budget, Ctx, Req, VecWriter};
 use axum::extract::{Path, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 use axum::body::{Body, BodyDataStream};
 use axum_extra::extract::Query;
 use futures_util::{StreamExt, TryStreamExt};
+use reqwest::Url;
 use rskafka::record::Record;
 use serde::de::{Error, Visitor};
 use tokio::net::TcpListener;
@@ -36,6 +37,22 @@ use tokio_util::io::StreamReader;
 use tracing::{debug, instrument, trace};
 use crate::args::{FileFormat, NamedCodec};
 use crate::codec::LinesCodec;
+
+#[inline]
+pub fn url_append_tap(url: &mut Url, tap: &KfkTap) -> Result<(), JrpkError> {
+    match url.path_segments_mut() {
+        Ok(mut segments) => {
+            segments.push("topic");
+            segments.push(tap.topic.as_str());
+            segments.push("partition");
+            segments.push(tap.partition.to_string().as_str());
+            Ok(())
+        },
+        Err(_) => {
+            Err(JrpkError::Url)
+        }
+    }
+}
 
 #[instrument(level="trace", ret, err, skip(metrics))]
 async fn get_prometheus_metrics(State(metrics): State<Arc<JrpkMetrics>>) -> Result<String, JrpkError> {
@@ -99,7 +116,7 @@ async fn get_kafka_offset(
     Query(HttpOffsetQuery { kfk_offset }): Query<HttpOffsetQuery>,
 ) -> Result<String, JrpkError> {
     let ts = Instant::now();
-    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let kfk_tap = KfkTap::new(kfk_topic, kfk_partition);
     let ctx = JrpCtxTypes::offset(0, Instant::now(), kfk_tap.clone());
     let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
     let kfk_offset = kfk_offset.into();
@@ -357,7 +374,7 @@ async fn get_kafka_fetch(
         }
     ): Query<HttpFetchQuery>,
 ) -> Result<impl IntoResponse, JrpkError> {
-    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let kfk_tap = KfkTap::new(kfk_topic, kfk_partition);
     let labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Fetch).traffic(LblTraffic::Out).tap(kfk_tap.clone()).build();
     let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
     let kfk_offset_from = kfk_offset_from.into();
@@ -430,7 +447,7 @@ async fn post_kafka_send_proc_requests(
     jrp_send_max_size: usize,
     jrp_send_max_rec_count: usize,
     mut jrp_send_max_rec_size: usize,
-    kfk_tap: Tap,
+    kfk_tap: KfkTap,
     kfk_req_snd: Sender<KfkReq<JrpCtxTypes>>,
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     file_format: FileFormat,
@@ -523,7 +540,7 @@ async fn post_kafka_send(
 ) -> Result<(), JrpkError> {
     let jrp_send_max_size = jrp_send_max_size.as_u64() as usize;
     let jrp_send_max_rec_size = jrp_send_max_rec_size.as_u64() as usize;
-    let kfk_tap = Tap::new(kfk_topic, kfk_partition);
+    let kfk_tap = KfkTap::new(kfk_topic, kfk_partition);
     let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
     let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel::<KfkRsp<JrpCtxTypes>>(kfk_req_snd.max_capacity());
     let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(kfk_tap.clone()).build();

@@ -1,9 +1,9 @@
 use crate::codec::LinesCodec;
 use crate::error::JrpkError;
-use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes};
+use crate::kafka::{KfkClientCache, KfkError, KfkOffset, KfkReq, KfkRsp, KfkTypes, KfkTap};
 use crate::metrics::{JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::model::{JrpCodec, JrpData, JrpId, JrpMethod, JrpOffset, JrpRecFetch, JrpRecSend, JrpReq, JrpRsp, JrpRspData, JrpSelector};
-use crate::util::{set_buf_sizes, Ctx, Req, Tap};
+use crate::util::{set_buf_sizes, Ctx, Req};
 use chrono::Utc;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -27,12 +27,12 @@ use tracing::{info, instrument, trace, warn};
 pub struct JrpCtx<E: Clone> {
     pub id: usize,
     pub ts: Instant,
-    pub tap: Tap,
+    pub tap: KfkTap,
     pub extra: E
 }
 
 impl <E: Clone> JrpCtx<E> {
-    pub fn new(id: usize, ts: Instant, tap: Tap, extra: E) -> Self {
+    pub fn new(id: usize, ts: Instant, tap: KfkTap, extra: E) -> Self {
         JrpCtx { id, ts, tap, extra }
     }
 }
@@ -41,13 +41,13 @@ impl <E: Clone> JrpCtx<E> {
 pub struct JrpCtxTypes;
 
 impl JrpCtxTypes {
-    pub fn send(id: usize, ts: Instant, tap: Tap) -> JrpCtx<()> {
+    pub fn send(id: usize, ts: Instant, tap: KfkTap) -> JrpCtx<()> {
         JrpCtx::new(id, ts, tap, ())
     }
-    pub fn fetch(id: usize, ts: Instant, tap: Tap, selector: JrpSelector) -> JrpCtx<JrpSelector> {
+    pub fn fetch(id: usize, ts: Instant, tap: KfkTap, selector: JrpSelector) -> JrpCtx<JrpSelector> {
         JrpCtx::new(id, ts, tap, selector)
     }
-    pub fn offset(id: usize, ts: Instant, tap: Tap) -> JrpCtx<()> {
+    pub fn offset(id: usize, ts: Instant, tap: KfkTap) -> JrpCtx<()> {
         JrpCtx::new(id, ts, tap, ())
     }
 }
@@ -149,10 +149,10 @@ pub fn j2k_req<'a>(
     metrics: &JrpkMetrics,
     labels: &mut JrpkLabels,
     length: usize,
-) -> Result<(Tap, KfkReq<JrpCtxTypes>), JrpkError> {
+) -> Result<(KfkTap, KfkReq<JrpCtxTypes>), JrpkError> {
     let id = jrp_req.id;
     let params = jrp_req.params;
-    let tap = Tap::new(params.topic, params.partition);
+    let tap = KfkTap::new(params.topic, params.partition);
     let labels = labels.tap(tap.clone());
     match jrp_req.method {
         JrpMethod::Send => {
@@ -187,10 +187,10 @@ pub fn j2k_req<'a>(
     }
 }
 
-#[instrument(ret, err, skip(tcp_stream, cli_cache, kfk_rsp_snd, jrp_err_snd, metrics))]
+#[instrument(level="info", ret, err, skip(tcp_stream, kfk_clients, kfk_rsp_snd, jrp_err_snd, metrics))]
 async fn jsonrpc_req_reader(
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
-    cli_cache: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
+    kfk_clients: Arc<KfkClientCache<KfkReq<JrpCtxTypes>>>,
     kfk_rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
     jrp_err_snd: JrpErrSnd,
     metrics: Arc<JrpkMetrics>,
@@ -209,7 +209,7 @@ async fn jsonrpc_req_reader(
                 let id = jrp_req.id;
                 match j2k_req(jrp_req, kfk_rsp_snd.clone(), &metrics, &mut labels, length) {
                     Ok((tap, kfk_req)) => {
-                        let kfk_req_snd = cli_cache.lookup_sender(tap).await?;
+                        let kfk_req_snd = kfk_clients.lookup_sender(tap).await?;
                         kfk_req_snd.send(kfk_req).await?;
                     }
                     Err(error) => {
@@ -235,7 +235,7 @@ async fn jsonrpc_req_reader(
 
 type JrpRspMeteredItem = MeteredItem<JrpRsp<'static>>;
 
-#[instrument(ret, err, skip(tcp_sink, kfk_rsp_rcv, jrp_err_rcv, metrics))]
+#[instrument(level="info", ret, err, skip(tcp_sink, kfk_rsp_rcv, jrp_err_rcv, metrics))]
 async fn jsonrpc_rsp_writer(
     mut tcp_sink: SplitSink<Framed<TcpStream, LinesCodec>, JrpRspMeteredItem>,
     mut kfk_rsp_rcv: Receiver<KfkRsp<JrpCtxTypes>>,
@@ -282,7 +282,7 @@ async fn jsonrpc_rsp_writer(
 type JrpErrSnd = Sender<(usize, JrpkError)>;
 type JrpErrRcv = Receiver<(usize, JrpkError)>;
 
-#[instrument(ret, err, skip(kfk_cache, tcp_stream, metrics))]
+#[instrument(level="info", ret, err, skip(kfk_cache, tcp_stream, metrics))]
 async fn serve_jsonrpc(
     jrp_max_frame_size: usize,
     jrp_queue_size: usize,
@@ -322,7 +322,7 @@ async fn serve_jsonrpc(
     Ok(())
 }
 
-#[instrument(ret, err, skip(kfk_cache, metrics))]
+#[instrument(level="info", ret, err, skip(kfk_cache, metrics))]
 pub async fn listen_jsonrpc(
     jrp_bind: SocketAddr,
     jrp_max_frame_size: usize,
