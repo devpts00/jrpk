@@ -3,8 +3,8 @@ use crate::error::JrpkError;
 use crate::jsonrpc::{k2j_rec_fetch, JrpCtx, JrpCtxTypes};
 use crate::kafka::{KfkClientCache, KfkOffset, KfkReq, KfkRsp, KfkTap};
 use crate::metrics::{JrpkLabels, JrpkMetrics, LblMethod, LblTier, LblTraffic};
-use crate::model::{b2j, b2j_rec_vec, write_records, JrpCodec, JrpOffset, JrpSelector, Progress};
-use crate::util::{Budget, Ctx, Req, VecWriter};
+use crate::model::{b2j, b2j_rec_vec, write_format, JrpCodec, JrpOffset, JrpSelector, Progress};
+use crate::util::{Budget, Ctx, Req};
 use axum::extract::{Path, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
@@ -204,8 +204,7 @@ enum KfkFetchState {
         kfk_offset_until: KfkOffset,
         kfk_fetch_min_max_bytes: Range<i32>,
         kfk_fetch_max_wait_ms: i32,
-        file_save_rec_count_budget: usize,
-        file_save_size_budget: usize,
+        file_budget: Budget,
         file_format: FileFormat,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
@@ -225,8 +224,7 @@ impl KfkFetchState {
         kfk_offset_until: KfkOffset,
         kfk_fetch_min_max_bytes: Range<i32>,
         kfk_fetch_max_wait_ms: i32,
-        file_save_rec_count_budget: usize,
-        file_save_size_budget: usize,
+        file_budget: Budget,
         file_format: FileFormat,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
@@ -234,7 +232,7 @@ impl KfkFetchState {
         metrics: Arc<JrpkMetrics>,
         labels: JrpkLabels,
     ) -> Self {
-        KfkFetchState::Next { kfk_offset_until, kfk_fetch_min_max_bytes, kfk_fetch_max_wait_ms, file_save_rec_count_budget, file_save_size_budget, file_format, req_snd, rsp_snd, rsp_rcv, metrics, labels }
+        KfkFetchState::Next { kfk_offset_until, kfk_fetch_min_max_bytes, kfk_fetch_max_wait_ms, file_budget, file_format, req_snd, rsp_snd, rsp_rcv, metrics, labels }
     }
     fn done(
         ts: Instant,
@@ -248,11 +246,20 @@ impl KfkFetchState {
 impl Debug for KfkFetchState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            KfkFetchState::Next { kfk_offset_until: until, kfk_fetch_min_max_bytes: min_max_bytes, kfk_fetch_max_wait_ms: max_wait_ms, .. } => {
+            KfkFetchState::Next {
+                kfk_offset_until,
+                kfk_fetch_min_max_bytes,
+                kfk_fetch_max_wait_ms,
+                file_budget,
+                file_format,
+                ..
+            } => {
                 f.debug_struct("KfkFetchState::Next")
-                    .field("until", until)
-                    .field("min_max_bytes", min_max_bytes)
-                    .field("max_wait_ms", max_wait_ms)
+                    .field("kfk_offset_until", kfk_offset_until)
+                    .field("kfk_fetch_min_max_bytes", kfk_fetch_min_max_bytes)
+                    .field("kfk_fetch_max_wait_ms", kfk_fetch_max_wait_ms)
+                    .field("file_budget", file_budget)
+                    .field("file_format", file_format)
                     .finish()
             }
             KfkFetchState::Done { ts, .. } => {
@@ -271,8 +278,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
             kfk_offset_until,
             kfk_fetch_min_max_bytes,
             kfk_fetch_max_wait_ms,
-            file_save_rec_count_budget,
-            file_save_size_budget,
+            mut file_budget,
             file_format,
             req_snd,
             rsp_snd,
@@ -280,6 +286,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
             metrics,
             labels
         } => {
+            let flush_size = 64 * 1024;
             let kfk_rsp = rsp_rcv.recv().await
                 .ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
             let Ctx(ctx, kfk_res) = kfk_rsp
@@ -287,15 +294,13 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
             let JrpCtx { id, ts, tap: kfk_tap, extra: jrp_selector } = ctx;
             let (ros, high_watermark) = kfk_res?;
 
-            let mut writer = VecWriter::with_capacity(64 * 1024);
-            let mut budget = Budget::new(file_save_size_budget, file_save_rec_count_budget);
+            let mut buf = Vec::with_capacity(64 * 1024);
 
             let records = ros.into_iter()
                 .map(|ro| k2j_rec_fetch(ro, &jrp_selector));
 
-            let progress = write_records(file_format, records, kfk_offset_until.into(), &mut budget, &mut writer)?;
+            let progress = write_format(file_format, records, kfk_offset_until.into(), flush_size, &mut file_budget, &mut buf)?;
 
-            let buf = writer.into_inner();
             let bytes = buf.into();
             metrics.size(&labels, &bytes);
             let frame = Frame::data(bytes);
@@ -312,8 +317,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
                             kfk_offset_until,
                             kfk_fetch_min_max_bytes,
                             kfk_fetch_max_wait_ms,
-                            file_save_rec_count_budget,
-                            file_save_size_budget,
+                            file_budget,
                             file_format,
                             req_snd,
                             rsp_snd,
@@ -381,8 +385,7 @@ async fn get_kafka_fetch(
     let kfk_offset_until = kfk_offset_until.into();
     let kfk_fetch_min_max_bytes = kfk_fetch_min_size.as_u64() as i32 .. kfk_fetch_max_size.as_u64() as i32;
     let kfk_fetch_max_wait_ms = kfk_fetch_max_wait_time.as_millis() as i32;
-    let file_save_rec_count_budget =  file_save_max_rec_count;
-    let file_save_size_budget = file_save_max_size.as_u64() as usize;
+    let file_budget = Budget::new(file_save_max_size.as_u64() as usize, file_save_max_rec_count);
     let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel(1);
     let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
     let jrp_selector = JrpSelector::new(jrp_key_codec, jrp_value_codec, jrp_header_codecs, jrp_header_codec_default);
@@ -394,8 +397,7 @@ async fn get_kafka_fetch(
         kfk_offset_until,
         kfk_fetch_min_max_bytes,
         kfk_fetch_max_wait_ms,
-        file_save_rec_count_budget,
-        file_save_size_budget,
+        file_budget,
         file_format,
         kfk_req_snd,
         kfk_rsp_snd,

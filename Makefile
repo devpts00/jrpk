@@ -8,7 +8,7 @@ docker-build:
 	docker compose build rst trc
 
 docker-env:
-	docker compose --profile env up
+	docker compose --profile env up --remove-orphans --force-recreate
 
 tree:
 	docker compose run --rm rst cargo tree
@@ -53,20 +53,19 @@ server-release: build-release
 		--name jrpk rst ./target/release/jrpk \
 		serve \
 		--jrp-bind=0.0.0.0:1133 \
-		--jrp-max-frame-size=1mib \
-		--jrp-queue-len=1024 \
+		--jrp-max-frame-size=4mib \
+		--jrp-queue-len=1 \
 		--http-bind=0.0.0.0:1134 \
 		--kfk-brokers=kfk:9092 \
 		--kfk-compression=lz4 \
 		--tcp-send-buf-size=32kib \
-		--tcp-recv-buf-size=32kib \
-		--thread-count=32
+		--tcp-recv-buf-size=32kib
 
 client-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1 1
 
 client-release-consume: build-release
-	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 32 1
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 1 1
 
 client-debug-produce: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh debug values posts 1 1

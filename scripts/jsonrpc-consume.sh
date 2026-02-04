@@ -15,7 +15,7 @@ do
     ./target/${BUILD}/jrpk \
       consume \
       --jrp-address=jrpk:1133 \
-      --jrp-frame-max-size=1mib \
+      --jrp-frame-max-size=4mib \
       --jrp-key-codec=str \
       --jrp-value-codec=json \
       --jrp-header-codec-default=str \
@@ -24,19 +24,19 @@ do
       --kfk-offset-from=earliest \
       --kfk-offset-until=latest \
       --kfk-fetch-min-size=32kib \
-      --kfk-fetch-max-size=256kib \
-      --kfk-fetch-max-wait-time-ms=5 \
+      --kfk-fetch-max-size=1mib \
+      --kfk-fetch-max-wait-time-ms=1 \
       --file-path=./json/${FILE}-${p}.json \
       --file-format=record \
-      --file-save-max-size=1gib \
-      --file-save-max-rec-count=1000000 \
+      --file-save-max-size=32mib \
+      --file-save-max-rec-count=1000000000 \
       --prom-push-url=http://pmg:9091/metrics/job/jrpk \
       --prom-push-period=1s \
-      --thread-count=1 &
+      --thread-count=2 &
     sleep 0.1
   done
   wait
-  rm -f ./json/${FILE}-*.json
+  #rm -f ./json/${FILE}-*.json
 done
 
 END_TIME=$EPOCHREALTIME

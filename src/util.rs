@@ -227,6 +227,10 @@ pub trait Length {
     fn len(&self) -> usize;
 }
 
+pub trait Truncate {
+    fn truncate(&mut self, len: usize);
+}
+
 #[derive(Debug)]
 pub struct VecBufWriter<W> {
     buf: Vec<u8>,
@@ -244,8 +248,10 @@ impl <W: Write> Write for VecBufWriter<W> {
         self.buf.write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.write_all(self.buf.as_slice())?;
-        self.buf.clear();
+        if !self.buf.is_empty() {
+            self.inner.write_all(self.buf.as_slice())?;
+            self.buf.clear();
+        }
         Ok(())
     }
 }
@@ -256,6 +262,25 @@ impl <W> Length for VecBufWriter<W> {
     }
 }
 
+impl <W> Truncate for VecBufWriter<W> {
+    fn truncate(&mut self, len: usize) {
+        self.buf.truncate(len)
+    }
+}
+
+impl <T> Length for Vec<T> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl <T> Truncate for Vec<T> {
+    fn truncate(&mut self, len: usize) {
+        self.truncate(len)
+    }
+}
+
+/*
 #[derive(Debug)]
 pub struct VecWriter {
     pos: usize,
@@ -289,46 +314,48 @@ impl Length for VecWriter {
         self.buf.len()
     }
 }
+ */
 
 #[derive(Debug)]
 pub struct Budget {
-    empty: bool,
     size: usize,
     count: usize,
 }
 
 impl Budget {
+
     pub fn new(size: usize, count: usize) -> Self {
-        Budget { empty: false, size, count }
+        Budget { size, count }
     }
 
     fn spend(&mut self, size: usize) -> bool {
-        if self.count > 0 || self.size >= size {
+        if self.count > 0 && self.size >= size {
             self.size -= size;
             self.count -= 1;
+            true
         } else {
-            self.empty = true;
+            false
         }
-        !self.empty
     }
 
-    pub fn write_ser<WL: Write + Length, S: Serialize>(&mut self, writer: &mut WL, ser: &S) -> Result<bool, JrpkError> {
+    pub fn write_ser<WLT, S>(&mut self, writer: &mut WLT, ser: &S) -> Result<bool, JrpkError>
+    where WLT: Write + Length + Truncate, S: Serialize {
         let length = writer.len();
         json_to_writer(writer, ser)?;
         writer.write_all(b"\n")?;
         if self.spend(writer.len() - length) {
-            writer.flush()?;
             Ok(true)
         } else {
+            writer.truncate(length);
             Ok(false)
         }
     }
 
-    pub fn write_slice<WL: Write + Length>(&mut self, writer: &mut WL, slice: &[u8]) -> Result<bool, JrpkError> {
+    pub fn write_slice<W>(&mut self, writer: &mut W, slice: &[u8]) -> Result<bool, JrpkError>
+    where W: Write {
         if self.spend(slice.len() + 1) {
             writer.write_all(slice)?;
             writer.write_all(b"\n")?;
-            writer.flush()?;
             Ok(true)
         } else {
             Ok(false)

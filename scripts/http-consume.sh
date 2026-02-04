@@ -10,8 +10,7 @@ START_TIME=$EPOCHREALTIME
 
 for ((p = 0; p < $PARTITIONS; p++))
 do
-  #curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}" &
-  curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}" &
+  curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}?kfk_fetch_max_size=1mib&file_save_max_size=32mib" &
 	sleep 0.1
 done
 
@@ -22,4 +21,4 @@ DIFF_TIME=$(echo "$END_TIME - $START_TIME" | bc)
 echo ""
 echo "Runtime: $DIFF_TIME seconds"
 
-rm -f ./json/${FILE}-*.json
+#rm -f ./json/${FILE}-*.json

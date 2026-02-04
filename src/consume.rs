@@ -19,7 +19,7 @@ use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::http::url_append_tap;
 use crate::kafka::KfkTap;
-use crate::model::{write_records, JrpCodec, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector, Progress};
+use crate::model::{write_format, JrpCodec, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector, Progress};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
 use crate::util::{Budget, VecBufWriter};
 
@@ -80,6 +80,7 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<JrpOffset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
 ) -> Result<(), JrpkError> {
+    let flush_size = 64 * 1024;
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Fetch)
         .traffic(LblTraffic::In)
@@ -96,12 +97,11 @@ async fn consumer_rsp_reader(
         match jrp_rsp.take_result() {
             Ok(jrp_rsp_data) => {
                 match jrp_rsp_data {
-                    JrpRspData::Fetch { high_watermark, mut records } => {
+                    JrpRspData::Fetch { high_watermark, records } => {
                         metrics.size(&labels, &frame);
                         if let Some(ts) = times.remove(&id).await {
                             metrics.time(&labels, ts);
                         }
-                        records.sort_by_key(|r| r.offset);
                         // if more data is available
                         if let Some(last) = records.last() {
                             // if the last item is not out of bounds
@@ -109,14 +109,13 @@ async fn consumer_rsp_reader(
                                 offset_snd.send(JrpOffset::Offset(last.offset + 1)).await?;
                             }
                         }
+
                         let records = records.into_iter().map(|r| Ok(r));
-                        let progress = block_in_place(|| {
-                            write_records(file_format, records, kfk_until.into(), &mut budget, &mut writer)
-                        })?;
+                        let progress = block_in_place(|| write_format(file_format, records, kfk_until.into(), flush_size, &mut budget, &mut writer))?;
 
                         match progress {
-                            Progress::Continue(offset) => {
-                                trace!("continue, offset: {}", offset)
+                            Progress::Continue(next) => {
+                                trace!("continue, next: {}", next);
                             }
                             Progress::Done => {
                                 debug!("done");
@@ -124,6 +123,8 @@ async fn consumer_rsp_reader(
                             }
                             Progress::Overdraft => {
                                 debug!("break: budget overdraft");
+                                // we need to receive response to close connection clean
+                                tcp_stream.next().await;
                                 break;
                             }
                         }

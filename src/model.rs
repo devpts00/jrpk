@@ -20,7 +20,7 @@ use tracing::instrument;
 use crate::args::FileFormat;
 use crate::codec::LinesCodec;
 use crate::metrics::MeteredItem;
-use crate::util::{Budget, Length};
+use crate::util::{Budget, Length, Truncate};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -466,14 +466,18 @@ pub enum Progress {
     Overdraft,
 }
 
+
+
 #[instrument(ret, err, level="trace", skip(records, writer))]
-pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFetch<'a>, JrpkError>>>(
-    format: FileFormat,
+fn write_records<'a, WLT, IR>(
     records: IR,
     until: JrpOffset,
+    flush_size: usize,
     budget: &mut Budget,
-    writer: &mut WL,
-) -> Result<Progress, JrpkError> {
+    writer: &mut WLT,
+) -> Result<Progress, JrpkError>
+where WLT: Write + Length + Truncate, IR: Iterator<Item = Result<JrpRecFetch<'a>, JrpkError>> {
+
     let mut progress = Progress::Done;
     for record in records {
 
@@ -485,22 +489,72 @@ pub fn write_records<'a, WL: Write + Length, IR: Iterator<Item = Result<JrpRecFe
             break;
         }
 
-        match format {
-            FileFormat::Value => {
-                if let Some(value) = record.value {
-                    if !budget.write_slice(writer, value.as_str().as_bytes())? {
-                        progress = Progress::Overdraft;
-                        break;
-                    }
-                }
-            }
-            FileFormat::Record => {
-                if !budget.write_ser(writer, &record)? {
-                    progress = Progress::Overdraft;
-                    break
-                }
+        if !budget.write_ser(writer, &record)? {
+            progress = Progress::Overdraft;
+            break
+        }
+
+        if writer.len() >= flush_size {
+            writer.flush()?;
+        }
+
+    }
+    writer.flush()?;
+    Ok(progress)
+}
+
+#[inline]
+pub fn write_format<'a, WLT, IR>(
+    file_format: FileFormat,
+    records: IR,
+    until: JrpOffset,
+    flush_size: usize,
+    budget: &mut Budget,
+    writer: &mut WLT,
+) -> Result<Progress, JrpkError>
+where WLT: Write + Length + Truncate, IR: Iterator<Item = Result<JrpRecFetch<'a>, JrpkError>> {
+    match file_format {
+        FileFormat::Value => {
+            write_values(records, until, flush_size, budget, writer)
+        }
+        FileFormat::Record => {
+            write_records(records, until, flush_size, budget, writer)
+        }
+    }
+}
+
+#[instrument(ret, err, level="trace", skip(records, writer))]
+fn write_values<'a, WL, IR>(
+    records: IR,
+    until: JrpOffset,
+    flush_size: usize,
+    budget: &mut Budget,
+    writer: &mut WL,
+) -> Result<Progress, JrpkError>
+where WL: Write + Length, IR: Iterator<Item = Result<JrpRecFetch<'a>, JrpkError>> {
+
+    let mut progress = Progress::Done;
+    for record in records {
+
+        let record = record?;
+        if record < until {
+            progress = Progress::Continue(record.offset + 1);
+        } else {
+            progress = Progress::Done;
+            break;
+        }
+
+        if let Some(value) = record.value {
+            if !budget.write_slice(writer, value.as_str().as_bytes())? {
+                progress = Progress::Overdraft;
+                break;
             }
         }
+
+        if writer.len() >= flush_size {
+            writer.flush()?;
+        }
+
     }
     writer.flush()?;
     Ok(progress)
