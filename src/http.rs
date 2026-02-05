@@ -437,8 +437,6 @@ const fn default_jrp_send_max_rec_size() -> ByteSize {
     ByteSize::kib(1)
 }
 
-
-
 #[derive(Deserialize)]
 struct HttpSendQuery {
     #[serde(default = "default_jrp_codec_value")]
