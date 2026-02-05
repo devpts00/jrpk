@@ -167,6 +167,8 @@ const fn default_kfk_fetch_max_wait_time() -> Duration {
 
 const fn default_file_format() -> FileFormat { FileFormat::Value }
 
+const fn default_file_buf_size() -> ByteSize { ByteSize::kib(32) }
+
 const fn default_file_save_max_rec_count() -> usize { usize::MAX }
 
 const fn default_file_save_max_size() -> ByteSize { ByteSize::b(u64::MAX) }
@@ -193,6 +195,8 @@ struct HttpFetchQuery {
 
     #[serde(default = "default_file_format")]
     file_format: FileFormat,
+    #[serde(default = "default_file_buf_size")]
+    file_buf_size: ByteSize,
     #[serde(default = "default_file_save_max_rec_count")]
     file_save_max_rec_count: usize,
     #[serde(default = "default_file_save_max_size")]
@@ -205,6 +209,7 @@ enum KfkFetchState {
         kfk_fetch_min_max_bytes: Range<i32>,
         kfk_fetch_max_wait_ms: i32,
         file_budget: Budget,
+        file_buf_size: usize,
         file_format: FileFormat,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
@@ -225,6 +230,7 @@ impl KfkFetchState {
         kfk_fetch_min_max_bytes: Range<i32>,
         kfk_fetch_max_wait_ms: i32,
         file_budget: Budget,
+        file_buf_size: usize,
         file_format: FileFormat,
         req_snd: Sender<KfkReq<JrpCtxTypes>>,
         rsp_snd: Sender<KfkRsp<JrpCtxTypes>>,
@@ -232,7 +238,7 @@ impl KfkFetchState {
         metrics: Arc<JrpkMetrics>,
         labels: JrpkLabels,
     ) -> Self {
-        KfkFetchState::Next { kfk_offset_until, kfk_fetch_min_max_bytes, kfk_fetch_max_wait_ms, file_budget, file_format, req_snd, rsp_snd, rsp_rcv, metrics, labels }
+        KfkFetchState::Next { kfk_offset_until, kfk_fetch_min_max_bytes, kfk_fetch_max_wait_ms, file_budget, file_buf_size, file_format, req_snd, rsp_snd, rsp_rcv, metrics, labels }
     }
     fn done(
         ts: Instant,
@@ -280,6 +286,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
             kfk_fetch_max_wait_ms,
             mut file_budget,
             file_format,
+            file_buf_size,
             req_snd,
             rsp_snd,
             mut rsp_rcv,
@@ -299,7 +306,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
             let records = ros.into_iter()
                 .map(|ro| k2j_rec_fetch(ro, &jrp_selector));
 
-            let progress = write_format(file_format, records, kfk_offset_until.into(), flush_size, &mut file_budget, &mut buf)?;
+            let progress = write_format(file_format, file_buf_size, records, kfk_offset_until.into(), &mut file_budget, &mut buf)?;
 
             let bytes = buf.into();
             metrics.size(&labels, &bytes);
@@ -318,6 +325,7 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
                             kfk_fetch_min_max_bytes,
                             kfk_fetch_max_wait_ms,
                             file_budget,
+                            file_buf_size,
                             file_format,
                             req_snd,
                             rsp_snd,
@@ -373,6 +381,7 @@ async fn get_kafka_fetch(
             kfk_fetch_max_size,
             kfk_fetch_max_wait_time,
             file_format,
+            file_buf_size,
             file_save_max_rec_count,
             file_save_max_size
         }
@@ -386,6 +395,7 @@ async fn get_kafka_fetch(
     let kfk_fetch_min_max_bytes = kfk_fetch_min_size.as_u64() as i32 .. kfk_fetch_max_size.as_u64() as i32;
     let kfk_fetch_max_wait_ms = kfk_fetch_max_wait_time.as_millis() as i32;
     let file_budget = Budget::new(file_save_max_size.as_u64() as usize, file_save_max_rec_count);
+    let file_buf_size = file_buf_size.as_u64() as usize;
     let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel(1);
     let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
     let jrp_selector = JrpSelector::new(jrp_key_codec, jrp_value_codec, jrp_header_codecs, jrp_header_codec_default);
@@ -398,6 +408,7 @@ async fn get_kafka_fetch(
         kfk_fetch_min_max_bytes,
         kfk_fetch_max_wait_ms,
         file_budget,
+        file_buf_size,
         file_format,
         kfk_req_snd,
         kfk_rsp_snd,

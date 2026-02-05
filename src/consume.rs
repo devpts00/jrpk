@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use faststr::FastStr;
@@ -11,7 +10,6 @@ use tokio::net::TcpStream;
 use tokio::{spawn, try_join};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::block_in_place;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, instrument, trace};
 use crate::args::FileFormat;
@@ -81,7 +79,6 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<JrpOffset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
 ) -> Result<(), JrpkError> {
-    let flush_size = 8 * 1024;
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Fetch)
         .traffic(LblTraffic::In)
@@ -112,7 +109,7 @@ async fn consumer_rsp_reader(
                         }
 
                         let records = records.into_iter().map(|r| Ok(r));
-                        let progress = write_format(file_format, records, kfk_until.into(), flush_size, &mut budget, &mut writer)?;
+                        let progress = write_format(file_format, file_buf_size, records, kfk_until, &mut budget, &mut writer)?;
 
                         match progress {
                             Progress::Continue(next) => {
