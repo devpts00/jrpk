@@ -10,7 +10,7 @@ use std::time::Duration;
 use console::Term;
 use serde::Serialize;
 use tokio::net::TcpStream;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio::task::{JoinError, JoinHandle};
@@ -195,10 +195,19 @@ pub async fn quit() -> Result<(), std::io::Error> {
 }
 
 pub fn make_runtime(threads: Option<usize>) -> std::io::Result<Runtime> {
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
-    if let Some(threads) = threads {
-        builder.worker_threads(threads);
-    }
+    let mut builder = match threads {
+        None => {
+            Builder::new_multi_thread()
+        },
+        Some(1) => {
+            Builder::new_current_thread()
+        },
+        Some(n) => {
+            let mut b = Builder::new_multi_thread();
+            b.worker_threads(n);
+            b
+        },
+    };
     builder.enable_io().enable_time().build()
 }
 
@@ -279,42 +288,6 @@ impl <T> Truncate for Vec<T> {
         self.truncate(len)
     }
 }
-
-/*
-#[derive(Debug)]
-pub struct VecWriter {
-    pos: usize,
-    buf: Vec<u8>,
-}
-
-impl VecWriter {
-    pub fn with_capacity(capacity: usize) -> Self {
-        VecWriter { pos: 0, buf: Vec::with_capacity(capacity) }
-    }
-    pub fn into_inner(mut self) -> Vec<u8> {
-        if self.pos < self.buf.len() {
-            self.buf.truncate(self.pos);
-        }
-        self.buf
-    }
-}
-
-impl Write for VecWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buf.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.pos = self.buf.len();
-        Ok(())
-    }
-}
-
-impl Length for VecWriter {
-    fn len(&self) -> usize {
-        self.buf.len()
-    }
-}
- */
 
 #[derive(Debug)]
 pub struct Budget {

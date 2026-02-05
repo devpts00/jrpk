@@ -9,7 +9,6 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use bytesize::ByteSize;
 use faststr::FastStr;
 use futures_util::future::join_all;
 use moka::future::Cache;

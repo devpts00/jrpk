@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::{select, spawn, try_join};
 use tokio_util::codec::Framed;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{info, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct JrpCtx<E: Clone> {

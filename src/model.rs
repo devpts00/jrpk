@@ -506,19 +506,19 @@ where WLT: Write + Length + Truncate, IR: Iterator<Item = Result<JrpRecFetch<'a>
 #[inline]
 pub fn write_format<'a, WLT, IR>(
     file_format: FileFormat,
+    file_flush_size: usize,
     records: IR,
     until: JrpOffset,
-    flush_size: usize,
     budget: &mut Budget,
     writer: &mut WLT,
 ) -> Result<Progress, JrpkError>
 where WLT: Write + Length + Truncate, IR: Iterator<Item = Result<JrpRecFetch<'a>, JrpkError>> {
     match file_format {
         FileFormat::Value => {
-            write_values(records, until, flush_size, budget, writer)
+            write_values(records, until, file_flush_size, budget, writer)
         }
         FileFormat::Record => {
-            write_records(records, until, flush_size, budget, writer)
+            write_records(records, until, file_flush_size, budget, writer)
         }
     }
 }
