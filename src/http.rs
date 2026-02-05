@@ -546,8 +546,8 @@ async fn post_kafka_send(
     let kfk_req_snd = kfk_clients.lookup_sender(kfk_tap.clone()).await?;
     let (kfk_rsp_snd, kfk_rsp_rcv) = tokio::sync::mpsc::channel::<KfkRsp<JrpCtxTypes>>(kfk_req_snd.max_capacity());
     let mut labels = JrpkLabels::new(LblTier::Http).method(LblMethod::Send).traffic(LblTraffic::In).tap(kfk_tap.clone()).build();
-    let body = request.into_body();
-    let stream = body.into_data_stream();
+    let http_body = request.into_body();
+    let http_stream = http_body.into_data_stream();
     let rsp_h = spawn(
         post_kafka_send_proc_responses(
             kfk_rsp_rcv,
@@ -558,7 +558,7 @@ async fn post_kafka_send(
     let labels = labels.traffic(LblTraffic::Out).build();
     let req_h = spawn(
         post_kafka_send_proc_requests(
-            stream,
+            http_stream,
             jrp_value_codec,
             jrp_send_max_size,
             jrp_send_max_rec_count,
