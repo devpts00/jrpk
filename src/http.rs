@@ -293,7 +293,6 @@ async fn get_kafka_fetch_chunk(state: KfkFetchState) -> Result<Option<(Frame<Byt
             metrics,
             labels
         } => {
-            let flush_size = 64 * 1024;
             let kfk_rsp = rsp_rcv.recv().await
                 .ok_or(JrpkError::Unexpected("kafka client does not respond"))?;
             let Ctx(ctx, kfk_res) = kfk_rsp
