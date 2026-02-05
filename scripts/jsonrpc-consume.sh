@@ -32,11 +32,11 @@ do
       --file-save-max-rec-count=1000000000 \
       --prom-push-url=http://pmg:9091/metrics/job/jrpk \
       --prom-push-period=1s \
-      --thread-count=2 &
+      --thread-count=4 &
     sleep 0.1
   done
   wait
-  #rm -f ./json/${FILE}-*.json
+  rm -f ./json/${FILE}-*.json
 done
 
 END_TIME=$EPOCHREALTIME

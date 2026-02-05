@@ -61,16 +61,16 @@ server-release: build-release
 		--tcp-send-buf-size=32kib \
 		--tcp-recv-buf-size=32kib
 
-client-debug-consume: build-debug
+jsonrpc-debug-consume: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh debug result posts 1 1
 
-client-release-consume: build-release
-	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 1 1
+jsonrpc-release-consume: build-release
+	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-consume.sh release result posts 32 1
 
-client-debug-produce: build-debug
+jsonrpc-debug-produce: build-debug
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh debug values posts 1 1
 
-client-release-produce: build-release
+jsonrpc-release-produce: build-release
 	docker compose run --rm -it --remove-orphans rst ./scripts/jsonrpc-produce.sh release values posts 32 1
 
 http-offset:
@@ -80,7 +80,7 @@ http-debug-consume:
 	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 1 1000000 100mib
 
 http-release-consume:
-	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 32 1000000 100mib
+	docker compose run --rm -it --remove-orphans rst ./scripts/http-consume.sh result posts 32 1000000 32mib
 
 http-debug-produce:
 	docker compose run --rm -it --remove-orphans rst ./scripts/http-produce.sh values posts 1

@@ -96,6 +96,8 @@ pub enum Cmd {
         file_path: FastStr,
         #[arg(long, default_value="value")]
         file_format: FileFormat,
+        #[arg(long, default_value = "32KiB")]
+        file_buf_size: ByteSize,
         #[arg(long)]
         file_load_max_size: Option<ByteSize>,
         #[arg(long)]
@@ -142,6 +144,8 @@ pub enum Cmd {
         file_path: FastStr,
         #[arg(long, default_value="value")]
         file_format: FileFormat,
+        #[arg(long, default_value = "32KiB")]
+        file_buf_size: ByteSize,
         #[arg(long)]
         file_save_max_rec_count: Option<usize>,
         #[arg(long)]

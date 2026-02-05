@@ -9,6 +9,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use bytesize::ByteSize;
 use faststr::FastStr;
 use futures_util::future::join_all;
 use moka::future::Cache;
@@ -30,6 +31,7 @@ pub async fn producer_req_writer(
     kfk_tap: KfkTap,
     file_path: FastStr,
     file_format: FileFormat,
+    file_buf_size: usize,
     file_load_max_rec_count: usize,
     file_load_max_size: usize,
     metrics: Arc<JrpkMetrics>,
@@ -49,7 +51,7 @@ pub async fn producer_req_writer(
         .build();
 
     let file = async_clean_return!(tokio::fs::File::open(file_path.as_str()).await, tcp_sink.close().await);
-    let reader = tokio::io::BufReader::with_capacity(jrp_frame_max_size, file);
+    let reader = tokio::io::BufReader::with_capacity(file_buf_size, file);
     let codec = LinesCodec::new_with_max_length(jrp_frame_max_size);
     let mut framed = FramedRead::with_capacity(reader, codec, jrp_frame_max_size);
     let mut id: usize = 0;
@@ -136,6 +138,7 @@ pub async fn produce(
     kfk_partition: i32,
     file_path: FastStr,
     file_format: FileFormat,
+    file_buf_size: usize,
     file_load_max_rec_count: usize,
     file_load_max_size: usize,
     mut prom_push_url: Url,
@@ -167,6 +170,7 @@ pub async fn produce(
             kfk_tap.clone(),
             file_path,
             file_format,
+            file_buf_size,
             file_load_max_rec_count,
             file_load_max_size,
             metrics.clone(),

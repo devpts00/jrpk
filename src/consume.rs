@@ -73,6 +73,7 @@ async fn consumer_rsp_reader(
     kfk_until: JrpOffset,
     file_path: FastStr,
     file_format: FileFormat,
+    file_buf_size: usize,
     file_save_max_rec_count: usize,
     file_save_max_size: usize,
     metrics: Arc<JrpkMetrics>,
@@ -80,14 +81,14 @@ async fn consumer_rsp_reader(
     offset_snd: Sender<JrpOffset>,
     mut tcp_stream: SplitStream<Framed<TcpStream, LinesCodec>>,
 ) -> Result<(), JrpkError> {
-    let flush_size = 64 * 1024;
+    let flush_size = 8 * 1024;
     let labels = JrpkLabels::new(LblTier::Client)
         .method(LblMethod::Fetch)
         .traffic(LblTraffic::In)
         .tap(kfk_tap)
         .build();
     let file = File::create(file_path.as_str())?;
-    let mut writer = VecBufWriter::with_capacity(64 * 1024, file);
+    let mut writer = VecBufWriter::with_capacity(file_buf_size, file);
     let mut budget = Budget::new(file_save_max_size, file_save_max_rec_count);
     offset_snd.send(kfk_from).await?;
     while let Some(result) = tcp_stream.next().await {
@@ -165,6 +166,7 @@ pub async fn consume(
     kfk_fetch_max_wait_time_ms: i32,
     file_path: FastStr,
     file_format: FileFormat,
+    file_buf_size: usize,
     file_save_max_rec_count: usize,
     file_save_max_size: usize,
     mut prom_push_url: Url,
@@ -210,6 +212,7 @@ pub async fn consume(
             jrp_offset_until,
             file_path,
             file_format,
+            file_buf_size,
             file_save_max_rec_count,
             file_save_max_size,
             metrics,

@@ -21,4 +21,4 @@ DIFF_TIME=$(echo "$END_TIME - $START_TIME" | bc)
 echo ""
 echo "Runtime: $DIFF_TIME seconds"
 
-#rm -f ./json/${FILE}-*.json
+rm -f ./json/${FILE}-*.json

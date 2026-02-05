@@ -67,6 +67,7 @@ fn main() {
             kfk_partition,
             file_path,
             file_format,
+            file_buf_size,
             file_load_max_size,
             file_load_max_rec_count,
             prom_push_url,
@@ -76,6 +77,7 @@ fn main() {
             let jrp_frame_max_size = jrp_frame_max_size.as_u64() as usize;
             let jrp_send_max_size = jrp_send_max_size.as_u64() as usize;
             let jrp_send_max_rec_size = jrp_send_max_rec_size.as_u64() as usize;
+            let file_buf_size = file_buf_size.as_u64() as usize;
             let file_load_max_rec_count = file_load_max_rec_count.unwrap_or(usize::MAX);
             let file_load_max_size = file_load_max_size.map(|bs|bs.as_u64() as usize).unwrap_or(usize::MAX);
             let prom_push_period = Duration::from(&prom_push_period);
@@ -92,6 +94,7 @@ fn main() {
                     kfk_partition,
                     file_path,
                     file_format,
+                    file_buf_size,
                     file_load_max_rec_count,
                     file_load_max_size,
                     prom_push_url,
@@ -115,6 +118,7 @@ fn main() {
             kfk_fetch_max_wait_time_ms,
             file_path,
             file_format,
+            file_buf_size,
             file_save_max_rec_count,
             file_save_max_size,
             prom_push_url,
@@ -125,6 +129,7 @@ fn main() {
             let jrp_header_codecs = jrp_header_codecs.into_iter().map(|nc|nc.into()).collect();
             let kfk_fetch_min_size = kfk_fetch_min_size.as_u64() as i32;
             let kfk_fetch_max_size = kfk_fetch_max_size.as_u64() as i32;
+            let file_buf_size = file_buf_size.as_u64() as usize;
             let file_save_max_rec_count = file_save_max_rec_count.unwrap_or(usize::MAX);
             let file_save_max_size = file_save_max_size.map(|bs|bs.as_u64() as usize).unwrap_or(usize::MAX);
             let prom_push_period = Duration::from(&prom_push_period);
@@ -146,6 +151,7 @@ fn main() {
                     kfk_fetch_max_wait_time_ms,
                     file_path,
                     file_format,
+                    file_buf_size,
                     file_save_max_rec_count,
                     file_save_max_size,
                     prom_push_url,
