@@ -54,7 +54,7 @@ server-release: build-release
 		serve \
 		--jrp-bind=0.0.0.0:1133 \
 		--jrp-max-frame-size=4mib \
-		--jrp-queue-len=1 \
+		--jrp-queue-len=4 \
 		--http-bind=0.0.0.0:1134 \
 		--kfk-brokers=kfk:9092 \
 		--kfk-compression=lz4 \

@@ -10,7 +10,7 @@ START_TIME=$EPOCHREALTIME
 
 for ((p = 0; p < $PARTITIONS; p++))
 do
-  curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}?kfk_fetch_max_size=1mib&file_save_max_size=32mib" &
+  curl -v --output ./json/${FILE}-${p}.json "http://jrpk:1134/kafka/fetch/posts/${p}?file_format=record&kfk_fetch_max_size=1mib&file_save_max_size=32mib" &
 	sleep 0.1
 done
 

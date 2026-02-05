@@ -112,7 +112,7 @@ async fn consumer_rsp_reader(
                         }
 
                         let records = records.into_iter().map(|r| Ok(r));
-                        let progress = block_in_place(|| write_format(file_format, records, kfk_until.into(), flush_size, &mut budget, &mut writer))?;
+                        let progress = write_format(file_format, records, kfk_until.into(), flush_size, &mut budget, &mut writer)?;
 
                         match progress {
                             Progress::Continue(next) => {
