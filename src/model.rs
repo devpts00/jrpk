@@ -401,7 +401,7 @@ impl <E: std::error::Error> From<E> for JrpErrorMsg {
 #[serde(rename_all = "lowercase", bound(deserialize = "'de: 'a"))]
 pub enum JrpRspData<'a> {
     Send {
-        offsets: Vec<i64>,
+        next: Option<i64>,
     },
     Fetch {
         high_watermark: i64,
@@ -411,8 +411,8 @@ pub enum JrpRspData<'a> {
 }
 
 impl <'a> JrpRspData<'a> {
-    pub fn send(offsets: Vec<i64>) -> Self {
-        JrpRspData::Send { offsets }
+    pub fn send(next: Option<i64>) -> Self {
+        JrpRspData::Send { next }
     }
     pub fn fetch(records: Vec<JrpRecFetch<'a>>, high_watermark: i64) -> Self {
         JrpRspData::Fetch { records, high_watermark }

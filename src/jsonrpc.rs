@@ -111,9 +111,9 @@ pub fn k2j_rec_fetch(rec_and_offset: RecordAndOffset, selector: &JrpSelector) ->
 }
 
 #[inline]
-fn k2j_rsp_send(send: Result<Vec<i64>, KfkError>) -> Result<JrpRspData<'static>, JrpkError> {
-    let offsets = send?;
-    Ok(JrpRspData::send(offsets))
+fn k2j_rsp_send(res: Result<Vec<i64>, KfkError>) -> Result<JrpRspData<'static>, JrpkError> {
+    let offsets = res?;
+    Ok(JrpRspData::send(offsets.last().map(|o| o + 1)))
 }
 
 #[inline]
@@ -250,7 +250,7 @@ async fn jsonrpc_rsp_writer(
                 let jrp_rsp = match kfk_rsp {
                     KfkRsp::Send(Ctx(ctx, offsets)) => {
                         metrics.time(&labels.method(LblMethod::Send).tap(ctx.tap), ctx.ts);
-                         JrpRsp::res(ctx.id, k2j_rsp_send(offsets))
+                        JrpRsp::res(ctx.id, k2j_rsp_send(offsets))
                     }
                     KfkRsp::Fetch(Ctx(ctx, records_and_offsets)) => {
                         metrics.time(&labels.method(LblMethod::Fetch).tap(ctx.tap), ctx.ts);

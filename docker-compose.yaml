@@ -106,7 +106,7 @@ services:
     environment:
       #- RUST_BACKTRACE=full
       #- TOKIO_CONSOLE_BIND=0.0.0.0:6669
-      - RUST_LOG=info,jrpk::http=info,tokio::task=info,tower_http=info
+      - RUST_LOG=info,jrpk=info,tokio::task=info,tower_http=info
       #- LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
       #- MALLOC_CONF=stats_print:true
       - LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so
