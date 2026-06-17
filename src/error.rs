@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use base64::DecodeError;
 use hyper::http;
 use hyper::http::uri::InvalidUri;
+use io_uring::squeue::PushError;
 use strum::IntoStaticStr;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
@@ -87,6 +88,9 @@ pub enum JrpkError {
 
     #[error("url")]
     Url,
+
+    #[error("io-uring push: {0}")]
+    IoUringPush(#[from] PushError),
 }
 
 /// deliberately drop payload

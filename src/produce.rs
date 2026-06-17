@@ -3,7 +3,7 @@ use crate::codec::LinesCodec;
 use crate::error::JrpkError;
 use crate::model::{b2j, JrpCodec, JrpReqBuilder, JrpRsp, JrpkMeteredProdReq};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic};
-use crate::util::join_with_quit;
+use crate::util::{join_with_quit, test_io_uring};
 use bytes::Bytes;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -144,6 +144,9 @@ pub async fn produce(
     prom_push_period: Duration,
 ) -> Result<(), JrpkError> {
 
+    test_io_uring(file_path).await?;
+    return Ok(());
+    
     let kfk_tap = KfkTap::new(kfk_topic, kfk_partition);
     let metrics = Arc::new(JrpkMetrics::new());
 

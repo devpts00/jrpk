@@ -123,6 +123,8 @@ services:
       - ./scripts:/jrpk/scripts:r
       - ./Cargo.toml:/jrpk/Cargo.toml
       - ./Cargo.lock:/jrpk/Cargo.lock
+    security_opt:
+      - seccomp:unconfined
     working_dir: /jrpk
     deploy:
       resources:

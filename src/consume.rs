@@ -19,7 +19,7 @@ use crate::http::url_append_tap;
 use crate::kafka::KfkTap;
 use crate::model::{write_format, JrpCodec, JrpOffset, JrpRecFetch, JrpReq, JrpRsp, JrpRspData, JrpSelector, Progress};
 use crate::metrics::{spawn_push_prometheus, JrpkMetrics, JrpkLabels, LblMethod, LblTier, LblTraffic, MeteredItem};
-use crate::util::{Budget, VecBufWriter};
+use crate::util::{test_io_uring, Budget, VecBufWriter};
 
 type JrpkMeteredConsReq<'a> = MeteredItem<JrpReq<'a>>;
 

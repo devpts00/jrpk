@@ -1,13 +1,20 @@
+use std::collections::HashSet;
 use std::error::Error;
 use crate::error::JrpkError;
 use rskafka::record::Record;
 use socket2::SockRef;
 use std::fmt::{Debug, Display, Formatter};
+use std::fs::File;
 use std::future::Future;
 use std::io::Write;
-use std::str::from_utf8;
+use std::os::fd::AsRawFd;
+use std::str::{from_utf8, from_utf8_unchecked};
 use std::time::Duration;
 use console::Term;
+use faststr::FastStr;
+use glommio::LocalExecutor;
+use io_uring::{IoUring, SubmissionQueue, Submitter};
+use io_uring::types::Fd;
 use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio::runtime::{Builder, Runtime};
@@ -334,4 +341,13 @@ impl Budget {
             Ok(false)
         }
     }
+}
+
+fn test() {
+    let mut x: HashSet<String> = HashSet::new();
+    x.insert("test".to_string());
+
+    let mut x = Box::new("test".to_string());
+    x.push("test".into());
+
 }
